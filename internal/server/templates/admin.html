@@ -10,10 +10,31 @@
         h2 { margin-top: 34px; }
         form { background: #f6f8ff; border-radius: 10px; padding: 22px; }
         label { font-weight: 600; }
-        select, input[type=text], input[type=file] {
+        select, input[type=text], input[type=file], textarea {
             width: 100%; margin-top: 6px; padding: 9px;
             border: 1px solid #ccd3f0; border-radius: 6px; font-size: 14px; box-sizing: border-box;
         }
+        textarea { resize: vertical; font-family: inherit; }
+        table.logs { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        table.logs td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; vertical-align: middle; }
+        table.logs td.idx { width: 40px; color: #99a; }
+        table.logs td.op { width: 70px; }
+        table.logs button.del {
+            padding: 4px 12px; background: #c0392b; color: #fff;
+            border: 0; border-radius: 6px; font-size: 13px; cursor: pointer;
+        }
+        table.logs button.del:hover { background: #96281b; }
+        table.eps { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        table.eps th, table.eps td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; vertical-align: middle; }
+        table.eps th { background: #eef1fa; }
+        table.eps td.idx { width: 40px; color: #99a; }
+        table.eps td.grip { width: 36px; cursor: grab; color: #aab; font-size: 16px; user-select: none; text-align: center; }
+        table.eps tbody tr { background: #fff; transition: background 0.15s; }
+        table.eps tbody tr.dragging { opacity: 0.55; background: #eef1fa; }
+        table.eps tbody tr.drop-before td { border-top: 2px solid #5e72e4; }
+        #sortStatus { font-size: 13px; margin-left: 10px; color: #667; }
+        #sortStatus.ok { color: #2e7d32; }
+        #sortStatus.err { color: #c0392b; }
         input[type=submit], .btn {
             margin-top: 14px; padding: 9px 26px; background: #5e72e4; color: #fff;
             border: 0; border-radius: 6px; font-size: 14px; cursor: pointer;
@@ -81,8 +102,39 @@
         <label for="new_table_name">输入新分类名：</label>
         <input type="text" id="new_table_name" name="new_table_name"
                placeholder="例如：link_work，以字母开头，仅含字母/数字/下划线" required>
+        <div class="row" style="margin-top:12px">
+            <div>
+                <label for="new_table_label">栏目名称：</label>
+                <input type="text" id="new_table_label" name="new_table_label"
+                       placeholder="首页卡片名称，留空则与分类名相同">
+            </div>
+            <div>
+                <label for="new_table_desc">栏目描述（可选）：</label>
+                <input type="text" id="new_table_desc" name="new_table_desc"
+                       placeholder="首页卡片上的一句话描述">
+            </div>
+        </div>
         <input type="submit" value="创建分类">
+        <p style="color:#667;font-size:13px;margin-top:6px">创建后自动在首页展示卡片，并开通 /分类名 随机跳转接口；上传图片后即可访问。</p>
     </form>
+
+    <hr>
+    <h2>调整前端分类栏排序<span id="sortStatus"></span></h2>
+    <p style="color:#667;font-size:13px;margin:6px 0 2px">按住 <b>⋮⋮</b> 拖动行即可调整顺序，松开后自动保存（控制首页卡片与文档页展示顺序）。</p>
+    <table class="eps">
+        <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>类型</th></tr></thead>
+        <tbody id="epsBody">
+        {{- range $i, $ep := .Endpoints}}
+            <tr draggable="true" data-path="{{$ep.Path}}">
+                <td class="grip" title="拖动排序">⋮⋮</td>
+                <td class="idx">{{$i}}</td>
+                <td>/{{$ep.Path}}</td>
+                <td>{{$ep.Label}}</td>
+                <td>{{if $ep.Adaptive}}自适应{{else}}单端{{end}}</td>
+            </tr>
+        {{- end}}
+        </tbody>
+    </table>
 
     <hr>
     <h2>站点设置</h2>
@@ -96,6 +148,55 @@
             {{- if .BaseURL}}<br>当前生效：<strong>{{.BaseURL}}</strong>{{- end}}
         </p>
     </form>
+
+    <hr>
+    <h2>首页文案</h2>
+    <form action="/admin/content" method="post">
+        <label for="slogan">标语（横幅大标题下方一行）：</label>
+        <textarea id="slogan" name="slogan" rows="2"
+                  placeholder="留空则恢复默认">{{.Slogan}}</textarea>
+        <div style="margin-top:12px">
+            <label for="share">分享语（meta 区第一行）：</label>
+            <textarea id="share" name="share" rows="2"
+                      placeholder="留空则恢复默认">{{.Share}}</textarea>
+        </div>
+        <div style="margin-top:12px">
+            <label for="icp">备案号文字（meta 区链接文字）：</label>
+            <input type="text" id="icp" name="icp" value="{{.ICP}}" placeholder="留空则恢复默认">
+        </div>
+        <input type="submit" value="保存首页文案">
+        <p style="color:#667;font-size:13px;margin-top:6px">保存后立即生效；任意字段留空并保存即恢复该字段默认文案。</p>
+    </form>
+
+    <hr>
+    <h2>改动日志管理</h2>
+    <form action="/admin/logs/add" method="post" onsubmit="return checkLog()">
+        <label for="log_text">新增日志（显示在最顶部）：</label>
+        <textarea id="log_text" name="log_text" rows="2"
+                  placeholder="例如：2026.9 — 上线新功能……" required></textarea>
+        <input type="submit" value="添加日志">
+    </form>
+    {{- if .Logs}}
+    <table class="logs">
+        <tbody>
+        {{- range $i, $log := .Logs}}
+            <tr>
+                <td class="idx">{{$i}}</td>
+                <td>{{$log}}</td>
+                <td class="op">
+                    <form action="/admin/logs/delete" method="post" style="background:none;padding:0"
+                          onsubmit="return confirm('确认删除这条日志吗？')">
+                        <input type="hidden" name="log_index" value="{{$i}}">
+                        <button type="submit" class="del">删除</button>
+                    </form>
+                </td>
+            </tr>
+        {{- end}}
+        </tbody>
+    </table>
+    {{- else}}
+    <p style="color:#889;margin-top:10px">暂无日志，首页将隐藏改动日志板块。</p>
+    {{- end}}
 
     <hr>
     <h2>新增双端自适应栏目</h2>
@@ -195,6 +296,88 @@
             }
             return confirm('确认创建双端栏目 /' + path + ' 吗？');
         }
+
+        function checkLog() {
+            var text = document.getElementById('log_text').value.trim();
+            if (!text) {
+                alert('日志内容不能为空！');
+                return false;
+            }
+            if (text.length > 500) {
+                alert('日志内容过长（最多 500 字）！');
+                return false;
+            }
+            return true;
+        }
+
+        // 栏目拖拽排序：拖动行实时换位，松开后一次性提交完整顺序。
+        (function () {
+            var body = document.getElementById('epsBody');
+            if (!body) return;
+            var status = document.getElementById('sortStatus');
+            var dragging = null;
+
+            function refreshIndex() {
+                body.querySelectorAll('tr').forEach(function (tr, i) {
+                    var cell = tr.querySelector('.idx');
+                    if (cell) cell.textContent = i;
+                });
+            }
+            function clearMarks() {
+                body.querySelectorAll('tr').forEach(function (tr) { tr.classList.remove('drop-before'); });
+            }
+            function saveOrder() {
+                var order = [];
+                body.querySelectorAll('tr').forEach(function (tr) { order.push(tr.dataset.path); });
+                var params = new URLSearchParams();
+                order.forEach(function (p) { params.append('order', p); });
+                status.textContent = '保存中…';
+                status.className = '';
+                fetch('/admin/endpoints/reorder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: params.toString()
+                }).then(function (r) { return r.json(); }).then(function (res) {
+                    if (res.ok) {
+                        status.textContent = '✓ 顺序已保存';
+                        status.className = 'ok';
+                    } else {
+                        status.textContent = '✗ ' + (res.msg || '保存失败');
+                        status.className = 'err';
+                    }
+                }).catch(function () {
+                    status.textContent = '✗ 网络错误，保存失败';
+                    status.className = 'err';
+                });
+            }
+
+            body.querySelectorAll('tr').forEach(function (tr) {
+                tr.addEventListener('dragstart', function (e) {
+                    dragging = tr;
+                    tr.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', tr.dataset.path);
+                });
+                tr.addEventListener('dragend', function () {
+                    tr.classList.remove('dragging');
+                    clearMarks();
+                    refreshIndex();
+                    saveOrder();
+                    dragging = null;
+                });
+                tr.addEventListener('dragover', function (e) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (!dragging || tr === dragging) return;
+                    clearMarks();
+                    var rect = tr.getBoundingClientRect();
+                    var before = (e.clientY - rect.top) < rect.height / 2;
+                    tr.classList.add('drop-before');
+                    body.insertBefore(dragging, before ? tr : tr.nextSibling);
+                });
+                tr.addEventListener('drop', function (e) { e.preventDefault(); });
+            });
+        })();
 
         document.addEventListener('DOMContentLoaded', function () {
             if (document.getElementById('tableSelect').value) loadImages();

@@ -5,3 +5,7 @@
 /data/categories/*/
 /data/endpoints.json
 /data/settings.json
+/data/logs.json
+
+# 回收站目录
+/.Trash-0/

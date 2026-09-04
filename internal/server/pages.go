@@ -14,6 +14,7 @@ import (
 type homeCard struct {
 	Path, Label, Desc, Kind string
 	PreviewURL              string
+	URL                     string // 展示用的完整接口地址（含对外域名）
 	Extra                   []string
 }
 
@@ -33,6 +34,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 			Desc:       ep.desc,
 			Kind:       ep.kind,
 			PreviewURL: "/" + ep.path,
+			URL:        s.absoluteURL(r, "/"+ep.path),
 		}
 		if ep.path == "acg" {
 			c.Desc = "测试项目，还在不断修正"
@@ -40,11 +42,29 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 		cards = append(cards, c)
 	}
 	type homeData struct {
-		Title string
-		Cards []homeCard
-		Year  int
+		Title  string
+		Cards  []homeCard
+		Year   int
+		Slogan string
+		Share  string
+		ICP    string
+		ICPURL string
+		Logs   []string
 	}
-	s.render(w, http.StatusOK, "home.html", homeData{Title: "栗次元API - 举个栗子", Cards: cards, Year: time.Now().Year()})
+	s.mu.RLock()
+	slogan, share, icp := s.slogan, s.share, s.icp
+	logs := append([]string(nil), s.logs...)
+	s.mu.RUnlock()
+	s.render(w, http.StatusOK, "home.html", homeData{
+		Title:  "栗次元API - 举个栗子",
+		Cards:  cards,
+		Year:   time.Now().Year(),
+		Slogan: slogan,
+		Share:  share,
+		ICP:    icp,
+		ICPURL: "https://icp.gov.moe/?keyword=20239001",
+		Logs:   logs,
+	})
 }
 
 // handleDocs 渲染 JSON 参数文档页。
