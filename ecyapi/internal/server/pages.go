@@ -3,9 +3,11 @@ package server
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
-	"sort"
 	"time"
+
+	"ecyapi/internal/store"
 )
 
 // homeCard 主页分类卡片。
@@ -17,6 +19,9 @@ type homeCard struct {
 
 // renderHome 渲染 API 发布主页。
 func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	endpoints := append([]endpoint(nil), s.endpoints...)
+	s.mu.RUnlock()
 	cards := make([]homeCard, 0, len(endpoints))
 	for _, ep := range endpoints {
 		if ep.path == "aimp" {
@@ -45,7 +50,10 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 // handleDocs 渲染 JSON 参数文档页。
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	cats := s.sortedCategories(r.Context())
-	s.render(w, http.StatusOK, "docs.html", map[string]any{"Categories": cats})
+	s.mu.RLock()
+	endpoints := append([]endpoint(nil), s.endpoints...)
+	s.mu.RUnlock()
+	s.render(w, http.StatusOK, "docs.html", map[string]any{"Categories": cats, "Endpoints": endpoints})
 }
 
 // galleryImage 图库页图片。
@@ -115,6 +123,13 @@ func (s *Server) render(w http.ResponseWriter, status int, name string, data any
 	}
 }
 
+// writeRowsJSON 以 JSON 输出图片列表（后台预览用）。
+func writeRowsJSON(w http.ResponseWriter, rows []store.Row) {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(rows)
+}
+
 // newSessionToken 生成会话令牌。
 func newSessionToken() string {
 	b := make([]byte, 16)
@@ -158,5 +173,3 @@ func (s *Server) sessionEnd(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: "ecy_admin", Value: "", Path: "/", MaxAge: -1})
 }
-
-var _ = sort.Strings

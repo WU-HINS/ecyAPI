@@ -3,26 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>数据库管理</title>
+    <title>图片管理后台</title>
     <style>
-        body { font-family: 'Segoe UI', 'PingFang SC', sans-serif; max-width: 860px; margin: 40px auto; padding: 0 16px; color: #333; }
+        body { font-family: 'Segoe UI', 'PingFang SC', sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; color: #333; }
         h1 { border-bottom: 2px solid #5e72e4; padding-bottom: 10px; }
         h2 { margin-top: 34px; }
         form { background: #f6f8ff; border-radius: 10px; padding: 22px; }
         label { font-weight: 600; }
-        select, textarea, input[type=text] {
+        select, input[type=text], input[type=file] {
             width: 100%; margin-top: 6px; padding: 9px;
-            border: 1px solid #ccd3f0; border-radius: 6px; font-size: 14px;
+            border: 1px solid #ccd3f0; border-radius: 6px; font-size: 14px; box-sizing: border-box;
         }
-        textarea { font-family: Consolas, monospace; }
-        input[type=submit] {
+        input[type=submit], .btn {
             margin-top: 14px; padding: 9px 26px; background: #5e72e4; color: #fff;
             border: 0; border-radius: 6px; font-size: 14px; cursor: pointer;
         }
-        input[type=submit]:hover { background: #4557c9; }
+        input[type=submit]:hover, .btn:hover { background: #4557c9; }
+        .btn.danger { background: #c0392b; }
+        .btn.danger:hover { background: #96281b; }
         .logout { color: #c0392b; text-decoration: none; margin-left: 16px; }
         .err { color: #c0392b; }
         hr { margin: 26px 0; border: 0; border-top: 1px solid #e4e8f0; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+        .card { position: relative; border: 1px solid #dde3f0; border-radius: 8px; overflow: hidden; background: #fff; }
+        .card img { width: 100%; height: 110px; object-fit: cover; display: block; background: #f0f2f8; }
+        .card video { width: 100%; height: 110px; object-fit: cover; display: block; background: #000; }
+        .card .name { font-size: 11px; color: #667; padding: 4px 6px; word-break: break-all; }
+        .card .ck { position: absolute; top: 6px; left: 6px; transform: scale(1.3); }
+        .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+        .row > div { flex: 1; min-width: 160px; }
+        table.bindings { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        table.bindings th, table.bindings td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; }
+        table.bindings th { background: #eef1fa; }
     </style>
 </head>
 <body>
@@ -34,22 +46,33 @@
         <input type="submit" value="登录">
     </form>
 {{- else}}
-    <h1>链接管理系统</h1>
+    <h1>图片管理系统 <a href="/admin?logout=1" class="logout">退出登录</a></h1>
 
-    <h2>编辑链接</h2>
-    <form action="/admin/update" method="post">
+    <h2>图片管理</h2>
+    <form id="uploadForm" action="/admin/upload" method="post" enctype="multipart/form-data">
         <label for="tableSelect">选择分类：</label>
-        <select id="tableSelect" name="table" onchange="loadTableData()">
+        <select id="tableSelect" name="category" onchange="loadImages()">
             {{- range .Tables}}
             <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
             {{- end}}
         </select>
-        <br><br>
-        <label for="content">链接列表：</label><br>
-        <textarea id="content" name="content" rows="14" cols="60"></textarea>
-        <br><br>
-        <input type="submit" value="提交更改">
-        <a href="/admin?logout=1" class="logout">退出登录</a>
+        <div style="margin-top:16px">
+            <label for="files">上传新增图片（可多选）：</label>
+            <input type="file" id="files" name="files" accept="image/*,video/mp4,video/webm" multiple>
+            <input type="submit" value="上传图片">
+        </div>
+    </form>
+
+    <form id="deleteForm" action="/admin/delete" method="post">
+        <input type="hidden" name="category" id="deleteCategory">
+        <div class="row" style="margin-top:18px">
+            <div style="flex:0 0 auto;min-width:0">
+                <button type="button" class="btn" onclick="toggleAll(true)">全选</button>
+                <button type="button" class="btn" onclick="toggleAll(false)">取消全选</button>
+                <button type="submit" class="btn danger" onclick="return confirm('确认删除选中的图片吗？此操作不可恢复。')">删除选中</button>
+            </div>
+        </div>
+        <div class="grid" id="imageGrid"></div>
     </form>
 
     <hr>
@@ -61,24 +84,107 @@
         <input type="submit" value="创建分类">
     </form>
 
+    <hr>
+    <h2>新增双端自适应栏目</h2>
+    <form action="/admin/binding" method="post" onsubmit="return checkBinding()">
+        <div class="row">
+            <div>
+                <label for="binding_desk">PC 端分类：</label>
+                <select id="binding_desk" name="binding_desk">
+                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+                </select>
+            </div>
+            <div>
+                <label for="binding_mobile">移动端分类：</label>
+                <select id="binding_mobile" name="binding_mobile">
+                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+                </select>
+            </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+            <div>
+                <label for="binding_path">新栏目路径（访问路径，如 szs）：</label>
+                <input type="text" id="binding_path" name="binding_path" placeholder="以字母开头，仅含字母/数字/下划线" required>
+            </div>
+            <div>
+                <label for="binding_label">栏目名称：</label>
+                <input type="text" id="binding_label" name="binding_label" placeholder="例如：随手拍自适应" required>
+            </div>
+        </div>
+        <div style="margin-top:12px">
+            <label for="binding_desc">栏目描述（可选）：</label>
+            <input type="text" id="binding_desc" name="binding_desc" placeholder="一句话描述该栏目">
+        </div>
+        <input type="submit" value="创建双端栏目">
+    </form>
+
+    {{- if .Bindings}}
+    <table class="bindings">
+        <thead><tr><th>路径</th><th>名称</th><th>PC 分类</th><th>移动端分类</th></tr></thead>
+        <tbody>
+        {{- range .Bindings}}
+            <tr><td>/{{.Path}}</td><td>{{.Label}}</td><td>{{.Desk}}</td><td>{{.Mobile}}</td></tr>
+        {{- end}}
+        </tbody>
+    </table>
+    {{- end}}
+
     <script>
-        function loadTableData() {
-            var table = document.getElementById('tableSelect').value;
-            fetch('/admin/data?table=' + encodeURIComponent(table))
-                .then(function (r) { return r.text(); })
-                .then(function (data) { document.getElementById('content').value = data; });
+        var nameRe = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+        function currentCategory() { return document.getElementById('tableSelect').value; }
+        function isVideo(name) { return /\.(mp4|webm)$/i.test(name); }
+
+        function loadImages() {
+            var cat = currentCategory();
+            document.getElementById('deleteCategory').value = cat;
+            var grid = document.getElementById('imageGrid');
+            grid.innerHTML = '<p style="color:#889">加载中…</p>';
+            fetch('/admin/data?table=' + encodeURIComponent(cat))
+                .then(function (r) { return r.json(); })
+                .then(function (rows) {
+                    grid.innerHTML = '';
+                    if (!rows || rows.length === 0) {
+                        grid.innerHTML = '<p style="color:#889">该分类暂无图片</p>';
+                        return;
+                    }
+                    rows.forEach(function (row) {
+                        var card = document.createElement('div');
+                        card.className = 'card';
+                        var media = isVideo(row.ID)
+                            ? '<video src="' + row.Link + '" muted preload="metadata"></video>'
+                            : '<img src="' + row.Link + '" loading="lazy" alt="' + row.ID + '">';
+                        card.innerHTML = '<label><input type="checkbox" class="ck" name="files" value="' + row.ID + '"></label>'
+                            + media + '<div class="name">' + row.ID + '</div>';
+                        grid.appendChild(card);
+                    });
+                })
+                .catch(function () { grid.innerHTML = '<p style="color:#c00">加载失败</p>'; });
         }
+
+        function toggleAll(on) {
+            document.querySelectorAll('#imageGrid input[type=checkbox]').forEach(function (c) { c.checked = on; });
+        }
+
         function checkTableName() {
             var tableName = document.getElementById('new_table_name').value.trim();
-            var reg = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
-            if (!reg.test(tableName)) {
+            if (!nameRe.test(tableName)) {
                 alert('分类名不合法！\n1. 必须以字母开头\n2. 仅含字母、数字、下划线\n3. 长度1-64字符');
                 return false;
             }
             return confirm('确认创建分类：' + tableName + ' 吗？');
         }
+
+        function checkBinding() {
+            var path = document.getElementById('binding_path').value.trim();
+            if (!nameRe.test(path)) {
+                alert('栏目路径不合法！\n1. 必须以字母开头\n2. 仅含字母、数字、下划线\n3. 长度1-64字符');
+                return false;
+            }
+            return confirm('确认创建双端栏目 /' + path + ' 吗？');
+        }
+
         document.addEventListener('DOMContentLoaded', function () {
-            if (document.getElementById('tableSelect').value) loadTableData();
+            if (document.getElementById('tableSelect').value) loadImages();
         });
     </script>
 {{- end}}
