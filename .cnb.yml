@@ -8,3 +8,15 @@ main:
           script: go build ./...
         - name: vet
           script: go vet ./...
+
+$:
+  vscode:
+    - runner:
+        cpus: 10
+      docker:
+        image: docker.cnb.cool/mint/default-dev-env
+      services:
+        - vscode
+      stages:
+        - name: ready
+          script: echo "Cloud development environment is ready"
