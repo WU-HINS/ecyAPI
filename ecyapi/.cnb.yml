@@ -1,0 +1,10 @@
+main:
+  push:
+    - runner: { cpus: 2 }
+      docker:
+        image: golang:1.24
+      stages:
+        - name: build
+          script: go build ./...
+        - name: vet
+          script: go vet ./...

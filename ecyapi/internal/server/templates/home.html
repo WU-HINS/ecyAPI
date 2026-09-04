@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{.Title}}</title>
+    <meta name="keywords" content="个人,分享,api,随机图床API,二次元,随机图,壁纸,萌图,ai图,自适应,原神,风景,横图,竖图,白底,头像,高清,背景图片,手机壁纸,图片url,随机图片,栗次元">
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+    <style>
+        :root {
+            --primary: #ff8f6b;
+            --accent: #fcb69f;
+            --text: #3a2c26;
+            --muted: #8a7a70;
+            --card-bg: rgba(255, 255, 255, 0.86);
+            --shadow: 0 10px 30px -6px rgba(60, 35, 20, 0.18);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            color: var(--text);
+            background: #fdf6f0;
+            min-height: 100vh;
+        }
+        /* 顶部横幅 */
+        .hero {
+            position: relative;
+            text-align: center;
+            padding: 90px 20px 70px;
+            color: #fff;
+            background: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)),
+                        url('/fj') center / cover no-repeat fixed;
+        }
+        .hero h1 {
+            font-size: clamp(30px, 5vw, 52px);
+            font-weight: 800;
+            letter-spacing: 2px;
+            text-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+        }
+        .hero .slogan { margin-top: 14px; font-size: 17px; opacity: 0.92; }
+        .hero .meta { margin-top: 22px; font-size: 14px; opacity: 0.8; line-height: 1.9; }
+        .hero .meta a { color: #ffd9c4; text-decoration: none; border-bottom: 1px dashed #ffd9c4; }
+        .cta-btn { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+        .btn {
+            display: inline-block;
+            padding: 12px 34px;
+            border: 1.5px solid rgba(255, 255, 255, 0.85);
+            border-radius: 999px;
+            color: #fff;
+            text-decoration: none;
+            font-size: 15px;
+            letter-spacing: 1px;
+            backdrop-filter: blur(6px);
+            background: rgba(255, 255, 255, 0.12);
+            transition: all 0.25s ease;
+        }
+        .btn:hover { background: rgba(255, 255, 255, 0.28); transform: translateY(-2px); }
+        /* 卡片网格 */
+        .cards {
+            max-width: 1280px;
+            margin: -40px auto 0;
+            padding: 0 18px 70px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 24px;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        .card:hover { transform: translateY(-5px); box-shadow: 0 18px 40px -8px rgba(60, 35, 20, 0.28); }
+        .thumb { position: relative; height: 210px; background: #f0e5dd; overflow: hidden; }
+        .thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; }
+        .thumb .tag {
+            position: absolute; left: 12px; top: 12px;
+            padding: 6px 14px; border-radius: 999px;
+            background: rgba(45, 30, 22, 0.72); color: #fff;
+            font-size: 13px; font-weight: 600;
+            text-decoration: none; transition: background 0.2s;
+        }
+        .thumb .tag:hover { background: var(--primary); }
+        .card-body { padding: 16px 18px 18px; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+        .card-body .url {
+            font-family: Consolas, monospace; font-size: 13.5px;
+            color: #1d5261; background: #f4ece6;
+            border-radius: 6px; padding: 6px 10px;
+            word-break: break-all; align-self: flex-start;
+        }
+        .card-body .desc { color: var(--muted); font-size: 14px; line-height: 1.7; }
+        .card-body .hint { color: #b0a39a; font-size: 12.5px; margin-top: auto; }
+        /* 日志 */
+        .logs {
+            max-width: 1080px; margin: 0 auto 80px; padding: 0 18px;
+        }
+        .logs h2 { text-align: center; font-size: 26px; margin-bottom: 24px; }
+        .logs .box {
+            background: var(--card-bg); border-radius: 18px;
+            box-shadow: var(--shadow); padding: 28px 32px;
+            max-height: 420px; overflow-y: auto;
+        }
+        .logs p { color: var(--muted); font-size: 14.5px; line-height: 1.9; padding: 8px 0; border-bottom: 1px dashed #eadfd7; }
+        .logs p:last-child { border-bottom: 0; }
+        footer { text-align: center; padding: 30px 0 40px; color: #b3a79e; font-size: 13px; }
+        footer a { color: var(--primary); text-decoration: none; }
+        @media (max-width: 640px) {
+            .hero { padding: 60px 16px 50px; background-attachment: scroll; }
+            .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: -26px; }
+            .thumb { height: 120px; }
+            .card-body { padding: 10px 12px 12px; }
+            .card-body .desc { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <section class="hero">
+        <h1>栗次元 API</h1>
+        <p class="slogan">图片求精，往期图片随着环境的不断升级，也会不断提高分辨率</p>
+        <div class="meta">
+            <p>如果你喜欢，那就分享给喜欢二次元风格的博主们吧</p>
+            <p>| <a href="https://icp.gov.moe/?keyword=20239001" target="_blank"><b>萌ICP备20239001号</b></a></p>
+        </div>
+        <div class="cta-btn">
+            <a class="btn" href="/img" target="_blank">图库预览</a>
+            <a class="btn" href="/docs" target="_blank">JSON 文档</a>
+        </div>
+    </section>
+
+    <section class="cards">
+        {{- range .Cards}}
+        <div class="card">
+            <div class="thumb">
+                {{- if eq .Kind "video"}}
+                <video autoplay muted loop playsinline data-src="{{.PreviewURL}}"></video>
+                {{- else}}
+                <img data-src="{{.PreviewURL}}" alt="{{.Label}}" loading="lazy">
+                {{- end}}
+                <a href="{{.PreviewURL}}" target="_blank" class="tag">{{.Label}}</a>
+            </div>
+            <div class="card-body">
+                <span class="url">/{{.Path}}</span>
+                <p class="desc">{{.Desc}}</p>
+                <p class="hint">👆点击图片可刷新预览</p>
+            </div>
+        </div>
+        {{- end}}
+    </section>
+
+    <section class="logs">
+        <h2>改动日志</h2>
+        <div class="box">
+            <p>2026.9 — 使用 Go 语言重写全站，单二进制部署，默认文件数据源开箱即用，兼容 MySQL。</p>
+            <p>2026.4.30 — 重新构建了规范的 JSON 参数，新增 pixiv 分类。</p>
+            <p>2025.6.27 — 部署腾讯免费 CDN，同时增加 112 张图片。</p>
+            <p>2024.5.24 — 更换了域名和服务器，添加了 200 余张图片进入各分类图池。</p>
+            <p>2024.4.24 — 完善了程序后端依赖了数据库，前端更快的输出图片。</p>
+            <p>2024.4.21 — 图片数据库切换到 PGSQL，增强速度与稳定性。</p>
+            <p>2024.1.26 — 向冷门分类添加了大量图片，开放了捐助页面。</p>
+            <p>2023.11.30 — 向各分类添加本月积累图片，添加三百余张原神图片。</p>
+            <p>2023.11.1 — 输出图片格式全部改为 webp，上线 json 功能。</p>
+            <p>2023.06.17 — 逐步改为原图体积输出，增加 AI 画图专栏。</p>
+            <p>2023.05.11 — 对所有 api 优化取消了跳转，同时增加了小狐狸的图包。</p>
+            <p>2023.05.6 — 增加试验性项目自适应设备。</p>
+            <p>2023.04.21 — 更换 API 主页样式。</p>
+        </div>
+    </section>
+
+    <footer>© {{.Year}} 栗次元 API · Powered by Go</footer>
+
+    <script>
+        // 点击图片追加时间戳刷新随机图
+        document.querySelectorAll('.thumb').forEach(function (thumb) {
+            thumb.addEventListener('click', function (e) {
+                if (e.target.closest('a')) return;
+                var media = thumb.querySelector('img, video');
+                if (!media) return;
+                var base = media.dataset.src || media.getAttribute('src');
+                if (!base) return;
+                media.dataset.src = base;
+                media.src = base + (base.indexOf('?') > -1 ? '&' : '?') + '_t=' + Date.now();
+                if (media.tagName === 'VIDEO') media.play().catch(function () {});
+            });
+        });
+        // 懒加载
+        var observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                var media = entry.target;
+                media.src = (media.dataset.src || '') + '?_t=' + Date.now();
+                observer.unobserve(media);
+            });
+        }, { rootMargin: '0px 0px 100px 0px' });
+        document.querySelectorAll('[data-src]').forEach(function (m) { observer.observe(m); });
+    </script>
+</body>
+</html>

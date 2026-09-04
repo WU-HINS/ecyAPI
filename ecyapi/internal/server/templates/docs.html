@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>json 参数文档</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --bg: #f7f8fb; --panel: #ffffff; --text: #172033; --muted: #657086;
+            --line: #e4e8f0; --accent: #0f8b8d; --accent-dark: #096b6d;
+            --code-bg: #101827; --code-text: #e7edf7; --ok: #16865a;
+            --shadow: 0 18px 50px rgba(23, 32, 51, .08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top left, rgba(15,139,141,.12), transparent 30rem),
+                        linear-gradient(180deg, #fbfcff 0%, var(--bg) 42%, #eef2f7 100%);
+            color: var(--text);
+        }
+        .page { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 56px; }
+        header { display: grid; gap: 18px; padding: 24px 0 34px; }
+        .eyebrow {
+            width: fit-content; padding: 7px 11px;
+            border: 1px solid rgba(15,139,141,.22); border-radius: 999px;
+            background: rgba(15,139,141,.08); color: var(--accent-dark);
+            font-size: 13px; font-weight: 700;
+        }
+        h1 { max-width: 760px; margin: 0; font-size: clamp(34px, 6vw, 64px); line-height: 1.02; font-weight: 780; }
+        .intro { max-width: 680px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.75; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 16px; }
+        .card {
+            min-width: 0; border: 1px solid var(--line); border-radius: 8px;
+            background: rgba(255,255,255,.88); box-shadow: var(--shadow); overflow: hidden;
+        }
+        .card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 18px 0; }
+        h2 { margin: 0; font-size: 20px; line-height: 1.3; }
+        .tag { flex: 0 0 auto; border-radius: 999px; padding: 5px 9px; background: #eaf7f5; color: var(--ok); font-size: 12px; font-weight: 800; }
+        .card p { margin: 10px 18px 16px; color: var(--muted); line-height: 1.7; }
+        .codebar {
+            display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+            margin: 0 18px 18px; border-radius: 8px; background: var(--code-bg); color: var(--code-text); overflow: hidden;
+        }
+        .codebar code {
+            min-width: 0; padding: 15px 0 15px 15px; overflow-x: auto; white-space: nowrap;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 14px;
+        }
+        .section code {
+            padding: 3px 6px; border-radius: 6px; background: #eef3f7; color: #1d5261;
+            font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; white-space: nowrap;
+        }
+        button {
+            width: 42px; height: 42px; margin-right: 6px; border: 0; border-radius: 8px;
+            background: rgba(255,255,255,.1); color: #fff; cursor: pointer; font-size: 18px; line-height: 1;
+        }
+        button:hover { background: rgba(255,255,255,.18); }
+        .section { margin-top: 22px; padding: 24px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.78); }
+        .section h2 { margin-bottom: 14px; }
+        table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 8px; }
+        th, td { padding: 14px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; line-height: 1.6; }
+        th { color: #445169; font-size: 13px; font-weight: 800; background: #f2f5f9; }
+        td { color: var(--muted); }
+        td strong { color: var(--text); }
+        .sample {
+            margin: 0; padding: 18px; border-radius: 8px; overflow-x: auto;
+            background: var(--code-bg); color: var(--code-text);
+            font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; line-height: 1.65;
+        }
+        footer { margin-top: 24px; color: var(--muted); font-size: 13px; text-align: center; }
+        @media (max-width: 760px) {
+            .page { width: min(100% - 22px, 1080px); padding-top: 28px; }
+            .grid { grid-template-columns: 1fr; }
+            .section { padding: 18px; }
+            th, td { padding: 12px 9px; }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <header>
+            <div class="eyebrow">栗次元</div>
+            <h1>随机图片接口json参数文档</h1>
+            <p class="intro">通过 URL 参数选择分类，随机返回图片链接，供开发者简易调用并部署在项目中</p>
+        </header>
+
+        <section class="grid" aria-label="接口示例">
+            <article class="card">
+                <div class="card-head"><h2>单条随机</h2><span class="tag">GET</span></div>
+                <p>返回指定分类的一条随机图片链接。</p>
+                <div class="codebar"><code id="single-url">/json?pc</code><button type="button" data-copy="single-url" title="复制单条接口">⧉</button></div>
+            </article>
+            <article class="card">
+                <div class="card-head"><h2>多条随机</h2><span class="tag">GET</span></div>
+                <p>在分类参数后写数字，返回指定数量的随机图片链接。</p>
+                <div class="codebar"><code id="multi-url">/json?pc=3</code><button type="button" data-copy="multi-url" title="复制多条接口">⧉</button></div>
+            </article>
+        </section>
+
+        <section class="section">
+            <h2>参数说明</h2>
+            <table>
+                <thead><tr><th>参数</th><th>说明</th><th>示例</th></tr></thead>
+                <tbody>
+                    <tr>
+                        <td><strong>分类名</strong></td>
+                        <td>{{range .Categories}}<code>{{.}}</code> {{end}}</td>
+                        <td><code>?pc</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>数量</strong></td>
+                        <td>给分类参数赋数字值，表示返回几条。不填写时默认返回 1 条。</td>
+                        <td><code>?pc=3</code></td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section class="section">
+            <h2>返回示例</h2>
+            <pre class="sample">{
+  "code": 200,
+  "category": "pc",
+  "count": 1,
+  "data": {
+    "id": "86",
+    "link": "https://tc.alcy.cc/tc/20260121/example.webp"
+  }
+}</pre>
+        </section>
+
+        <footer></footer>
+    </main>
+
+    <script>
+        document.querySelectorAll('[data-copy]').forEach(function (button) {
+            button.addEventListener('click', async function () {
+                var target = document.getElementById(button.dataset.copy);
+                if (!target) return;
+                try {
+                    await navigator.clipboard.writeText(target.textContent.trim());
+                    var oldText = button.textContent;
+                    button.textContent = '✓';
+                    setTimeout(function () { button.textContent = oldText; }, 900);
+                } catch (e) {
+                    var sel = window.getSelection();
+                    sel.selectAllChildren(target);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据库管理</title>
+    <style>
+        body { font-family: 'Segoe UI', 'PingFang SC', sans-serif; max-width: 860px; margin: 40px auto; padding: 0 16px; color: #333; }
+        h1 { border-bottom: 2px solid #5e72e4; padding-bottom: 10px; }
+        h2 { margin-top: 34px; }
+        form { background: #f6f8ff; border-radius: 10px; padding: 22px; }
+        label { font-weight: 600; }
+        select, textarea, input[type=text] {
+            width: 100%; margin-top: 6px; padding: 9px;
+            border: 1px solid #ccd3f0; border-radius: 6px; font-size: 14px;
+        }
+        textarea { font-family: Consolas, monospace; }
+        input[type=submit] {
+            margin-top: 14px; padding: 9px 26px; background: #5e72e4; color: #fff;
+            border: 0; border-radius: 6px; font-size: 14px; cursor: pointer;
+        }
+        input[type=submit]:hover { background: #4557c9; }
+        .logout { color: #c0392b; text-decoration: none; margin-left: 16px; }
+        .err { color: #c0392b; }
+        hr { margin: 26px 0; border: 0; border-top: 1px solid #e4e8f0; }
+    </style>
+</head>
+<body>
+{{- if not .Authed}}
+    <h2>请输入密码访问页面</h2>
+    {{- if .LoginError}}<p class="err">密码错误，请重试。</p>{{end}}
+    <form method="post">
+        <input type="password" name="login_password" placeholder="密码" autocomplete="current-password" required>
+        <input type="submit" value="登录">
+    </form>
+{{- else}}
+    <h1>链接管理系统</h1>
+
+    <h2>编辑链接</h2>
+    <form action="/admin/update" method="post">
+        <label for="tableSelect">选择分类：</label>
+        <select id="tableSelect" name="table" onchange="loadTableData()">
+            {{- range .Tables}}
+            <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
+            {{- end}}
+        </select>
+        <br><br>
+        <label for="content">链接列表：</label><br>
+        <textarea id="content" name="content" rows="14" cols="60"></textarea>
+        <br><br>
+        <input type="submit" value="提交更改">
+        <a href="/admin?logout=1" class="logout">退出登录</a>
+    </form>
+
+    <hr>
+    <h2>创建新分类</h2>
+    <form action="/admin/create" method="post" onsubmit="return checkTableName()">
+        <label for="new_table_name">输入新分类名：</label>
+        <input type="text" id="new_table_name" name="new_table_name"
+               placeholder="例如：link_work，以字母开头，仅含字母/数字/下划线" required>
+        <input type="submit" value="创建分类">
+    </form>
+
+    <script>
+        function loadTableData() {
+            var table = document.getElementById('tableSelect').value;
+            fetch('/admin/data?table=' + encodeURIComponent(table))
+                .then(function (r) { return r.text(); })
+                .then(function (data) { document.getElementById('content').value = data; });
+        }
+        function checkTableName() {
+            var tableName = document.getElementById('new_table_name').value.trim();
+            var reg = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+            if (!reg.test(tableName)) {
+                alert('分类名不合法！\n1. 必须以字母开头\n2. 仅含字母、数字、下划线\n3. 长度1-64字符');
+                return false;
+            }
+            return confirm('确认创建分类：' + tableName + ' 吗？');
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+            if (document.getElementById('tableSelect').value) loadTableData();
+        });
+    </script>
+{{- end}}
+</body>
+</html>
