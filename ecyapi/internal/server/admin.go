@@ -53,10 +53,15 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 
+	s.mu.RLock()
+	baseURL := s.baseURL
+	s.mu.RUnlock()
+
 	s.renderAdmin(w, map[string]any{
 		"Authed":   true,
 		"Tables":   catList,
 		"Bindings": bindings,
+		"BaseURL":  baseURL,
 	})
 }
 
@@ -162,6 +167,28 @@ func (s *Server) handleAdminBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminResult(w, "双端栏目 /"+path+" 创建成功！")
+}
+
+// handleAdminSettings 保存站点设置：对外 API 域名。
+func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
+	}
+	raw := strings.TrimSpace(r.PostFormValue("base_url"))
+	if raw != "" && normalizeBaseURL(raw) == "" {
+		s.adminResult(w, "域名格式不正确，示例：https://api.example.com")
+		return
+	}
+	if err := s.setBaseURL(raw); err != nil {
+		s.adminResult(w, "保存失败: "+err.Error())
+		return
+	}
+	if normalizeBaseURL(raw) == "" {
+		s.adminResult(w, "已清空域名设置，链接将按当前请求自动推断。")
+		return
+	}
+	s.adminResult(w, "域名已保存，API 输出链接将使用 "+normalizeBaseURL(raw))
 }
 
 // handleAdminUpdate 旧接口保留：不再支持按链接编辑，提示使用图片管理。

@@ -12,6 +12,7 @@ type Config struct {
 	DataDir       string
 	AdminPassword string
 	MaxLinks      int
+	BaseURL       string // 对外展示的 API 域名，如 https://api.example.com；留空则按请求推断
 }
 
 func env(key, def string) string {
@@ -37,5 +38,6 @@ func Load() Config {
 		DataDir:       env("ECY_DATA_DIR", "data/categories"),
 		AdminPassword: env("ECY_ADMIN_PASSWORD", "ecy-admin"),
 		MaxLinks:      envInt("ECY_MAX_LINKS", 50),
+		BaseURL:       env("ECY_BASE_URL", ""),
 	}
 }

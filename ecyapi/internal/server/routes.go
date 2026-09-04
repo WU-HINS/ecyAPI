@@ -41,6 +41,9 @@ type endpoint struct {
 // endpointsFile 双端自适应绑定配置，存于数据目录外。
 const endpointsFile = "data/endpoints.json"
 
+// settingsFile 站点设置（对外域名等），存于数据目录外。
+const settingsFile = "data/settings.json"
+
 var defaultEndpoints = []endpoint{
 	{"ycy", "pc", "mp", "二次元自适应", "自适应设备，桌面横图、移动竖图", "image"},
 	{"moez", "moe", "moemp", "萌版自适应", "萌版图片，自适应设备", "image"},
@@ -73,6 +76,7 @@ type Server struct {
 	mu        sync.RWMutex
 	endpoints []endpoint
 	dataDir   string
+	baseURL   string // 对外展示的 API 域名（含协议），留空按请求推断
 }
 
 // New 创建服务，使用本地文件数据源。
@@ -84,6 +88,10 @@ func New(cfg config.Config) (*Server, error) {
 	admin, _ := store.NewFileAdmin(st)
 	s := &Server{cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st)}
 	if err := s.loadEndpoints(); err != nil {
+		return nil, err
+	}
+	s.baseURL = cfg.BaseURL
+	if err := s.loadSettings(); err != nil {
 		return nil, err
 	}
 	funcMap := template.FuncMap{
@@ -145,6 +153,68 @@ func (s *Server) saveEndpoints() error {
 	return os.WriteFile(endpointsFile, data, 0o644)
 }
 
+// ---------------------------------------------------------------- 站点设置持久化
+
+type settingsJSON struct {
+	BaseURL string `json:"base_url"`
+}
+
+// loadSettings 读取站点设置；文件中已保存的域名优先于环境变量。
+func (s *Server) loadSettings() error {
+	data, err := os.ReadFile(settingsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var cfg settingsJSON
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("parse %s: %w", settingsFile, err)
+	}
+	if v := normalizeBaseURL(cfg.BaseURL); v != "" {
+		s.baseURL = v
+	}
+	return nil
+}
+
+func (s *Server) saveSettings() error {
+	s.mu.RLock()
+	cfg := settingsJSON{BaseURL: s.baseURL}
+	s.mu.RUnlock()
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsFile, data, 0o644)
+}
+
+// normalizeBaseURL 规整域名：补协议、去尾部斜杠；非法输入返回空串。
+func normalizeBaseURL(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+		v = "https://" + v
+	}
+	v = strings.TrimRight(v, "/")
+	// 基本合法性：协议 + 非空主机，且不含空格/路径以外的奇怪字符
+	rest := strings.TrimPrefix(strings.TrimPrefix(v, "https://"), "http://")
+	if rest == "" || strings.ContainsAny(rest, " \t\r\n") {
+		return ""
+	}
+	return v
+}
+
+// setBaseURL 更新对外域名并持久化；传空串表示恢复按请求推断。
+func (s *Server) setBaseURL(v string) error {
+	s.mu.Lock()
+	s.baseURL = normalizeBaseURL(v)
+	s.mu.Unlock()
+	return s.saveSettings()
+}
+
 func isDefaultEndpoint(path string) bool {
 	for _, ep := range defaultEndpoints {
 		if ep.path == path {
@@ -191,6 +261,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/upload", s.handleAdminUpload)
 	mux.HandleFunc("POST /admin/delete", s.handleAdminDelete)
 	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
+	mux.HandleFunc("POST /admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("GET /admin/data", s.handleAdminData)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -266,7 +337,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 				plainError(w, "No link found.", http.StatusNotFound)
 				return
 			}
-			plainText(w, absoluteURL(r, row.Link))
+			plainText(w, s.absoluteURL(r, row.Link))
 			return
 		}
 	}
@@ -281,7 +352,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		}
 		links := make([]string, len(rows))
 		for i, row := range rows {
-			links[i] = absoluteURL(r, row.Link)
+			links[i] = s.absoluteURL(r, row.Link)
 		}
 		plainText(w, strings.Join(links, "\n"))
 		return
@@ -296,9 +367,16 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 }
 
 // absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
-func absoluteURL(r *http.Request, link string) string {
+// 优先使用管理员在后台配置的对外域名，其次环境变量，最后按请求推断。
+func (s *Server) absoluteURL(r *http.Request, link string) string {
 	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
 		return link
+	}
+	s.mu.RLock()
+	base := s.baseURL
+	s.mu.RUnlock()
+	if base != "" {
+		return base + link
 	}
 	scheme := "https"
 	if r.TLS == nil {
