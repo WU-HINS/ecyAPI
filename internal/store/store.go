@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"mime/multipart"
 	"os"
 	"path/filepath"
@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,8 +67,16 @@ type Admin interface {
 
 // ---------------------------------------------------------------- 文件实现
 
+// reloadInterval 磁盘目录重扫的节流间隔。
+// 读请求最多每 3 秒触发一次磁盘扫描；写操作（上传/删除/新建分类）会立即失效缓存。
+const reloadInterval = 3 * time.Second
+
 type fileStore struct {
 	dir string
+
+	// 惰性重载节流：lastScan 用 atomic 读，热路径无锁。
+	reloadMu sync.Mutex
+	lastScan atomic.Int64 // UnixNano
 
 	mu    sync.RWMutex
 	cache map[string][]string // category -> file names
@@ -77,9 +86,10 @@ type fileStore struct {
 // 兼容旧版 <分类名>.txt 链接文件：迁移为原始链接仍可访问（若存在）。
 func NewFileStore(dir string) (Store, error) {
 	fs := &fileStore{dir: dir, cache: map[string][]string{}}
-	if err := fs.reload(); err != nil {
+	if err := fs.scan(); err != nil {
 		return nil, err
 	}
+	fs.lastScan.Store(time.Now().UnixNano())
 	return fs, nil
 }
 
@@ -87,12 +97,14 @@ func isImageFile(name string) bool {
 	return imageExts[strings.ToLower(filepath.Ext(name))]
 }
 
-func (f *fileStore) reload() error {
+// scan 同步扫描磁盘目录并整体替换缓存。
+// 分类目录存在但为空时会保留空列表，使 Count 返回 0 而非 ErrNotFound。
+func (f *fileStore) scan() error {
 	entries, err := os.ReadDir(f.dir)
 	if err != nil {
 		return fmt.Errorf("read data dir %s: %w", f.dir, err)
 	}
-	next := map[string][]string{}
+	next := make(map[string][]string, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -113,14 +125,37 @@ func (f *fileStore) reload() error {
 			files = append(files, se.Name())
 		}
 		sort.Strings(files)
-		if len(files) > 0 {
-			next[name] = files
-		}
+		next[name] = files
 	}
 	f.mu.Lock()
 	f.cache = next
 	f.mu.Unlock()
 	return nil
+}
+
+// refreshIfStale 节流惰性重载：最多每 reloadInterval 触发一次磁盘扫描。
+// 并发下用双重检查保证同时只有一个 goroutine 扫描；扫描持锁时间仅数毫秒，
+// 读路径绝大多数时候只比较一次时间戳，零阻塞。
+func (f *fileStore) refreshIfStale() {
+	if time.Since(time.Unix(0, f.lastScan.Load())) < reloadInterval {
+		return
+	}
+	f.reloadMu.Lock()
+	defer f.reloadMu.Unlock()
+	if time.Since(time.Unix(0, f.lastScan.Load())) < reloadInterval {
+		return
+	}
+	_ = f.scan()
+	f.lastScan.Store(time.Now().UnixNano())
+}
+
+// reload 同步强制重载（写路径使用）。
+func (f *fileStore) reload() error {
+	f.reloadMu.Lock()
+	defer f.reloadMu.Unlock()
+	err := f.scan()
+	f.lastScan.Store(time.Now().UnixNano())
+	return err
 }
 
 func (f *fileStore) categoryFiles(category string) ([]string, bool) {
@@ -132,9 +167,7 @@ func (f *fileStore) categoryFiles(category string) ([]string, bool) {
 
 func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 	_ = ctx
-	if err := f.reload(); err != nil { // 每次重载，热更新目录
-		return nil, err
-	}
+	f.refreshIfStale() // 节流重载，热更新目录
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	names := make([]string, 0, len(f.cache))
@@ -154,19 +187,33 @@ func (f *fileStore) Count(ctx context.Context, category string) (int, error) {
 	return len(files), nil
 }
 
+// Random 随机抽取 limit 个文件名（不放回）。
+// 使用 rand/v2 全局 ChaCha8 随机源，自动按 goroutine 分片，无锁竞争；
+// 且仅对部分元素做 Fisher-Yates 洗牌，开销 O(limit) 而非 O(n)。
 func (f *fileStore) Random(ctx context.Context, category string, limit int) ([]Row, error) {
 	_ = ctx
 	files, ok := f.categoryFiles(category)
 	if !ok {
 		return nil, ErrNotFound
 	}
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	perm := rng.Perm(len(files))
-	if limit > len(perm) {
-		limit = len(perm)
+	n := len(files)
+	if n == 0 {
+		return nil, ErrNotFound
+	}
+	if limit > n {
+		limit = n
+	}
+	// 对 n-limit+1 .. n-1 做部分洗牌，选中前 limit 个。
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	for i := 0; i < limit; i++ {
+		j := i + rand.IntN(n-i)
+		idx[i], idx[j] = idx[j], idx[i]
 	}
 	rows := make([]Row, 0, limit)
-	for _, i := range perm[:limit] {
+	for _, i := range idx[:limit] {
 		rows = append(rows, Row{ID: files[i], Link: "/pic/" + category + "/" + files[i]})
 	}
 	return rows, nil
@@ -255,7 +302,7 @@ func (f *fileStore) SaveFile(ctx context.Context, category, filename string, r i
 		if _, err := os.Stat(filepath.Join(dir, name)); os.IsNotExist(err) {
 			break
 		}
-		name = fmt.Sprintf("%s_%d%s", base, rand.Intn(1<<30), ext)
+		name = fmt.Sprintf("%s_%d%s", base, rand.IntN(1<<30), ext)
 	}
 	dst, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 	if err != nil {
