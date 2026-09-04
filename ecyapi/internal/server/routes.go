@@ -4,10 +4,13 @@ package server
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -35,7 +38,10 @@ type endpoint struct {
 	kind   string // image / video
 }
 
-var endpoints = []endpoint{
+// endpointsFile 双端自适应绑定配置，存于数据目录外。
+const endpointsFile = "data/endpoints.json"
+
+var defaultEndpoints = []endpoint{
 	{"ycy", "pc", "mp", "二次元自适应", "自适应设备，桌面横图、移动竖图", "image"},
 	{"moez", "moe", "moemp", "萌版自适应", "萌版图片，自适应设备", "image"},
 	{"ysz", "ys", "ysmp", "原神自适应", "原神图片，自适应设备", "image"},
@@ -59,34 +65,26 @@ var mobileRe = regexp.MustCompile(`(?i)mobile|android|iphone|ipad|ipod|touch|sam
 
 // Server HTTP 服务。
 type Server struct {
-	cfg      config.Config
-	st       store.Store
-	admin    store.Admin
-	tpl      *template.Template
-	sessions sync.Map // token -> expiry
+	cfg       config.Config
+	st        store.Store
+	admin     store.Admin
+	tpl       *template.Template
+	sessions  sync.Map // token -> expiry
+	mu        sync.RWMutex
+	endpoints []endpoint
+	dataDir   string
 }
 
-// New 创建服务。dbDSN 非空时使用 MySQL，否则文件数据源。
-func New(cfg config.Config, dbDSN string) (*Server, error) {
-	var (
-		st    store.Store
-		admin store.Admin
-		err   error
-	)
-	if dbDSN != "" {
-		st, err = store.NewMySQLStore(dbDSN)
-		if err != nil {
-			log.Printf("mysql 不可用，降级为文件数据源: %v", err)
-		} else {
-			admin, _ = store.NewMySQLAdmin(st)
-		}
+// New 创建服务，使用本地文件数据源。
+func New(cfg config.Config) (*Server, error) {
+	st, err := store.NewFileStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
 	}
-	if st == nil {
-		st, err = store.NewFileStore(cfg.DataDir)
-		if err != nil {
-			return nil, err
-		}
-		admin, _ = store.NewFileAdmin(st)
+	admin, _ := store.NewFileAdmin(st)
+	s := &Server{cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st)}
+	if err := s.loadEndpoints(); err != nil {
+		return nil, err
 	}
 	funcMap := template.FuncMap{
 		"Add": func(a, b int) int { return a + b },
@@ -95,7 +93,85 @@ func New(cfg config.Config, dbDSN string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, st: st, admin: admin, tpl: tpl}, nil
+	s.tpl = tpl
+	return s, nil
+}
+
+// ---------------------------------------------------------------- 双端绑定持久化
+
+type endpointJSON struct {
+	Path   string `json:"path"`
+	Desk   string `json:"desk"`
+	Mobile string `json:"mobile"`
+	Label  string `json:"label"`
+	Desc   string `json:"desc"`
+	Kind   string `json:"kind"`
+}
+
+func (s *Server) loadEndpoints() error {
+	s.endpoints = append([]endpoint(nil), defaultEndpoints...)
+	data, err := os.ReadFile(endpointsFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var customs []endpointJSON
+	if err := json.Unmarshal(data, &customs); err != nil {
+		return fmt.Errorf("parse %s: %w", endpointsFile, err)
+	}
+	for _, c := range customs {
+		if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) && store.IsValidIdentifier(c.Mobile) {
+			s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, "image"})
+		}
+	}
+	return nil
+}
+
+func (s *Server) saveEndpoints() error {
+	s.mu.RLock()
+	var customs []endpointJSON
+	for _, ep := range s.endpoints {
+		if !isDefaultEndpoint(ep.path) {
+			customs = append(customs, endpointJSON{ep.path, ep.desk, ep.mobile, ep.label, ep.desc, ep.kind})
+		}
+	}
+	s.mu.RUnlock()
+	data, err := json.MarshalIndent(customs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(endpointsFile, data, 0o644)
+}
+
+func isDefaultEndpoint(path string) bool {
+	for _, ep := range defaultEndpoints {
+		if ep.path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// addBinding 新增双端自适应绑定栏目。
+func (s *Server) addBinding(path, desk, mobile, label, desc string) error {
+	if !store.IsValidIdentifier(path) {
+		return fmt.Errorf("栏目路径不合法")
+	}
+	if !store.IsValidIdentifier(desk) || !store.IsValidIdentifier(mobile) {
+		return fmt.Errorf("分类名不合法")
+	}
+	s.mu.Lock()
+	for _, ep := range s.endpoints {
+		if ep.path == path {
+			s.mu.Unlock()
+			return fmt.Errorf("栏目 %s 已存在", path)
+		}
+	}
+	s.endpoints = append(s.endpoints, endpoint{path, desk, mobile, label, desc, "image"})
+	s.mu.Unlock()
+	return s.saveEndpoints()
 }
 
 // Handler 返回路由根处理器。
@@ -106,11 +182,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs", s.handleDocs)
 	mux.HandleFunc("GET /img", s.handleGallery)
 	mux.HandleFunc("GET /json", s.handleJSON)
+	mux.HandleFunc("GET /pic/{category}/{file}", s.handlePic)
 	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 	mux.HandleFunc("GET /admin", s.handleAdmin)
 	mux.HandleFunc("POST /admin", s.handleAdmin)
 	mux.HandleFunc("POST /admin/update", s.handleAdminUpdate)
 	mux.HandleFunc("POST /admin/create", s.handleAdminCreate)
+	mux.HandleFunc("POST /admin/upload", s.handleAdminUpload)
+	mux.HandleFunc("POST /admin/delete", s.handleAdminDelete)
+	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
 	mux.HandleFunc("GET /admin/data", s.handleAdminData)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -118,6 +198,22 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	return logMiddleware(mux)
+}
+
+// handlePic 提供本地图片访问：/pic/{分类}/{文件名}
+func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
+	category := r.PathValue("category")
+	file := r.PathValue("file")
+	if !store.IsValidIdentifier(category) || file == "" || strings.ContainsAny(file, "/\\") {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.dataDir, category, file)
+	if _, err := os.Stat(path); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
 }
 
 func logMiddleware(next http.Handler) http.Handler {
@@ -145,7 +241,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.renderHome(w, r)
 		return
 	}
-	for _, ep := range endpoints {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, ep := range s.endpoints {
 		if ep.path == path {
 			s.renderLink(w, r, ep)
 			return
@@ -168,7 +266,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 				plainError(w, "No link found.", http.StatusNotFound)
 				return
 			}
-			plainText(w, row.Link)
+			plainText(w, absoluteURL(r, row.Link))
 			return
 		}
 	}
@@ -183,7 +281,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		}
 		links := make([]string, len(rows))
 		for i, row := range rows {
-			links[i] = row.Link
+			links[i] = absoluteURL(r, row.Link)
 		}
 		plainText(w, strings.Join(links, "\n"))
 		return
@@ -194,7 +292,23 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, cleanHeader(rows[0].Link), http.StatusFound)
+	http.Redirect(w, r, rows[0].Link, http.StatusFound)
+}
+
+// absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
+func absoluteURL(r *http.Request, link string) string {
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		return link
+	}
+	scheme := "https"
+	if r.TLS == nil {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		} else {
+			scheme = "http"
+		}
+	}
+	return scheme + "://" + r.Host + link
 }
 
 func positiveParam(r *http.Request, name string, def, max int) int {
@@ -207,10 +321,6 @@ func positiveParam(r *http.Request, name string, def, max int) int {
 		return max
 	}
 	return n
-}
-
-func cleanHeader(v string) string {
-	return strings.NewReplacer("\r", "", "\n", "").Replace(strings.TrimSpace(v))
 }
 
 func plainText(w http.ResponseWriter, body string) {

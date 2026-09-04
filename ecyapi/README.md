@@ -1,28 +1,35 @@
 # ecyAPI — 栗次元随机图片 API（Go 版）
 
-从原 PHP 版（lcytuAPI）参考重写的 Go 语言实现。零第三方依赖，单二进制部署。
+零第三方依赖，单二进制部署。图片数据源为项目本地目录，不再依赖 MySQL。
 
 ## 功能
 
-- `GET /` — API 发布主页（分类卡片预览、改动日志）
+- `GET /` — API 发布主页（分类卡片预览）
 - `GET /docs` — JSON 参数文档页
-- `GET /img` — 图库页（分类切换、懒加载、大图预览、右键复制链接）
+- `GET /img` — 图库页（分类切换、懒加载、大图预览）
 - `GET /json?{分类}` — 动态 JSON 接口，`?pc=3` 返回多条
-- `GET /{分类}` — 302 跳转到随机图片，如 `/pc`、`/ycy`（移动端自动切竖图）
+- `GET /{分类}` — 302 跳转到随机图片，如 `/pc`（移动端自动切竖图）
 - `GET /{分类}?json` — 返回纯文本链接；`?json=86` 按序号取图
-- `GET /admin` — 后台管理（密码登录、分类表编辑、新建分类）
+- `GET /pic/{分类}/{文件名}` — 本地图片访问
+- `GET /admin` — 后台管理（密码登录、图片预览/上传/删除、新建分类、双端栏目绑定）
 
 ## 数据源
 
-默认使用 `data/categories/*.txt` 文本文件（每行一条图片链接），开箱即用。
-也支持 MySQL（表结构 `id INT AUTO_INCREMENT PRIMARY KEY, link VARCHAR(1000) NOT NULL`），
-通过配置文件或环境变量开启：
+图片文件直接存放在项目目录中，以分类名为子文件夹：
 
-```bash
-ECY_DB_HOST=127.0.0.1 ECY_DB_USER=u ECY_DB_PASSWORD=p ECY_DB_NAME=db ./ecyapi
+```
+data/categories/
+├── pc/          # PC 横图
+│   ├── a1.webp
+│   └── a2.webp
+├── mp/          # 移动竖图
+│   └── ...
+└── {分类名}/    # 新建分类即在后台创建同名子目录
 ```
 
-未配置数据库时自动降级为文件数据源。
+支持的文件类型：`jpg / jpeg / png / gif / webp / bmp / avif / svg / mp4 / webm`。
+
+双端自适应栏目绑定保存在 `data/endpoints.json`，由后台自动写入。
 
 ## 配置
 
@@ -31,18 +38,48 @@ ECY_DB_HOST=127.0.0.1 ECY_DB_USER=u ECY_DB_PASSWORD=p ECY_DB_NAME=db ./ecyapi
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `ECY_ADDR` | `:8080` | 监听地址 |
-| `ECY_DATA_DIR` | `data/categories` | 文本数据源目录 |
+| `ECY_DATA_DIR` | `data/categories` | 图片数据目录 |
 | `ECY_ADMIN_PASSWORD` | `ecy-admin` | 后台密码（务必修改） |
 | `ECY_MAX_LINKS` | `50` | 单次请求最大返回条数 |
-| `ECY_DB_HOST/PORT/USER/PASSWORD/NAME/CHARSET` | 空 | MySQL 连接信息 |
 
 ## 运行
 
 ```bash
-cd ecyapi && go run ./cmd/server
+go run ./cmd/server
 # 打包
 go build -o ecyapi ./cmd/server && ./ecyapi
 ```
+
+## JSON 接口
+
+```bash
+curl 'http://localhost:8080/json?pc'
+```
+
+```json
+{
+  "code": 200,
+  "category": "pc",
+  "count": 1,
+  "data": {
+    "id": "a1.webp",
+    "link": "http://localhost:8080/pic/pc/a1.webp"
+  }
+}
+```
+
+多条：`/json?pc=3`，返回 `data` 数组与 `links` 数组。
+
+## 后台
+
+访问 `/admin`：
+
+1. 选择分类 → 预览该分类全部图片
+2. 勾选图片可单张或批量删除
+3. 选择文件可批量上传新增图片
+4. 创建新分类（自动创建同名目录）
+5. 新增双端自适应栏目：分别选择 PC 端分类与移动端分类，写入新栏目路径后生效，
+   桌面访问走 PC 分类、移动端访问自动切到移动分类
 
 ## 分类
 

@@ -6,24 +6,18 @@ import (
 	"net/http"
 
 	"ecyapi/internal/config"
-	"ecyapi/internal/store"
 	"ecyapi/internal/server"
 )
 
 func main() {
 	cfg := config.Load()
 
-	dbDSN := ""
-	if cfg.DB.Enabled() {
-		dbDSN = store.DSN(cfg.DB.Host, cfg.DB.Port, cfg.DB.User, cfg.DB.Password, cfg.DB.Name, cfg.DB.Charset)
-	}
-
-	srv, err := server.New(cfg, dbDSN)
+	srv, err := server.New(cfg)
 	if err != nil {
 		log.Fatalf("初始化失败: %v", err)
 	}
 
-	log.Printf("ecyAPI 监听 %s（数据源: %s）", cfg.Addr, dataSource(cfg, dbDSN))
+	log.Printf("ecyAPI 监听 %s（数据源: 本地目录 %s）", cfg.Addr, cfg.DataDir)
 	httpServer := &http.Server{
 		Addr:    cfg.Addr,
 		Handler: srv.Handler(),
@@ -31,11 +25,4 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("服务退出: %v", err)
 	}
-}
-
-func dataSource(cfg config.Config, dbDSN string) string {
-	if dbDSN == "" {
-		return "文件目录 " + cfg.DataDir
-	}
-	return "MySQL " + cfg.DB.Host
 }
