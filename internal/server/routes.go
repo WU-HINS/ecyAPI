@@ -129,21 +129,20 @@ type endpointJSON struct {
 func (s *Server) loadEndpoints() error {
 	s.endpoints = append([]endpoint(nil), defaultEndpoints...)
 	data, err := os.ReadFile(endpointsFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	if err == nil {
+		var customs []endpointJSON
+		if err := json.Unmarshal(data, &customs); err != nil {
+			return fmt.Errorf("parse %s: %w", endpointsFile, err)
 		}
+		for _, c := range customs {
+			if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) && store.IsValidIdentifier(c.Mobile) {
+				s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, "image"})
+			}
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	var customs []endpointJSON
-	if err := json.Unmarshal(data, &customs); err != nil {
-		return fmt.Errorf("parse %s: %w", endpointsFile, err)
-	}
-	for _, c := range customs {
-		if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) && store.IsValidIdentifier(c.Mobile) {
-			s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, "image"})
-		}
-	}
+	// endpoints.json 不存在时走默认列表，索引同样需要构建，否则分类跳转全部 404。
 	s.epIndex = endpointIndex(s.endpoints)
 	return nil
 }
