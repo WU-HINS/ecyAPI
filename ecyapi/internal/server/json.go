@@ -85,8 +85,9 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 	dataRows := make([]rowJSON, len(rows))
 	links := make([]string, 0, len(rows))
 	for i, row := range rows {
-		dataRows[i] = rowJSON{ID: row.ID, Link: row.Link}
-		links = append(links, row.Link)
+		abs := absoluteURL(r, row.Link)
+		dataRows[i] = rowJSON{ID: row.ID, Link: abs}
+		links = append(links, abs)
 	}
 
 	payload := map[string]any{

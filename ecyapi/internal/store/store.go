@@ -1,13 +1,16 @@
-// Package store 提供随机图片链接的数据访问：MySQL 优先，文件目录兜底。
+// Package store 提供随机图片的数据访问：以本地目录为唯一数据源。
+//
+// 数据目录结构：data/categories/<分类名>/<图片文件>
+// 图片不再以外部链接存储，而是图片文件本身存放在项目目录中。
 package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
-	"net/url"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,36 +18,50 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "github.com/go-sql-driver/mysql" // MySQL 驱动（纯 Go，无 cgo）
 )
 
-// ErrNotFound 表示分类不存在或分类内无有效链接。
+// ErrNotFound 表示分类不存在或分类内无有效图片。
 var ErrNotFound = errors.New("not found")
 
-// Row 一条图片记录。
-type Row struct {
-	ID   string
-	Link string
+// imageExts 允许作为图片/动图资源访问的扩展名。
+var imageExts = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+	".webp": true, ".bmp": true, ".avif": true, ".svg": true,
+	".mp4": true, ".webm": true,
 }
 
 var identifierRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
-// IsValidIdentifier 校验表名/分类名，防注入。
+// IsValidIdentifier 校验分类名，防路径穿越。
 func IsValidIdentifier(name string) bool { return identifierRe.MatchString(name) }
+
+// IsValidIdentifierName 供其它包复用的分类名校验。
+func IsValidIdentifierName(name string) bool { return identifierRe.MatchString(name) }
+
+// Row 一条图片记录。Link 为站内可访问的图片地址。
+type Row struct {
+	ID   string // 文件名
+	Link string // 站内访问地址，如 /pic/pc/xxx.webp
+}
 
 // Store 统一数据访问接口。
 type Store interface {
-	// Categories 返回分类名列表。
 	Categories(ctx context.Context) ([]string, error)
-	// Count 返回分类内有效链接数。
 	Count(ctx context.Context, category string) (int, error)
-	// Random 返回 limit 条随机记录。
 	Random(ctx context.Context, category string, limit int) ([]Row, error)
-	// ByIndex 按序号（1 起）返回一条记录。
 	ByIndex(ctx context.Context, category string, index int) (Row, error)
-	// Links 返回分类内全部链接（图库/后台用）。
 	Links(ctx context.Context, category string) ([]Row, error)
+}
+
+// Admin 后台管理写操作接口。
+type Admin interface {
+	Store
+	// CreateCategory 新建分类目录。
+	CreateCategory(ctx context.Context, name string) error
+	// SaveFile 保存上传文件到分类，返回保存后的文件名。
+	SaveFile(ctx context.Context, category, filename string, r io.Reader) (string, error)
+	// DeleteFiles 批量删除分类内文件。
+	DeleteFiles(ctx context.Context, category string, names []string) (int, error)
 }
 
 // ---------------------------------------------------------------- 文件实现
@@ -53,16 +70,21 @@ type fileStore struct {
 	dir string
 
 	mu    sync.RWMutex
-	cache map[string][]string // category -> links
+	cache map[string][]string // category -> file names
 }
 
-// NewFileStore 使用目录内 <category>.txt（每行一条链接）。
+// NewFileStore 使用 data/categories/<分类名>/ 子目录存放图片文件。
+// 兼容旧版 <分类名>.txt 链接文件：迁移为原始链接仍可访问（若存在）。
 func NewFileStore(dir string) (Store, error) {
 	fs := &fileStore{dir: dir, cache: map[string][]string{}}
 	if err := fs.reload(); err != nil {
 		return nil, err
 	}
 	return fs, nil
+}
+
+func isImageFile(name string) bool {
+	return imageExts[strings.ToLower(filepath.Ext(name))]
 }
 
 func (f *fileStore) reload() error {
@@ -72,25 +94,27 @@ func (f *fileStore) reload() error {
 	}
 	next := map[string][]string{}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
+		if !e.IsDir() {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".txt")
+		name := e.Name()
 		if !IsValidIdentifier(name) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(f.dir, e.Name()))
+		sub, err := os.ReadDir(filepath.Join(f.dir, name))
 		if err != nil {
 			continue
 		}
-		var links []string
-		for _, line := range strings.Split(string(data), "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				links = append(links, line)
+		var files []string
+		for _, se := range sub {
+			if se.IsDir() || !isImageFile(se.Name()) {
+				continue
 			}
+			files = append(files, se.Name())
 		}
-		if len(links) > 0 {
-			next[name] = links
+		sort.Strings(files)
+		if len(files) > 0 {
+			next[name] = files
 		}
 	}
 	f.mu.Lock()
@@ -99,16 +123,16 @@ func (f *fileStore) reload() error {
 	return nil
 }
 
-func (f *fileStore) categoryLinks(category string) ([]string, bool) {
+func (f *fileStore) categoryFiles(category string) ([]string, bool) {
 	f.mu.RLock()
-	links, ok := f.cache[category]
+	files, ok := f.cache[category]
 	f.mu.RUnlock()
-	return links, ok
+	return files, ok
 }
 
 func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 	_ = ctx
-	if err := f.reload(); err != nil { // 每次重载，热更新文件
+	if err := f.reload(); err != nil { // 每次重载，热更新目录
 		return nil, err
 	}
 	f.mu.RLock()
@@ -123,27 +147,27 @@ func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 
 func (f *fileStore) Count(ctx context.Context, category string) (int, error) {
 	_ = ctx
-	links, ok := f.categoryLinks(category)
+	files, ok := f.categoryFiles(category)
 	if !ok {
 		return 0, ErrNotFound
 	}
-	return len(links), nil
+	return len(files), nil
 }
 
 func (f *fileStore) Random(ctx context.Context, category string, limit int) ([]Row, error) {
 	_ = ctx
-	links, ok := f.categoryLinks(category)
+	files, ok := f.categoryFiles(category)
 	if !ok {
 		return nil, ErrNotFound
 	}
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	perm := rng.Perm(len(links))
+	perm := rng.Perm(len(files))
 	if limit > len(perm) {
 		limit = len(perm)
 	}
 	rows := make([]Row, 0, limit)
 	for _, i := range perm[:limit] {
-		rows = append(rows, Row{Link: links[i]})
+		rows = append(rows, Row{ID: files[i], Link: "/pic/" + category + "/" + files[i]})
 	}
 	return rows, nil
 }
@@ -153,205 +177,26 @@ func (f *fileStore) ByIndex(ctx context.Context, category string, index int) (Ro
 	if index < 1 {
 		return Row{}, ErrNotFound
 	}
-	links, ok := f.categoryLinks(category)
-	if !ok || index > len(links) {
+	files, ok := f.categoryFiles(category)
+	if !ok || index > len(files) {
 		return Row{}, ErrNotFound
 	}
-	return Row{Link: links[index-1]}, nil
+	name := files[index-1]
+	return Row{ID: name, Link: "/pic/" + category + "/" + name}, nil
 }
 
 func (f *fileStore) Links(ctx context.Context, category string) ([]Row, error) {
 	_ = ctx
-	links, ok := f.categoryLinks(category)
+	files, ok := f.categoryFiles(category)
 	if !ok {
 		return nil, ErrNotFound
 	}
-	rows := make([]Row, 0, len(links))
-	for i, l := range links {
-		rows = append(rows, Row{ID: fmt.Sprintf("%d", i+1), Link: l})
+	rows := make([]Row, 0, len(files))
+	for _, name := range files {
+		rows = append(rows, Row{ID: name, Link: "/pic/" + category + "/" + name})
 	}
 	return rows, nil
 }
-
-// ---------------------------------------------------------------- MySQL 实现
-
-type mysqlStore struct {
-	db *sql.DB
-}
-
-// NewMySQLStore 使用 MySQL（表结构：id 自增主键、link VARCHAR）。
-func NewMySQLStore(dsn string) (Store, error) {
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(16)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &mysqlStore{db: db}, nil
-}
-
-// DSN 由各字段拼装 MySQL DSN。
-func DSN(host string, port int, user, password, name, charset string) string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&parseTime=false&timeout=3s&readTimeout=5s",
-		user, url.QueryEscape(password), host, port, name, charset)
-}
-
-func (m *mysqlStore) tableExists(ctx context.Context, table string) (bool, error) {
-	var one int
-	err := m.db.QueryRowContext(ctx,
-		"SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1",
-		table).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-func (m *mysqlStore) Categories(ctx context.Context) ([]string, error) {
-	rows, err := m.db.QueryContext(ctx,
-		`SELECT DISTINCT table_name FROM information_schema.columns
-		 WHERE table_schema = DATABASE() AND column_name = 'link' ORDER BY table_name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		if IsValidIdentifier(name) {
-			names = append(names, name)
-		}
-	}
-	return names, rows.Err()
-}
-
-func (m *mysqlStore) count(ctx context.Context, table string) (int, error) {
-	exists, err := m.tableExists(ctx, table)
-	if err != nil {
-		return 0, err
-	}
-	if !exists {
-		return 0, ErrNotFound
-	}
-	var n int
-	err = m.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM `%s` WHERE link IS NOT NULL AND link <> ''", table)).Scan(&n)
-	if err != nil {
-		return 0, err
-	}
-	if n == 0 {
-		return 0, ErrNotFound
-	}
-	return n, nil
-}
-
-func (m *mysqlStore) Random(ctx context.Context, category string, limit int) ([]Row, error) {
-	if !IsValidIdentifier(category) {
-		return nil, ErrNotFound
-	}
-	total, err := m.count(ctx, category)
-	if err != nil {
-		return nil, err
-	}
-	if limit > total {
-		limit = total
-	}
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	offsetSet := map[int]bool{}
-	for len(offsetSet) < limit {
-		offsetSet[rng.Intn(total)] = true
-	}
-	offsets := make([]int, 0, len(offsetSet))
-	for o := range offsetSet {
-		offsets = append(offsets, o)
-	}
-	sort.Ints(offsets)
-
-	rows := make([]Row, 0, limit)
-	for _, off := range offsets {
-		var id, link string
-		err := m.db.QueryRowContext(ctx,
-			fmt.Sprintf("SELECT id, link FROM `%s` WHERE link IS NOT NULL AND link <> '' LIMIT 1 OFFSET ?", category),
-			off).Scan(&id, &link)
-		if err == nil && link != "" {
-			rows = append(rows, Row{ID: id, Link: link})
-		}
-	}
-	if len(rows) == 0 {
-		return nil, ErrNotFound
-	}
-	return rows, nil
-}
-
-func (m *mysqlStore) Count(ctx context.Context, category string) (int, error) {
-	if !IsValidIdentifier(category) {
-		return 0, ErrNotFound
-	}
-	return m.count(ctx, category)
-}
-
-func (m *mysqlStore) ByIndex(ctx context.Context, category string, index int) (Row, error) {
-	if !IsValidIdentifier(category) || index < 1 {
-		return Row{}, ErrNotFound
-	}
-	exists, err := m.tableExists(ctx, category)
-	if err != nil || !exists {
-		return Row{}, ErrNotFound
-	}
-	var id, link string
-	err = m.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT id, link FROM `%s` WHERE link IS NOT NULL AND link <> '' LIMIT 1 OFFSET ?", category),
-		index-1).Scan(&id, &link)
-	if err != nil || link == "" {
-		return Row{}, ErrNotFound
-	}
-	return Row{ID: id, Link: link}, nil
-}
-
-func (m *mysqlStore) Links(ctx context.Context, category string) ([]Row, error) {
-	if !IsValidIdentifier(category) {
-		return nil, ErrNotFound
-	}
-	exists, err := m.tableExists(ctx, category)
-	if err != nil || !exists {
-		return nil, ErrNotFound
-	}
-	rows, err := m.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT id, link FROM `%s` WHERE link IS NOT NULL AND link <> '' ORDER BY id ASC", category))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Row
-	for rows.Next() {
-		var id, link string
-		if err := rows.Scan(&id, &link); err != nil {
-			return nil, err
-		}
-		out = append(out, Row{ID: id, Link: link})
-	}
-	return out, rows.Err()
-}
-
-// ---------------------------------------------------------------- 后台写操作
-
-// Admin 后台管理写操作接口。
-type Admin interface {
-	Store
-	// UpsertLinks 全量覆盖分类链接。
-	UpsertLinks(ctx context.Context, category string, links []string) error
-	// CreateTable 新建分类表（仅 MySQL）。
-	CreateTable(ctx context.Context, name string) error
-}
-
-type adminFile struct{ *fileStore }
 
 // NewFileAdmin 包装文件存储以支持后台写操作。
 func NewFileAdmin(s Store) (Admin, error) {
@@ -359,98 +204,113 @@ func NewFileAdmin(s Store) (Admin, error) {
 	if !ok {
 		return nil, errors.New("store is not file backed")
 	}
-	return &adminFile{fs}, nil
+	return fs, nil
 }
 
-func (a *adminFile) UpsertLinks(ctx context.Context, category string, links []string) error {
-	_ = ctx
-	if !IsValidIdentifier(category) {
-		return errors.New("invalid category name")
-	}
-	var b strings.Builder
-	for _, l := range links {
-		l = strings.TrimSpace(l)
-		if l != "" {
-			b.WriteString(l)
-			b.WriteByte('\n')
-		}
-	}
-	if err := os.WriteFile(filepath.Join(a.dir, category+".txt"), []byte(b.String()), 0o644); err != nil {
-		return err
-	}
-	return a.reload()
-}
-
-func (a *adminFile) CreateTable(ctx context.Context, name string) error {
+func (f *fileStore) CreateCategory(ctx context.Context, name string) error {
 	_ = ctx
 	if !IsValidIdentifier(name) {
-		return errors.New("invalid table name")
+		return errors.New("invalid category name")
 	}
-	path := filepath.Join(a.dir, name+".txt")
+	path := filepath.Join(f.dir, name)
 	if _, err := os.Stat(path); err == nil {
-		return errors.New("category already exists")
+		return errors.New("分类已存在")
 	}
-	return os.WriteFile(path, nil, 0o644)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	return f.reload()
 }
 
-type adminMySQL struct{ *mysqlStore }
+var unsafeCharsRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
-// NewMySQLAdmin 包装 MySQL 存储以支持后台写操作。
-func NewMySQLAdmin(s Store) (Admin, error) {
-	ms, ok := s.(*mysqlStore)
-	if !ok {
-		return nil, errors.New("store is not mysql backed")
+// sanitizeFilename 清洗上传文件名，去掉路径与危险字符。
+func sanitizeFilename(name string) string {
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	name = unsafeCharsRe.ReplaceAllString(name, "_")
+	if name == "" || name == "." || name == ".." {
+		name = "file"
 	}
-	return &adminMySQL{ms}, nil
+	return name
 }
 
-func (a *adminMySQL) UpsertLinks(ctx context.Context, category string, links []string) error {
+func (f *fileStore) SaveFile(ctx context.Context, category, filename string, r io.Reader) (string, error) {
+	_ = ctx
 	if !IsValidIdentifier(category) {
-		return errors.New("invalid category name")
+		return "", errors.New("invalid category name")
 	}
-	exists, err := a.tableExists(ctx, category)
-	if err != nil || !exists {
-		return errors.New("table not found")
+	filename = sanitizeFilename(filename)
+	if !isImageFile(filename) {
+		return "", fmt.Errorf("不支持的文件类型: %s", filename)
 	}
-	tx, err := a.db.BeginTx(ctx, nil)
+	dir := filepath.Join(f.dir, category)
+	if _, err := os.Stat(dir); err != nil {
+		return "", errors.New("分类不存在")
+	}
+	// 重名时追加随机后缀
+	name := filename
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	for i := 0; i < 20; i++ {
+		if _, err := os.Stat(filepath.Join(dir, name)); os.IsNotExist(err) {
+			break
+		}
+		name = fmt.Sprintf("%s_%d%s", base, rand.Intn(1<<30), ext)
+	}
+	dst, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer tx.Rollback()
-	table := "`" + category + "`"
-	if _, err := tx.ExecContext(ctx, "DELETE FROM "+table); err != nil {
-		return err
+	defer dst.Close()
+	if _, err := io.Copy(dst, r); err != nil {
+		os.Remove(filepath.Join(dir, name))
+		return "", err
 	}
-	stmt, err := tx.PrepareContext(ctx, "INSERT INTO "+table+" (link) VALUES (?)")
+	if err := f.reload(); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// SaveUploaded 便捷方法：保存 multipart 文件。
+func (f *fileStore) SaveUploaded(ctx context.Context, category string, fh *multipart.FileHeader) (string, error) {
+	src, err := fh.Open()
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer stmt.Close()
-	for _, l := range links {
-		if l = strings.TrimSpace(l); l != "" {
-			if _, err := stmt.ExecContext(ctx, l); err != nil {
-				return err
-			}
+	defer src.Close()
+	return f.SaveFile(ctx, category, fh.Filename, src)
+}
+
+func (f *fileStore) DeleteFiles(ctx context.Context, category string, names []string) (int, error) {
+	_ = ctx
+	if !IsValidIdentifier(category) {
+		return 0, errors.New("invalid category name")
+	}
+	dir := filepath.Join(f.dir, category)
+	if _, err := os.Stat(dir); err != nil {
+		return 0, errors.New("分类不存在")
+	}
+	deleted := 0
+	for _, name := range names {
+		name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+		if name == "" || name == "." || name == ".." || !isImageFile(name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err == nil {
+			deleted++
 		}
 	}
-	return tx.Commit()
+	if err := f.reload(); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
 }
 
-func (a *adminMySQL) CreateTable(ctx context.Context, name string) error {
-	if !IsValidIdentifier(name) {
-		return errors.New("invalid table name")
+// Dir 返回数据根目录（用于静态文件服务）。
+func Dir(s Store) string {
+	if fs, ok := s.(*fileStore); ok {
+		return fs.dir
 	}
-	exists, err := a.tableExists(ctx, name)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return errors.New("table already exists")
-	}
-	_, err = a.db.ExecContext(ctx, fmt.Sprintf(
-		"CREATE TABLE `%s` (id INT AUTO_INCREMENT PRIMARY KEY, link VARCHAR(1000) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", name))
-	return err
+	return ""
 }
-
-// IsValidIdentifierName 供其它包复用的分类名校验。
-func IsValidIdentifierName(name string) bool { return identifierRe.MatchString(name) }
