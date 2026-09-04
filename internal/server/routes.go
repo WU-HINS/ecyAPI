@@ -41,6 +41,15 @@ type endpoint struct {
 // endpointsFile 双端自适应绑定配置，存于数据目录外。
 const endpointsFile = "data/endpoints.json"
 
+// endpointIndex 以路径为键的端点索引，O(1) 查找。
+func endpointIndex(eps []endpoint) map[string]endpoint {
+	m := make(map[string]endpoint, len(eps))
+	for _, ep := range eps {
+		m[ep.path] = ep
+	}
+	return m
+}
+
 // settingsFile 站点设置（对外域名等），存于数据目录外。
 const settingsFile = "data/settings.json"
 
@@ -75,8 +84,18 @@ type Server struct {
 	sessions  sync.Map // token -> expiry
 	mu        sync.RWMutex
 	endpoints []endpoint
+	epIndex   map[string]endpoint // path -> endpoint，与 endpoints 同步维护
 	dataDir   string
 	baseURL   string // 对外展示的 API 域名（含协议），留空按请求推断
+
+	// redirectCache 缓存 302 随机跳转目标，短 TTL 内命中直接返回，
+	// 避免高并发下每请求一次全部分类扫描/洗牌。
+	redirectCache sync.Map // key: category+"|"+ua-mobile -> redirectEntry
+}
+
+type redirectEntry struct {
+	target  string
+	expires time.Time
 }
 
 // New 创建服务，使用本地文件数据源。
@@ -134,6 +153,7 @@ func (s *Server) loadEndpoints() error {
 			s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, "image"})
 		}
 	}
+	s.epIndex = endpointIndex(s.endpoints)
 	return nil
 }
 
@@ -240,6 +260,7 @@ func (s *Server) addBinding(path, desk, mobile, label, desc string) error {
 		}
 	}
 	s.endpoints = append(s.endpoints, endpoint{path, desk, mobile, label, desc, "image"})
+	s.epIndex = endpointIndex(s.endpoints)
 	s.mu.Unlock()
 	return s.saveEndpoints()
 }
@@ -280,15 +301,29 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := filepath.Join(s.dataDir, category, file)
-	if _, err := os.Stat(path); err != nil {
+	f, err := os.Open(path)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, path)
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	// 图片内容稳定：公开缓存 7 天，配合 CDN 可把源站压力降到接近零。
+	w.Header().Set("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")
+	http.ServeContent(w, r, file, fi.ModTime(), f)
 }
 
 func logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 图片等大流量静态请求跳过日志，避免标准库 log 互斥锁成为热点。
+		if strings.HasPrefix(r.URL.Path, "/pic/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Microsecond))
@@ -312,13 +347,19 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.renderHome(w, r)
 		return
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, ep := range s.endpoints {
-		if ep.path == path {
-			s.renderLink(w, r, ep)
+	// 快路径：直接 302 的随机跳转优先查缓存，命中则无需锁内遍历 endpoints。
+	if r.URL.RawQuery == "" {
+		if target := s.cachedRedirect(r, path); target != "" {
+			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
+	}
+	s.mu.RLock()
+	ep, ok := s.epIndex[path]
+	s.mu.RUnlock()
+	if ok {
+		s.renderLink(w, r, ep)
+		return
 	}
 	http.NotFound(w, r)
 }
@@ -363,7 +404,33 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, rows[0].Link, http.StatusFound)
+	target := rows[0].Link
+	s.storeRedirect(r, ep.path, target)
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// cachedRedirect 读取随机跳转缓存。TTL 很短（约 3s），
+// 足以在高并发下削掉热点分类的重复取随机开销，同时保持“随机”体验。
+func (s *Server) cachedRedirect(r *http.Request, path string) string {
+	isMobile := mobileRe.MatchString(r.UserAgent())
+	key := path + "|" + strconv.FormatBool(isMobile)
+	if v, ok := s.redirectCache.Load(key); ok {
+		e := v.(redirectEntry)
+		if time.Now().Before(e.expires) {
+			return e.target
+		}
+		s.redirectCache.Delete(key)
+	}
+	return ""
+}
+
+func (s *Server) storeRedirect(r *http.Request, path, target string) {
+	isMobile := mobileRe.MatchString(r.UserAgent())
+	key := path + "|" + strconv.FormatBool(isMobile)
+	s.redirectCache.Store(key, redirectEntry{
+		target:  target,
+		expires: time.Now().Add(3 * time.Second),
+	})
 }
 
 // absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
