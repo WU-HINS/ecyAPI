@@ -87,15 +87,6 @@ type Server struct {
 	epIndex   map[string]endpoint // path -> endpoint，与 endpoints 同步维护
 	dataDir   string
 	baseURL   string // 对外展示的 API 域名（含协议），留空按请求推断
-
-	// redirectCache 缓存 302 随机跳转目标，短 TTL 内命中直接返回，
-	// 避免高并发下每请求一次全部分类扫描/洗牌。
-	redirectCache sync.Map // key: category+"|"+ua-mobile -> redirectEntry
-}
-
-type redirectEntry struct {
-	target  string
-	expires time.Time
 }
 
 // New 创建服务，使用本地文件数据源。
@@ -347,13 +338,6 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.renderHome(w, r)
 		return
 	}
-	// 快路径：直接 302 的随机跳转优先查缓存，命中则无需锁内遍历 endpoints。
-	if r.URL.RawQuery == "" {
-		if target := s.cachedRedirect(r, path); target != "" {
-			http.Redirect(w, r, target, http.StatusFound)
-			return
-		}
-	}
 	s.mu.RLock()
 	ep, ok := s.epIndex[path]
 	s.mu.RUnlock()
@@ -404,33 +388,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	target := rows[0].Link
-	s.storeRedirect(r, ep.path, target)
-	http.Redirect(w, r, target, http.StatusFound)
-}
-
-// cachedRedirect 读取随机跳转缓存。TTL 很短（约 3s），
-// 足以在高并发下削掉热点分类的重复取随机开销，同时保持“随机”体验。
-func (s *Server) cachedRedirect(r *http.Request, path string) string {
-	isMobile := mobileRe.MatchString(r.UserAgent())
-	key := path + "|" + strconv.FormatBool(isMobile)
-	if v, ok := s.redirectCache.Load(key); ok {
-		e := v.(redirectEntry)
-		if time.Now().Before(e.expires) {
-			return e.target
-		}
-		s.redirectCache.Delete(key)
-	}
-	return ""
-}
-
-func (s *Server) storeRedirect(r *http.Request, path, target string) {
-	isMobile := mobileRe.MatchString(r.UserAgent())
-	key := path + "|" + strconv.FormatBool(isMobile)
-	s.redirectCache.Store(key, redirectEntry{
-		target:  target,
-		expires: time.Now().Add(3 * time.Second),
-	})
+	http.Redirect(w, r, rows[0].Link, http.StatusFound)
 }
 
 // absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
