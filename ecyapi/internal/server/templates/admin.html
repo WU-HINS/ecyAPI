@@ -85,6 +85,19 @@
     </form>
 
     <hr>
+    <h2>站点设置</h2>
+    <form action="/admin/settings" method="post">
+        <label for="base_url">API 对外域名：</label>
+        <input type="text" id="base_url" name="base_url" style="min-width:320px"
+               value="{{.BaseURL}}" placeholder="例如：https://api.example.com，留空则按请求自动推断">
+        <input type="submit" value="保存域名">
+        <p style="color:#667;font-size:13px;margin-top:6px">
+            保存后，JSON 接口与纯文本接口输出的图片链接将统一使用该域名；清空并保存即恢复自动推断。
+            {{- if .BaseURL}}<br>当前生效：<strong>{{.BaseURL}}</strong>{{- end}}
+        </p>
+    </form>
+
+    <hr>
     <h2>新增双端自适应栏目</h2>
     <form action="/admin/binding" method="post" onsubmit="return checkBinding()">
         <div class="row">
