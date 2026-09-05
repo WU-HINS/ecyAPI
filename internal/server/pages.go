@@ -25,21 +25,14 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	cards := make([]homeCard, 0, len(endpoints))
 	for _, ep := range endpoints {
-		if ep.path == "aimp" {
-			continue // 与 ai 自适应重复，主页不单列
-		}
-		c := homeCard{
+		cards = append(cards, homeCard{
 			Path:       ep.path,
 			Label:      ep.label,
 			Desc:       ep.desc,
 			Kind:       ep.kind,
 			PreviewURL: "/" + ep.path,
 			URL:        s.absoluteURL(r, "/"+ep.path),
-		}
-		if ep.path == "acg" {
-			c.Desc = "测试项目，还在不断修正"
-		}
-		cards = append(cards, c)
+		})
 	}
 	type homeData struct {
 		Title  string
