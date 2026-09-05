@@ -21,21 +21,45 @@ $:
         - name: ready
           script: echo "Cloud development environment is ready"
 
-  # 点击仓库分支页「docker」按钮触发：构建镜像并推送到 CNB Docker 制品库
+  # 点击仓库分支详情页「docker」按钮触发：构建镜像并推送到 CNB Docker 制品库
   web_trigger_docker:
     - runner: { cpus: 2 }
+      docker:
+        image: golang:1.24
       services:
         - docker
       stages:
-        - name: set image tag
-          script: echo -n "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:$(date +%Y%m%d%H%M%S)-${CNB_COMMIT_SHORT}"
+        - name: 计算下一个版本号
+          script: |
+            # 查询现有 docker 制品标签，取最大 semver，patch +1；无版本则从 0.0.1 开始
+            API="${CNB_API_ENDPOINT}/${CNB_REPO_SLUG}/-/packages/docker/${CNB_REPO_NAME}/-/tags?page=1&page_size=100"
+            BODY="$(curl -sS -o /tmp/tags.json -w '%{http_code}' \
+              -H "Authorization: Bearer ${CNB_TOKEN}" \
+              -H "accept: application/json" \
+              "$API" || true)"
+            case "$BODY" in
+              200) TAGS="$(cat /tmp/tags.json)" ;;
+              404) TAGS="" ;;
+              *) echo "查询版本号失败: HTTP $BODY" >&2; exit 1 ;;
+            esac
+            LATEST="$(printf '%s' "$TAGS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1 || true)"
+            if [ -z "$LATEST" ]; then
+              NEXT="0.0.1"
+            else
+              MAJOR="$(printf '%s' "$LATEST" | cut -d. -f1)"
+              MINOR="$(printf '%s' "$LATEST" | cut -d. -f2)"
+              PATCH="$(printf '%s' "$LATEST" | cut -d. -f3)"
+              NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+            fi
+            echo "当前最大版本: ${LATEST:-无}，下一个版本: ${NEXT}" >&2
+            printf '%s' "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${NEXT}"
           exports:
             info: IMAGE_TAG
         - name: docker build
-          script: docker build -t $IMAGE_TAG .
+          script: docker build -t "$IMAGE_TAG" .
         - name: docker push
-          script: docker push $IMAGE_TAG
+          script: docker push "$IMAGE_TAG"
         - name: also update latest
           script:
-            - docker tag $IMAGE_TAG "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
+            - docker tag "$IMAGE_TAG" "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
             - docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"

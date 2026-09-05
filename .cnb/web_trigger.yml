@@ -1,5 +1,5 @@
 branch:
   - buttons:
       - name: docker
-        description: 打包 Docker 镜像并推送到制品库（版本号自动生成）
+        description: 打包 Docker 镜像并推送到制品库（版本号从 0.0.1 自动后延）
         event: web_trigger_docker
