@@ -2,10 +2,13 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"ecyapi/internal/store"
 )
 
 // handleAdmin 后台：登录 + 图片管理 + 新建分类 + 双端绑定。
@@ -299,7 +302,20 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	s.adminResult(w, "链接编辑已停用，请使用图片上传/删除管理。")
 }
 
-// handleAdminData 返回某分类图片列表（JSON，供后台预览加载）。
+// adminDataPageSize 后台图片预览每页数量。
+const adminDataPageSize = 40
+
+// adminDataPage 后台预览分页响应。
+type adminDataPage struct {
+	Items      []store.Row `json:"items"`
+	Page       int         `json:"page"`
+	PageSize   int         `json:"page_size"`
+	Total      int         `json:"total"`
+	TotalPages int         `json:"total_pages"`
+}
+
+// handleAdminData 返回某分类图片列表（JSON，分页输出，供后台预览加载）。
+// 查询参数：table 分类名，page 页码（默认 1，从 1 开始）。
 func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 	if !s.sessionValid(r) {
 		http.Error(w, "未授权", http.StatusUnauthorized)
@@ -315,9 +331,38 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Table not found.", http.StatusNotFound)
 		return
 	}
+	total := len(rows)
+	totalPages := (total + adminDataPageSize - 1) / adminDataPageSize
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * adminDataPageSize
+	end := start + adminDataPageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	items := rows[start:end]
+	if items == nil {
+		items = []store.Row{}
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	writeRowsJSON(w, rows)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(adminDataPage{
+		Items:      items,
+		Page:       page,
+		PageSize:   adminDataPageSize,
+		Total:      total,
+		TotalPages: totalPages,
+	})
 }
 
 func storeIsValid(name string) bool {
