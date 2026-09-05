@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{.Title}}</title>
-    <meta name="keywords" content="个人,分享,api,随机图床API,二次元,随机图,壁纸,萌图,ai图,自适应,原神,风景,横图,竖图,白底,头像,高清,背景图片,手机壁纸,图片url,随机图片,栗次元">
+    <meta name="keywords" content="个人,分享,api,随机图床API,随机图,壁纸,横图,竖图,高清,背景图片,手机壁纸,图片url,随机图片">
     <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
     <style>
         :root {
@@ -199,6 +199,9 @@
     </section>
 
     <section class="cards">
+        {{- if not .Cards}}
+        <p style="grid-column:1/-1;text-align:center;color:#888;padding:40px 0;">还没有任何分类栏目，请到 <a href="/admin">后台管理</a> 创建</p>
+        {{- end}}
         {{- range .Cards}}
         <div class="card">
             <div class="thumb">

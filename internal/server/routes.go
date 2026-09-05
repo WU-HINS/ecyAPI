@@ -53,26 +53,7 @@ func endpointIndex(eps []endpoint) map[string]endpoint {
 // settingsFile 站点设置（对外域名等），存于数据目录外。
 const settingsFile = "data/settings.json"
 
-var defaultEndpoints = []endpoint{
-	{"ycy", "pc", "mp", "二次元自适应", "自适应设备，桌面横图、移动竖图", "image"},
-	{"moez", "moe", "moemp", "萌版自适应", "萌版图片，自适应设备", "image"},
-	{"ysz", "ys", "ysmp", "原神自适应", "原神图片，自适应设备", "image"},
-	{"pc", "pc", "", "PC横图", "桌面端横版壁纸", "image"},
-	{"mp", "mp", "", "移动竖图", "手机竖版壁纸", "image"},
-	{"moe", "moe", "", "萌版横图", "萌系横版壁纸", "image"},
-	{"moemp", "moemp", "", "萌版竖图", "萌系竖版壁纸", "image"},
-	{"ai", "ai", "aimp", "AI自适应", "AI 画图，自适应设备", "image"},
-	{"aimp", "aimp", "", "AI竖图", "AI 竖版壁纸", "image"},
-	{"ys", "ys", "", "原神横图", "原神横版壁纸", "image"},
-	{"ysmp", "ysmp", "", "原神竖图", "原神竖版壁纸", "image"},
-	{"fj", "fj", "", "风景横图", "风景横版壁纸", "image"},
-	{"bd", "bd", "", "白底横图", "白底素材图", "image"},
-	{"tx", "tx", "", "头像方图", "方形头像图", "image"},
-	{"lai", "lai", "", "七濑胡桃", "七濑胡桃表情包", "image"},
-	{"xhl", "xhl", "", "小狐狸", "小狐狸图包", "image"},
-	{"acg", "acg", "", "ACG动图", "随机 mp4 动图", "video"},
-}
-
+// mobileRe 匹配移动端 UA，用于双端自适应栏目分流。
 var mobileRe = regexp.MustCompile(`(?i)mobile|android|iphone|ipad|ipod|touch|samsung|windows phone`)
 
 // Server HTTP 服务。
@@ -164,7 +145,8 @@ type endpointJSON struct {
 }
 
 func (s *Server) loadEndpoints() error {
-	s.endpoints = append([]endpoint(nil), defaultEndpoints...)
+	// 不再内置任何默认栏目：所有栏目均由管理员在后台创建，从 endpoints.json 加载。
+	s.endpoints = []endpoint{}
 	data, err := os.ReadFile(endpointsFile)
 	if err == nil {
 		customs, order, perr := parseEndpointsFile(data)
@@ -175,7 +157,11 @@ func (s *Server) loadEndpoints() error {
 			// mobile 允许为空（单端栏目），非空才校验。
 			if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) &&
 				(c.Mobile == "" || store.IsValidIdentifier(c.Mobile)) {
-				s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, "image"})
+				kind := c.Kind
+				if kind != "video" {
+					kind = "image"
+				}
+				s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, kind})
 			}
 		}
 		if len(order) > 0 {
@@ -184,7 +170,7 @@ func (s *Server) loadEndpoints() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	// endpoints.json 不存在时走默认列表，索引同样需要构建，否则分类跳转全部 404。
+	// endpoints.json 不存在时栏目为空（主页无卡片、跳转接口 404），由管理员在后台创建。
 	s.epIndex = endpointIndex(s.endpoints)
 	return nil
 }
@@ -262,9 +248,7 @@ func marshalEndpointsLocked(eps []endpoint) ([]byte, error) {
 	}{}
 	for _, ep := range eps {
 		payload.Order = append(payload.Order, ep.path)
-		if !isDefaultEndpoint(ep.path) {
-			payload.Items = append(payload.Items, endpointJSON{ep.path, ep.desk, ep.mobile, ep.label, ep.desc, ep.kind})
-		}
+		payload.Items = append(payload.Items, endpointJSON{ep.path, ep.desk, ep.mobile, ep.label, ep.desc, ep.kind})
 	}
 	return json.MarshalIndent(payload, "", "  ")
 }
@@ -421,15 +405,6 @@ func (s *Server) setBaseURL(v string) error {
 	s.baseURL = normalizeBaseURL(v)
 	s.mu.Unlock()
 	return s.saveSettings()
-}
-
-func isDefaultEndpoint(path string) bool {
-	for _, ep := range defaultEndpoints {
-		if ep.path == path {
-			return true
-		}
-	}
-	return false
 }
 
 // addBinding 新增双端自适应绑定栏目（必须同时绑定 PC 与移动端分类）。
