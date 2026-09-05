@@ -16,5 +16,4 @@ RUN mkdir -p /app/data/categories && chown -R ecy:ecy /app
 USER ecy
 ENV ECY_ADDR=:8080 ECY_DATA_DIR=/app/data/categories
 EXPOSE 8080
-VOLUME ["/app/data"]
 ENTRYPOINT ["/app/ecyapi"]
