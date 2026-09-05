@@ -86,6 +86,9 @@ type fileStore struct {
 // 兼容旧版 <分类名>.txt 链接文件：迁移为原始链接仍可访问（若存在）。
 func NewFileStore(dir string) (Store, error) {
 	fs := &fileStore{dir: dir, cache: map[string][]string{}}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
+	}
 	if err := fs.scan(); err != nil {
 		return nil, err
 	}
