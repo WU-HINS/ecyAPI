@@ -1,21 +1,43 @@
 # ecyAPI — 栗次元随机图片 API（Go 版）
 
-零第三方依赖，单二进制部署。图片数据源为项目本地目录，不再依赖 MySQL。
+零第三方依赖、单二进制部署的随机图片服务。图片数据源为项目本地目录，无需 MySQL，开箱即用。
 
-## 功能
+面向二次元场景：提供随机壁纸、萌图、原神、AI 绘图、风景等分类，支持桌面/移动端自适应切换，内置网页图库与后台管理。
 
-- `GET /` — API 发布主页（分类卡片预览）
-- `GET /docs` — JSON 参数文档页
-- `GET /img` — 图库页（分类切换、懒加载、大图预览）
-- `GET /json?{分类}` — 动态 JSON 接口，`?pc=3` 返回多条
-- `GET /{分类}` — 302 跳转到随机图片，如 `/pc`（移动端自动切竖图）
-- `GET /{分类}?json` — 返回纯文本链接；`?json=86` 按序号取图
-- `GET /pic/{分类}/{文件名}` — 本地图片访问
-- `GET /admin` — 后台管理（密码登录、图片预览/上传/删除、新建分类、双端栏目绑定）
+## 特性
+
+- **零依赖**：纯 Go 标准库实现，无 MySQL / Redis 等外部依赖
+- **单二进制**：`go build` 一次打包即可部署，模板与静态资源内嵌
+- **本地文件数据源**：图片以分类子目录存放，热更新（节流重扫，无需重启）
+- **双端自适应**：桌面访问走横图分类，移动端 UA 自动切换竖图分类
+- **高并发友好**：面向万人并发优化，详见「性能设计」
+- **内置后台**：网页化管理图片、分类、双端栏目、站点设置与改动日志
+
+## 快速开始
+
+```bash
+# 准备数据目录（分类名 = 子目录名）
+mkdir -p data/categories/pc
+
+# 运行
+go run ./cmd/server
+
+# 打包为单二进制
+go build -o ecyapi ./cmd/server
+./ecyapi
+```
+
+默认监听 `:8080`，访问：
+
+- `http://localhost:8080/` — 发布主页
+- `http://localhost:8080/docs` — JSON 参数文档
+- `http://localhost:8080/img` — 图库
+- `http://localhost:8080/admin` — 后台管理
+- `http://localhost:8080/healthz` — 健康检查
 
 ## 数据源
 
-图片文件直接存放在项目目录中，以分类名为子文件夹：
+图片文件直接存放在项目目录，以分类名为子文件夹：
 
 ```
 data/categories/
@@ -27,35 +49,32 @@ data/categories/
 └── {分类名}/    # 新建分类即在后台创建同名子目录
 ```
 
-支持的文件类型：`jpg / jpeg / png / gif / webp / bmp / avif / svg / mp4 / webm`。
+- 数据根目录默认为 `data/categories`，可通过 `ECY_DATA_DIR` 修改
+- 分类名须符合 `[A-Za-z][A-Za-z0-9_]{0,63}`（首字符为字母，防路径穿越）
+- 支持的文件类型：`jpg / jpeg / png / gif / webp / bmp / avif / svg / mp4 / webm`
+- 读请求每 3 秒节流重扫一次目录，热更新无需重启；上传/删除/新建分类后立即生效
 
-双端自适应栏目绑定保存在 `data/endpoints.json`，由后台自动写入。
+双端自适应栏目的绑定关系保存在 `data/endpoints.json`，站点设置保存在 `data/settings.json`，改动日志保存在 `data/logs.json`，均由后台自动写入（均已在 `.gitignore` 中忽略）。
 
-## 配置
+## 接口说明
 
-环境变量（均带默认值）：
+### 随机跳转接口
 
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `ECY_ADDR` | `:8080` | 监听地址 |
-| `ECY_DATA_DIR` | `data/categories` | 图片数据目录 |
-| `ECY_ADMIN_PASSWORD` | `ecy-admin` | 后台密码（务必修改） |
-| `ECY_MAX_LINKS` | `50` | 单次请求最大返回条数 |
-| `ECY_BASE_URL` | 空 | API 对外域名（如 `https://api.example.com`），JSON/纯文本输出链接使用；后台「站点设置」中亦可修改，后台保存的值优先 |
+| 接口 | 说明 |
+| --- | --- |
+| `GET /{分类}` | 302 跳转到该分类的一张随机图片，如 `/pc` |
+| `GET /{分类}?json` | 返回纯文本随机链接，默认 1 条；`?json&quantity=5` 返回 5 条 |
+| `GET /{分类}?json=86` | 按序号（文件名字典序，从 1 起）返回第 86 张图片链接 |
 
-## 运行
+自适应栏目（如 `/ycy`、`/moez`、`/ysz`、`/ai`）会检测请求 UA：移动端自动切到对应竖图分类，桌面端走横图分类。
 
-```bash
-go run ./cmd/server
-# 打包
-go build -o ecyapi ./cmd/server && ./ecyapi
-```
-
-## JSON 接口
+### JSON 接口
 
 ```bash
 curl 'http://localhost:8080/json?pc'
 ```
+
+单条返回：
 
 ```json
 {
@@ -69,23 +88,138 @@ curl 'http://localhost:8080/json?pc'
 }
 ```
 
-多条：`/json?pc=3`，返回 `data` 数组与 `links` 数组。
+多条：`/json?pc=3`
 
-## 后台
+```json
+{
+  "code": 200,
+  "category": "pc",
+  "count": 3,
+  "data": [
+    { "id": "a1.webp", "link": "http://localhost:8080/pic/pc/a1.webp" },
+    { "id": "a2.webp", "link": "http://localhost:8080/pic/pc/a2.webp" },
+    { "id": "a3.webp", "link": "http://localhost:8080/pic/pc/a3.webp" }
+  ],
+  "links": [
+    "http://localhost:8080/pic/pc/a1.webp",
+    "http://localhost:8080/pic/pc/a2.webp",
+    "http://localhost:8080/pic/pc/a3.webp"
+  ]
+}
+```
 
-访问 `/admin`：
+**分类参数别名**（等价）：`table` / `type` / `category` / 直接以分类名为键。
 
-1. 选择分类 → 预览该分类全部图片
-2. 勾选图片可单张或批量删除
-3. 选择文件可批量上传新增图片
-4. 创建新分类（自动创建同名目录）
-5. 站点设置：填写 API 对外域名，接口输出链接统一使用该域名，留空按请求自动推断
-6. 新增双端自适应栏目：分别选择 PC 端分类与移动端分类，写入新栏目路径后生效，
-   桌面访问走 PC 分类、移动端访问自动切到移动分类
+```bash
+curl 'http://localhost:8080/json?table=pc'
+curl 'http://localhost:8080/json?type=pc'
+curl 'http://localhost:8080/json?category=pc'
+```
 
-## 分类
+**数量参数别名**（等价）：`num` / `count` / `limit` / `n` / 直接给分类参数赋数字值。
 
-pc 横图 / mp 竖图 / moe 萌版横图 / moemp 萌版竖图 / moez 萌版自适应 /
-ai AI 横图 / aimp AI 竖图 / ys 原神横图 / ysmp 原神竖图 / ysz 原神自适应 /
-fj 风景横图 / bd 白底横图 / tx 头像方图 / lai 七濑胡桃 / xhl 小狐狸 /
-acg 动图视频 / ycy 二次元自适应
+```bash
+curl 'http://localhost:8080/json?pc=5'
+curl 'http://localhost:8080/json?pc&num=5'
+curl 'http://localhost:8080/json?category=pc&count=5'
+```
+
+- 未指定数量时默认返回 1 条
+- 单次返回上限由 `ECY_MAX_LINKS` 控制（默认 50）
+- 参数非法或分类不存在时返回「你好世界」页
+
+### 图片访问
+
+`GET /pic/{分类}/{文件名}` 直接访问本地图片，响应带 `Cache-Control: public, max-age=604800`（7 天），配合 CDN 可将源站压力降到接近零。
+
+### 健康检查
+
+`GET /healthz` 返回 `ok`。
+
+## 后台管理
+
+访问 `/admin`，默认密码 `ecy-admin`（**生产环境务必通过 `ECY_ADMIN_PASSWORD` 修改**）。支持：
+
+1. **图片管理**：选择分类 → 预览全部图片 → 勾选批量删除 / 多文件批量上传
+2. **新建分类**：创建同名子目录，并自动上线首页卡片与 `/分类` 跳转接口
+3. **双端栏目绑定**：分别选择 PC 端分类与移动端分类，写入新栏目路径后生效
+4. **站点设置**：配置对外 API 域名，接口输出链接统一使用该域名，留空则按请求自动推断
+5. **首页文案**：编辑 slogan、分享语与 ICP 备案号
+6. **改动日志**：在首页「更新日志」增删条目
+7. **栏目排序**：拖拽调整首页卡片与栏目的展示顺序
+
+## 配置
+
+环境变量（均带默认值）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ECY_ADDR` | `:8080` | HTTP 监听地址 |
+| `ECY_DATA_DIR` | `data/categories` | 图片数据根目录 |
+| `ECY_ADMIN_PASSWORD` | `ecy-admin` | 后台登录密码，务必修改 |
+| `ECY_MAX_LINKS` | `50` | 单次请求最大返回条数 |
+| `ECY_BASE_URL` | 空 | 对外域名（如 `https://api.example.com`），JSON/纯文本输出链接使用；后台「站点设置」保存的值优先于该环境变量 |
+
+## 内置分类
+
+| 路径 | 名称 | 说明 |
+| --- | --- | --- |
+| `pc` | PC 横图 | 桌面端横版壁纸 |
+| `mp` | 移动竖图 | 手机竖版壁纸 |
+| `ycy` | 二次元自适应 | pc / mp 双端自动切换 |
+| `moe` | 萌版横图 | 萌系横版壁纸 |
+| `moemp` | 萌版竖图 | 萌系竖版壁纸 |
+| `moez` | 萌版自适应 | moe / moemp 双端自动切换 |
+| `ai` | AI 自适应 | ai / aimp 双端自动切换 |
+| `aimp` | AI 竖图 | AI 竖版壁纸 |
+| `ys` | 原神横图 | 原神横版壁纸 |
+| `ysmp` | 原神竖图 | 原神竖版壁纸 |
+| `ysz` | 原神自适应 | ys / ysmp 双端自动切换 |
+| `fj` | 风景横图 | 风景横版壁纸 |
+| `bd` | 白底横图 | 白底素材图 |
+| `tx` | 头像方图 | 方形头像图 |
+| `lai` | 七濑胡桃 | 七濑胡桃表情包 |
+| `xhl` | 小狐狸 | 小狐狸图包 |
+| `acg` | ACG 动图 | 随机 mp4 动图 |
+
+> 以上为默认栏目，实际可用分类以数据目录为准；后台新增的分类会自动出现在主页与跳转接口中。
+
+## 性能设计
+
+面向万人并发场景，关键路径做了针对性优化：
+
+- **节流重扫**：磁盘目录每 3 秒最多扫描一次，读路径多数时候只比较一次时间戳，零阻塞；写操作立即失效缓存
+- **无锁随机**：使用 `math/rand/v2` 全局 ChaCha8 随机源，自动按 goroutine 分片，无锁竞争
+- **部分洗牌**：只对前 `limit` 个元素做 Fisher-Yates 洗牌，复杂度 O(limit) 而非 O(n)
+- **静态资源免日志**：`/pic/` 大流量请求跳过访问日志，避免标准库 log 互斥锁成为热点
+- **超时与限流**：HTTP 服务配置读/写/空闲超时，防止慢客户端耗尽连接
+- **CDN 友好**：图片响应带 7 天强缓存头
+
+## 开发
+
+```bash
+# 运行测试（含并发正确性与基准测试）
+go test ./...
+
+# 本地构建
+go build ./...
+go vet ./...
+```
+
+CI（`.cnb.yml`）：`main` 分支 push 时自动执行 `go build ./...` 与 `go vet ./...`。
+
+## 目录结构
+
+```
+.
+├── cmd/server/            # 服务入口
+├── internal/
+│   ├── config/            # 环境变量配置加载
+│   ├── server/            # HTTP 路由、处理器、模板与静态资源
+│   └── store/             # 本地文件数据源（随机取图 / 分类 / 上传 / 删除）
+└── data/                  # 运行数据（图片、绑定、设置，默认不入库）
+```
+
+## License
+
+无（如需使用请遵循仓库约定）。
