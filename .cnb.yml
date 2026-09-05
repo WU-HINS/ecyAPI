@@ -52,13 +52,12 @@ $:
               NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
             fi
             echo "当前最大版本: ${LATEST:-无}，下一个版本: ${NEXT}" >&2
-            printf '%s' "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${NEXT}"
           exports:
             info: IMAGE_TAG
         - name: docker build
-          script: docker build -t "$IMAGE_TAG" .
+          script: docker build -t "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${IMAGE_TAG}" .
         - name: docker push
-          script: docker push "$IMAGE_TAG"
+          script: docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:${IMAGE_TAG}"
         - name: also update latest
           script:
             - docker tag "$IMAGE_TAG" "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
