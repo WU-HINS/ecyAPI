@@ -20,3 +20,22 @@ $:
       stages:
         - name: ready
           script: echo "Cloud development environment is ready"
+
+  # 点击仓库分支页「docker」按钮触发：构建镜像并推送到 CNB Docker 制品库
+  web_trigger_docker:
+    - runner: { cpus: 2 }
+      services:
+        - docker
+      stages:
+        - name: set image tag
+          script: echo -n "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:$(date +%Y%m%d%H%M%S)-${CNB_COMMIT_SHORT}"
+          exports:
+            info: IMAGE_TAG
+        - name: docker build
+          script: docker build -t $IMAGE_TAG .
+        - name: docker push
+          script: docker push $IMAGE_TAG
+        - name: also update latest
+          script:
+            - docker tag $IMAGE_TAG "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
+            - docker push "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
