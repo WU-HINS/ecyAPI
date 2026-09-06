@@ -178,18 +178,37 @@ func (s *Server) loadEndpoints() error {
 // parseEndpointsFile 兼容两种持久化格式：
 // 1) 新版对象 {"order":[...],"items":[...]}；2) 旧版纯数组 [...]。
 func parseEndpointsFile(data []byte) ([]endpointJSON, []string, error) {
+	// 先探测顶层 JSON 类型：数组走旧版纯数组格式，对象走新版 {"order","items"} 格式。
+	var probe any
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil, nil, err
+	}
+	if arr, ok := probe.([]any); ok {
+		customs := make([]endpointJSON, 0, len(arr))
+		if err := json.Unmarshal(data, &customs); err != nil {
+			return nil, nil, err
+		}
+		return customs, nil, nil
+	}
+	if _, ok := probe.(map[string]any); !ok {
+		return nil, nil, fmt.Errorf("unexpected top-level JSON type %T", probe)
+	}
 	var payload struct {
 		Order []string       `json:"order"`
 		Items []endpointJSON `json:"items"`
 	}
-	if err := json.Unmarshal(data, &payload); err == nil && payload.Items != nil {
-		return payload.Items, payload.Order, nil
-	}
-	var customs []endpointJSON
-	if err := json.Unmarshal(data, &customs); err != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, nil, err
 	}
-	return customs, nil, nil
+	if payload.Items != nil {
+		return payload.Items, payload.Order, nil
+	}
+	// 对象但无 items：兼容历史写坏的单对象（{"path":...}），视为单条栏目。
+	var single endpointJSON
+	if err := json.Unmarshal(data, &single); err == nil && single.Path != "" {
+		return []endpointJSON{single}, nil, nil
+	}
+	return nil, nil, fmt.Errorf("missing required field \"items\"")
 }
 
 // applyEndpointOrder 按 order 重排：order 中已知路径按序排前，其余保持原相对顺序排后。
