@@ -253,6 +253,31 @@ func (s *Server) reorderEndpoints(order []string) error {
 	return os.WriteFile(endpointsFile, data, 0o644)
 }
 
+// removeEndpointsByCategory 删除引用了指定分类的所有栏目（PC 端或移动端命中即删），
+// 并持久化到 endpoints.json。返回被下线的栏目路径列表。
+func (s *Server) removeEndpointsByCategory(category string) ([]string, error) {
+	s.mu.Lock()
+	removed := make([]string, 0, 4)
+	next := s.endpoints[:0]
+	for _, ep := range s.endpoints {
+		if ep.desk == category || ep.mobile == category {
+			removed = append(removed, ep.path)
+			continue
+		}
+		next = append(next, ep)
+	}
+	s.endpoints = next
+	s.epIndex = endpointIndex(s.endpoints)
+	s.mu.Unlock()
+	if len(removed) == 0 {
+		return removed, nil
+	}
+	if err := s.saveEndpoints(); err != nil {
+		return removed, err
+	}
+	return removed, nil
+}
+
 func (s *Server) saveEndpoints() error {
 	s.mu.RLock()
 	data, err := marshalEndpointsLocked(s.endpoints)
@@ -482,6 +507,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/create", s.handleAdminCreate)
 	mux.HandleFunc("POST /admin/upload", s.handleAdminUpload)
 	mux.HandleFunc("POST /admin/delete", s.handleAdminDelete)
+	mux.HandleFunc("POST /admin/category/delete", s.handleAdminCategoryDelete)
 	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
 	mux.HandleFunc("POST /admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("POST /admin/content", s.handleAdminContent)

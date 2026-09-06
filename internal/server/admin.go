@@ -293,6 +293,48 @@ func (s *Server) handleAdminEndpointsReorder(w http.ResponseWriter, r *http.Requ
 	fmt.Fprint(w, `{"ok":true}`)
 }
 
+// handleAdminCategoryDelete 删除整个分类目录（含全部图片），并同步下线引用该分类的栏目。
+// 须携带 confirm_delete=1 才执行，防止误触。
+func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) || s.admin == nil {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.adminResult(w, "参数错误")
+		return
+	}
+	category := strings.TrimSpace(r.PostFormValue("category"))
+	if !storeIsValid(category) {
+		s.adminResult(w, "分类名不合法")
+		return
+	}
+	if r.PostFormValue("confirm_delete") != "1" {
+		s.adminResult(w, "请先勾选确认复选框再删除")
+		return
+	}
+	// 先统计图片数量用于结果提示
+	count, _ := s.st.Count(r.Context(), category)
+	// 下线引用该分类的首页栏目
+	removed, err := s.removeEndpointsByCategory(category)
+	if err != nil {
+		s.adminResult(w, "栏目下线失败: "+err.Error())
+		return
+	}
+	// 删除分类目录及全部图片
+	if err := s.admin.DeleteCategory(r.Context(), category); err != nil {
+		s.adminResult(w, "删除失败: "+err.Error())
+		return
+	}
+	msg := fmt.Sprintf("分类 %s 已删除（含 %d 张图片）。", category, count)
+	if len(removed) > 0 {
+		msg += "已同步下线关联栏目：" + strings.Join(removed, "、")
+	} else {
+		msg += "没有栏目引用该分类。"
+	}
+	s.adminResult(w, msg)
+}
+
 // handleAdminUpdate 旧接口保留：不再支持按链接编辑，提示使用图片管理。
 func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	if !s.sessionValid(r) {

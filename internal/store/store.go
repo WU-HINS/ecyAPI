@@ -63,6 +63,8 @@ type Admin interface {
 	SaveFile(ctx context.Context, category, filename string, r io.Reader) (string, error)
 	// DeleteFiles 批量删除分类内文件。
 	DeleteFiles(ctx context.Context, category string, names []string) (int, error)
+	// DeleteCategory 删除整个分类目录及其全部图片。
+	DeleteCategory(ctx context.Context, name string) error
 }
 
 // ---------------------------------------------------------------- 文件实现
@@ -363,4 +365,21 @@ func Dir(s Store) string {
 		return fs.dir
 	}
 	return ""
+}
+
+// DeleteCategory 删除整个分类目录（含全部图片文件）。
+// 供后台分类删除功能使用；调用方须做好二次确认。
+func (f *fileStore) DeleteCategory(ctx context.Context, name string) error {
+	_ = ctx
+	if !IsValidIdentifier(name) {
+		return errors.New("invalid category name")
+	}
+	path := filepath.Join(f.dir, name)
+	if _, err := os.Stat(path); err != nil {
+		return errors.New("分类不存在")
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	return f.reload()
 }
