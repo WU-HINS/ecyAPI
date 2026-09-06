@@ -151,21 +151,24 @@ func (s *Server) loadEndpoints() error {
 	if err == nil {
 		customs, order, perr := parseEndpointsFile(data)
 		if perr != nil {
-			return fmt.Errorf("parse %s: %w", endpointsFile, perr)
-		}
-		for _, c := range customs {
-			// mobile 允许为空（单端栏目），非空才校验。
-			if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) &&
-				(c.Mobile == "" || store.IsValidIdentifier(c.Mobile)) {
-				kind := c.Kind
-				if kind != "video" {
-					kind = "image"
+			// 配置文件损坏不应导致服务无法启动（启动失败会触发容器重启循环），
+			// 记录告警后按空栏目加载，管理员可在后台重建并覆盖坏文件。
+			log.Printf("警告: 解析 %s 失败（按空栏目加载）: %v", endpointsFile, perr)
+		} else {
+			for _, c := range customs {
+				// mobile 允许为空（单端栏目），非空才校验。
+				if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) &&
+					(c.Mobile == "" || store.IsValidIdentifier(c.Mobile)) {
+					kind := c.Kind
+					if kind != "video" {
+						kind = "image"
+					}
+					s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, kind})
 				}
-				s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, kind})
 			}
-		}
-		if len(order) > 0 {
-			s.endpoints = applyEndpointOrder(s.endpoints, order)
+			if len(order) > 0 {
+				s.endpoints = applyEndpointOrder(s.endpoints, order)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -208,7 +211,9 @@ func parseEndpointsFile(data []byte) ([]endpointJSON, []string, error) {
 	if err := json.Unmarshal(data, &single); err == nil && single.Path != "" {
 		return []endpointJSON{single}, nil, nil
 	}
-	return nil, nil, fmt.Errorf("missing required field \"items\"")
+	// 其余对象（空对象、仅 order、items 为 null 等）一律视为空栏目列表，
+	// 栏目数据由管理员在后台重建，避免坏文件把服务卡死在启动循环。
+	return []endpointJSON{}, nil, nil
 }
 
 // applyEndpointOrder 按 order 重排：order 中已知路径按序排前，其余保持原相对顺序排后。
