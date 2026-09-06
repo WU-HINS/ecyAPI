@@ -132,6 +132,29 @@
     </form>
 
     <hr>
+    <h2>删除分类</h2>
+    <form action="/admin/category/delete" method="post" onsubmit="return checkDeleteCategory()">
+        <div class="row">
+            <div>
+                <label for="del_cat_select">选择要删除的分类：</label>
+                <select id="del_cat_select" name="category">
+                    {{- range .Tables}}
+                    <option value="{{.Name}}">{{.Name}} ({{.Count}} 张图片)</option>
+                    {{- end}}
+                </select>
+            </div>
+        </div>
+        <div style="margin-top:12px">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:normal">
+                <input type="checkbox" id="del_cat_confirm" name="confirm_delete" value="1"
+                       style="width:auto;margin:0;transform:scale(1.2)">
+                我已知晓该操作将删除该分类目录下全部图片，且<b>不可恢复</b>；引用该分类的首页栏目也会一并下线。
+            </label>
+        </div>
+        <button type="submit" class="btn danger">删除分类</button>
+    </form>
+
+    <hr>
     <h2>调整前端分类栏排序<span id="sortStatus"></span></h2>
     <p style="color:#667;font-size:13px;margin:6px 0 2px">按住 <b>⋮⋮</b> 拖动行即可调整顺序，松开后自动保存（控制首页卡片与文档页展示顺序）。</p>
     <table class="eps">
@@ -313,6 +336,20 @@
                 return false;
             }
             return confirm('确认创建分类：' + tableName + ' 吗？');
+        }
+
+        function checkDeleteCategory() {
+            var select = document.getElementById('del_cat_select');
+            var confirmBox = document.getElementById('del_cat_confirm');
+            if (!select.value) {
+                alert('请选择要删除的分类！');
+                return false;
+            }
+            if (!confirmBox.checked) {
+                alert('请先勾选确认复选框！');
+                return false;
+            }
+            return confirm('确认删除分类「' + select.value + '」吗？\n该分类下的全部图片将被永久删除，不可恢复！');
         }
 
         function checkBinding() {
