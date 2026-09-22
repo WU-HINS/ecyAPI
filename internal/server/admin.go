@@ -65,7 +65,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	baseURL := s.baseURL
-	slogan, share, icp := s.slogan, s.share, s.icp
+	slogan, share, icp, icpURL := s.slogan, s.share, s.icp, s.icpURL
 	logs := append([]string(nil), s.logs...)
 	s.mu.RUnlock()
 
@@ -78,6 +78,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Slogan":    slogan,
 		"Share":     share,
 		"ICP":       icp,
+		"ICPURL":    icpURL,
 		"Logs":      logs,
 	})
 }
@@ -219,7 +220,7 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	s.adminResult(w, "域名已保存，API 输出链接将使用 "+normalizeBaseURL(raw))
 }
 
-// handleAdminContent 保存首页文案：slogan / 分享语 / ICP 备案号。
+// handleAdminContent 保存首页文案：slogan / 分享语 / ICP 备案号文字与链接。
 func (s *Server) handleAdminContent(w http.ResponseWriter, r *http.Request) {
 	if !s.sessionValid(r) {
 		http.Error(w, "未授权", http.StatusUnauthorized)
@@ -228,7 +229,8 @@ func (s *Server) handleAdminContent(w http.ResponseWriter, r *http.Request) {
 	slogan := r.PostFormValue("slogan")
 	share := r.PostFormValue("share")
 	icp := r.PostFormValue("icp")
-	if err := s.setContent(slogan, share, icp); err != nil {
+	icpURL := r.PostFormValue("icp_url")
+	if err := s.setContent(slogan, share, icp, icpURL); err != nil {
 		s.adminResult(w, "保存失败: "+err.Error())
 		return
 	}

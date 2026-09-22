@@ -200,8 +200,16 @@
             <label for="icp">备案号文字（meta 区链接文字）：</label>
             <input type="text" id="icp" name="icp" value="{{.ICP}}" placeholder="留空则恢复默认">
         </div>
+        <div style="margin-top:12px">
+            <label for="icp_url">备案号链接（点击备案号跳转的地址）：</label>
+            <input type="text" id="icp_url" name="icp_url" value="{{.ICPURL}}"
+                   placeholder="例如：https://icp.gov.moe/?keyword=20239001，留空则不生成链接">
+        </div>
         <input type="submit" value="保存首页文案">
-        <p style="color:#667;font-size:13px;margin-top:6px">保存后立即生效；任意字段留空并保存即恢复该字段默认文案。</p>
+        <p style="color:#667;font-size:13px;margin-top:6px">
+            保存后立即生效；标语与分享语留空并保存即恢复默认文案。
+            备案号链接留空时不生成超链接（仅展示文字）；备案号文字保持默认且链接留空时，将回退到默认官方查询链接。
+        </p>
     </form>
 
     <hr>
