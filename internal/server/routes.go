@@ -73,6 +73,7 @@ type Server struct {
 	slogan string
 	share  string
 	icp    string
+	icpURL string
 	logs   []string
 }
 
@@ -81,6 +82,7 @@ const (
 	defaultSlogan = "图片求精，往期图片随着环境的不断升级，也会不断提高分辨率"
 	defaultShare  = "如果你喜欢，那就分享给喜欢二次元风格的博主们吧"
 	defaultICP    = "萌ICP备20239001号"
+	defaultICPURL = "https://icp.gov.moe/?keyword=20239001"
 )
 
 // logsFile 改动日志持久化文件，存于数据目录外。
@@ -116,6 +118,7 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	s.baseURL = cfg.BaseURL
 	s.slogan, s.share, s.icp = defaultSlogan, defaultShare, defaultICP
+	s.icpURL = defaultICPURL
 	if err := s.loadSettings(); err != nil {
 		return nil, err
 	}
@@ -309,6 +312,7 @@ type settingsJSON struct {
 	Slogan  string `json:"slogan,omitempty"`
 	Share   string `json:"share,omitempty"`
 	ICP     string `json:"icp,omitempty"`
+	ICPURL  string `json:"icp_url,omitempty"`
 }
 
 // loadSettings 读取站点设置；文件中已保存的域名优先于环境变量，文案覆盖默认值。
@@ -336,6 +340,9 @@ func (s *Server) loadSettings() error {
 	if v := strings.TrimSpace(cfg.ICP); v != "" {
 		s.icp = v
 	}
+	if v := normalizeICPURL(cfg.ICPURL); v != "" {
+		s.icpURL = v
+	}
 	return nil
 }
 
@@ -346,6 +353,7 @@ func (s *Server) saveSettings() error {
 		Slogan:  s.slogan,
 		Share:   s.share,
 		ICP:     s.icp,
+		ICPURL:  s.icpURL,
 	}
 	s.mu.RUnlock()
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -355,9 +363,11 @@ func (s *Server) saveSettings() error {
 	return os.WriteFile(settingsFile, data, 0o644)
 }
 
-// setContent 更新首页文案并持久化；留空的字段回退到默认值。
-func (s *Server) setContent(slogan, share, icp string) error {
-	slogan, share, icp = strings.TrimSpace(slogan), strings.TrimSpace(share), strings.TrimSpace(icp)
+// setContent 更新首页文案并持久化；slogan/share/icp 留空回退默认值，
+// icpURL 留空表示不生成链接（备案号仅展示纯文本）。
+func (s *Server) setContent(slogan, share, icp, icpURL string) error {
+	slogan, share = strings.TrimSpace(slogan), strings.TrimSpace(share)
+	icp, icpURL = strings.TrimSpace(icp), strings.TrimSpace(icpURL)
 	if slogan == "" {
 		slogan = defaultSlogan
 	}
@@ -367,10 +377,35 @@ func (s *Server) setContent(slogan, share, icp string) error {
 	if icp == "" {
 		icp = defaultICP
 	}
+	// 备案号文字保持默认时，链接留空则回退默认官方查询链接；
+	// 文字被自定义而链接留空时，视为用户不要链接。
+	if icpURL == "" && icp == defaultICP {
+		icpURL = defaultICPURL
+	}
+	icpURL = normalizeICPURL(icpURL)
 	s.mu.Lock()
-	s.slogan, s.share, s.icp = slogan, share, icp
+	s.slogan, s.share, s.icp, s.icpURL = slogan, share, icp, icpURL
 	s.mu.Unlock()
 	return s.saveSettings()
+}
+
+// normalizeICPURL 规整备案号链接：补协议、去首尾空白；空串或不含主机时返回空串（不生成链接）。
+func normalizeICPURL(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+		v = "https://" + v
+	}
+	if strings.ContainsAny(v, " \t\r\n\"<>") {
+		return ""
+	}
+	rest := strings.TrimPrefix(strings.TrimPrefix(v, "https://"), "http://")
+	if rest == "" || strings.HasPrefix(rest, "/") {
+		return ""
+	}
+	return v
 }
 
 // ---------------------------------------------------------------- 改动日志持久化

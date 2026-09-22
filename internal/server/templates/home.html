@@ -205,7 +205,7 @@
         <p class="slogan">{{.Slogan}}</p>
         <div class="meta">
             <p>{{.Share}}</p>
-            <p>| <a href="{{.ICPURL}}" target="_blank"><b>{{.ICP}}</b></a></p>
+            <p>{{if .ICPURL}}<a href="{{.ICPURL}}" target="_blank"><b>{{.ICP}}</b></a>{{else}}<b>{{.ICP}}</b>{{end}}</p>
         </div>
         <div class="cta-btn">
             <a class="btn" href="/img" target="_blank">图库预览</a>

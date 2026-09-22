@@ -45,7 +45,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 		Logs   []string
 	}
 	s.mu.RLock()
-	slogan, share, icp := s.slogan, s.share, s.icp
+	slogan, share, icp, icpURL := s.slogan, s.share, s.icp, s.icpURL
 	logs := append([]string(nil), s.logs...)
 	s.mu.RUnlock()
 	s.render(w, http.StatusOK, "home.html", homeData{
@@ -55,7 +55,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 		Slogan: slogan,
 		Share:  share,
 		ICP:    icp,
-		ICPURL: "https://icp.gov.moe/?keyword=20239001",
+		ICPURL: icpURL,
 		Logs:   logs,
 	})
 }
