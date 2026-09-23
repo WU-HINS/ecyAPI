@@ -210,6 +210,14 @@
             保存后立即生效；标语与分享语留空并保存即恢复默认文案。
             备案号链接留空时不生成超链接（仅展示文字）；备案号文字保持默认且链接留空时，将回退到默认官方查询链接。
         </p>
+        <p style="color:#667;font-size:13px;margin-top:6px">
+            支持少量 HTML 标签：换行 <code>&lt;br&gt;</code>、加粗 <code>&lt;b&gt;/&lt;strong&gt;</code>、
+            斜体 <code>&lt;i&gt;/&lt;em&gt;</code>、下划线 <code>&lt;u&gt;</code>、删除线 <code>&lt;s&gt;/&lt;del&gt;</code>、
+            小字 <code>&lt;small&gt;</code>、上下标 <code>&lt;sub&gt;/&lt;sup&gt;</code>、段落 <code>&lt;p&gt;</code>、
+            行内容器 <code>&lt;span&gt;</code>、代码 <code>&lt;code&gt;</code>、高亮 <code>&lt;mark&gt;</code>、
+            链接 <code>&lt;a href="..."&gt;</code>（自动补 noopener，仅允许 http/https/mailto）。
+            其余标签一律按纯文本原样显示，不会被解析。
+        </p>
     </form>
 
     <hr>
