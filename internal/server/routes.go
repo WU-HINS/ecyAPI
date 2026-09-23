@@ -127,6 +127,8 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	funcMap := template.FuncMap{
 		"Add": func(a, b int) int { return a + b },
+		// RichText 允许首页文案使用白名单内的少量 HTML 标签（如 <br> 换行）。
+		"RichText": renderRichText,
 	}
 	tpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
