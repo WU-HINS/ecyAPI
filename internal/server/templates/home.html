@@ -23,13 +23,22 @@
             min-height: 100vh;
         }
         /* 顶部横幅 */
+        /* 背景放独立固定层并提升为合成层：滚动时只移动内容，背景零重绘。
+           background-attachment: fixed 会让浏览器在滚动中反复重绘整屏背景，是滚动卡顿的元凶。 */
+        .hero-bg {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            background: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)),
+                        url('/fj') center / cover no-repeat;
+            transform: translateZ(0);
+            will-change: transform;
+        }
         .hero {
             position: relative;
             text-align: center;
             padding: 90px 20px 70px;
             color: #fff;
-            background: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)),
-                        url('/fj') center / cover no-repeat fixed;
         }
         .hero .logo svg {
             width: min(250px, 80vw);
@@ -54,6 +63,8 @@
             transition: all 0.25s ease;
         }
         .btn:hover { background: rgba(255, 255, 255, 0.28); transform: translateY(-2px); }
+        /* hero 滚出视口后由不透明底接管，背景层不再透出（对齐旧版视觉） */
+        .content { position: relative; z-index: 0; background: #fdf6f0; }
         /* 卡片网格 */
         .cards {
             max-width: 1280px;
@@ -71,9 +82,10 @@
             transition: transform 0.25s ease, box-shadow 0.25s ease;
             display: flex;
             flex-direction: column;
+            contain: layout style paint;
         }
         .card:hover { transform: translateY(-5px); box-shadow: 0 18px 40px -8px rgba(60, 35, 20, 0.28); }
-        .thumb { position: relative; height: 210px; background: #f0e5dd; overflow: hidden; }
+        .thumb { position: relative; height: 210px; background: #f0e5dd; overflow: hidden; contain: strict; }
         .thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; }
         .thumb .tag {
             position: absolute; left: 12px; top: 12px;
@@ -122,7 +134,7 @@
         footer .icon-link-icon { display: inline-flex; }
         footer .icon-link svg { width: 26px; height: 26px; display: block; }
         @media (max-width: 640px) {
-            .hero { padding: 60px 16px 50px; background-attachment: scroll; }
+            .hero { padding: 60px 16px 50px; }
             .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: -26px; }
             .thumb { height: 120px; }
             .card-body { padding: 10px 12px 12px; }
@@ -131,6 +143,7 @@
     </style>
 </head>
 <body>
+    <div class="hero-bg" aria-hidden="true"></div>
     <section class="hero">
         <div class="logo" role="img" aria-label="栗次元 API">
         <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1125.62 303.95">
@@ -213,6 +226,7 @@
         </div>
     </section>
 
+    <main class="content">
     <section class="cards">
         {{- if not .Cards}}
         <p style="grid-column:1/-1;text-align:center;color:#888;padding:40px 0;">还没有任何分类栏目，请到 <a href="/admin">后台管理</a> 创建</p>
@@ -223,7 +237,7 @@
                 {{- if eq .Kind "video"}}
                 <video autoplay muted loop playsinline data-src="{{.PreviewURL}}"></video>
                 {{- else}}
-                <img data-src="{{.PreviewURL}}" alt="{{.Label}}" loading="lazy">
+                <img data-src="{{.PreviewURL}}" alt="{{.Label}}" loading="lazy" decoding="async">
                 {{- end}}
                 <a href="{{.PreviewURL}}" target="_blank" class="tag">{{.Label}}</a>
             </div>
@@ -254,6 +268,7 @@
             </a>
         </div>
     </footer>
+    </main>
 
     <script>
         // 点击图片追加时间戳刷新随机图
