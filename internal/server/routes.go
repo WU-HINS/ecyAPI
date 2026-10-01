@@ -557,7 +557,7 @@ func (s *Server) Handler() http.Handler {
 		fmt.Fprint(w, "ok")
 	})
 
-	return logMiddleware(mux)
+	return logMiddleware(corsMiddleware(mux))
 }
 
 // handlePic 提供本地图片访问：/pic/{分类}/{文件名}
