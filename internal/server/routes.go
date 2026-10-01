@@ -574,7 +574,7 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		q.Del("w")
 		r.URL.RawQuery = q.Encode()
-		s.handlePreview(w, r, filepath.Join(s.dataDir, category, file), file, widthParam)
+		s.handlePreview(w, r, category, file, widthParam)
 		return
 	}
 	path := filepath.Join(s.dataDir, category, file)

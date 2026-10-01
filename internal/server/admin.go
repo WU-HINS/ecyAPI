@@ -152,6 +152,10 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		s.adminResult(w, "删除失败: "+err.Error())
 		return
 	}
+	// 同步清理被删图片的压缩预览缓存。
+	for _, name := range names {
+		s.cleanupPreviewCache(category, name)
+	}
 	s.adminResult(w, fmt.Sprintf("已删除 %d 张图片", n))
 }
 
@@ -323,11 +327,12 @@ func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Reques
 		s.adminResult(w, "栏目下线失败: "+err.Error())
 		return
 	}
-	// 删除分类目录及全部图片
+	// 删除分类目录及全部图片，并同步清理该分类的压缩预览缓存
 	if err := s.admin.DeleteCategory(r.Context(), category); err != nil {
 		s.adminResult(w, "删除失败: "+err.Error())
 		return
 	}
+	s.cleanupPreviewCache(category, "")
 	msg := fmt.Sprintf("分类 %s 已删除（含 %d 张图片）。", category, count)
 	if len(removed) > 0 {
 		msg += "已同步下线关联栏目：" + strings.Join(removed, "、")

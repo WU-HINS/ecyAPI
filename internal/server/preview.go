@@ -1,7 +1,7 @@
 // preview.go — 服务端实时图片压缩预览。
 //
 // 首页背景与卡片缩略图的展示尺寸远小于壁纸级原图（常见 1080p~4K、1~4MB），
-// 直接加载原图是首页流量的主要浪费。此模块按显示需求把图片等比缩放到常规宽度
+// 直接加载原图是首页流量的主要浪费。此模块按显示需求把图片等比缩放到指定宽度
 // 再重新编码为压缩格式，结果落盘缓存，同一文件同一宽度只压缩一次。
 //
 // 仅影响站内预览链路：/pic 原图输出与对外 API 完全不受影响，源图文件不改动。
@@ -25,28 +25,35 @@ import (
 	xwebp "golang.org/x/image/webp"
 )
 
-// previewWidths 允许的预览宽度档位（px）。
-// 480：首页卡片/图库缩略（展示列宽约 280~420，2x 屏幕够用）
-// 1280：首页整屏背景（cover 展示，2x 屏幕够用）
-var previewWidths = map[int]bool{480: true, 1280: true}
+// 预览宽度边界：低于 16px 无意义，高于 4096px 接近不压反扩，
+// 上限同时挡住拿本接口当免费压图工具刷 CPU 的调用。
+const (
+	previewMinWidth = 16
+	previewMaxWidth = 4096
+)
 
-// previewSema 压缩并发上限：解码 4K 图约 50~150ms，4 并发已足够
-// 首页十几个卡片的冷启动，同时避免大流量下 CPU 被打满。
-var previewSema = make(chan struct{}, 4)
+// previewQueueLen 压缩队列容量。队列满时不排队等待：未命中缓存的请求
+// 直接回退原图输出，保证接口永远有响应，只是偶尔多花点流量。
+const previewQueueLen = 25
+
+// previewQueue 压缩任务队列：容量即并发上限。
+var previewQueue = make(chan struct{}, previewQueueLen)
 
 // previewCacheRoot 预览缓存根目录，与数据目录同级：data/preview-cache/<分类>/。
 func (s *Server) previewCacheRoot() string {
 	return filepath.Join(filepath.Dir(s.dataDir), "preview-cache")
 }
 
-// handlePreview 输出压缩预览：/pic/{分类}/{文件}?w=480。
-func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, path, file, widthParam string) {
+// handlePreview 输出压缩预览：/pic/{分类}/{文件}?w=640。
+// 宽度由调用方自定义（16~4096），站内页面固定用 480 / 1280 两档。
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category, file, widthParam string) {
 	width, err := strconv.Atoi(widthParam)
-	if err != nil || !previewWidths[width] {
+	if err != nil || width < previewMinWidth || width > previewMaxWidth {
 		http.NotFound(w, r)
 		return
 	}
-	ext, cachePath := s.previewCachePath(path, file, width)
+	path := filepath.Join(s.dataDir, category, file)
+	ext, cachePath := s.previewCachePath(category, file, width)
 
 	// 缓存命中：直接输出（含 CDN 长缓存头）。
 	if data := readCachedPreview(cachePath); data != nil {
@@ -54,18 +61,23 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, path, fil
 		return
 	}
 
-	// 未命中：加闸压缩；等闸期间可能已被并发请求填好缓存，再查一次。
-	previewSema <- struct{}{}
+	// 队列满则不排队：无缓存可用，回退原图（w 参数已在 handlePic 入口移除）。
+	select {
+	case previewQueue <- struct{}{}:
+	default:
+		s.handlePic(w, r)
+		return
+	}
+	// 拿到位置后再查一次：排队间隙可能已被并发请求填好缓存。
 	if data := readCachedPreview(cachePath); data != nil {
-		<-previewSema
+		<-previewQueue
 		writePreview(w, data, "image/jpeg")
 		return
 	}
 	data, contentType, err := compressPreview(path, width, ext)
-	<-previewSema
+	<-previewQueue
 	if err != nil {
 		// 压缩失败（坏图/视频等不支持格式）不缓存错误，回退原图。
-		// w 参数已在 handlePic 入口移除，这里直接走原图输出，不会递归。
 		s.handlePic(w, r)
 		return
 	}
@@ -82,11 +94,31 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, path, fil
 }
 
 // previewCachePath 计算缓存文件路径与源图扩展名。
-func (s *Server) previewCachePath(path, file string, width int) (string, string) {
-	ext := strings.ToLower(filepath.Ext(path))
-	name := filepath.Base(path) // 分类名，已通过 IsValidIdentifier 校验
-	cache := filepath.Join(s.previewCacheRoot(), name, file+".w"+strconv.Itoa(width)+".jpg")
+func (s *Server) previewCachePath(category, file string, width int) (string, string) {
+	ext := strings.ToLower(filepath.Ext(file))
+	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+".jpg")
 	return ext, cache
+}
+
+// cleanupPreviewCache 删除指定分类（或分类内单张图片）的压缩缓存。
+// 后台删除图片/分类时调用，避免缓存里残留已删除图片的缩略图。
+// file 为空表示清空整个分类的缓存。
+func (s *Server) cleanupPreviewCache(category, file string) {
+	root := filepath.Join(s.previewCacheRoot(), category)
+	if file == "" {
+		_ = os.RemoveAll(root)
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	prefix := file + ".w"
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) {
+			_ = os.Remove(filepath.Join(root, e.Name()))
+		}
+	}
 }
 
 // readCachedPreview 读缓存。
