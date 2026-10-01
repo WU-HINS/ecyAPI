@@ -69,7 +69,8 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "docs.html", map[string]any{"Categories": cats, "Endpoints": endpoints})
 }
 
-// galleryImage 图库页图片。
+// galleryImage 图库页图片。Thumb 走压缩预览（?w=480），
+// 点击放大查看时才加载原图 URL。
 type galleryImage struct {
 	URL   string
 	Thumb string
@@ -100,7 +101,7 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	}
 	images := make([]galleryImage, 0, len(rows))
 	for _, row := range rows {
-		images = append(images, galleryImage{URL: row.Link, Thumb: row.Link})
+		images = append(images, galleryImage{URL: row.Link, Thumb: row.Link + "?w=480"})
 	}
 	data := map[string]any{
 		"Current":   current,

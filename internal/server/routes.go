@@ -568,6 +568,15 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// ?w=NNN 压缩预览：仅供站内页面缩略展示，不改变原图输出。
+	// 判断前先移除 w 参数，预览失败回退时直接走下方原图逻辑，避免递归。
+	if widthParam := r.URL.Query().Get("w"); widthParam != "" {
+		q := r.URL.Query()
+		q.Del("w")
+		r.URL.RawQuery = q.Encode()
+		s.handlePreview(w, r, category, file, widthParam)
+		return
+	}
 	path := filepath.Join(s.dataDir, category, file)
 	f, err := os.Open(path)
 	if err != nil {

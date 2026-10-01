@@ -30,7 +30,7 @@
             inset: 0;
             z-index: -1;
             background: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)),
-                        url('/fj') center / cover no-repeat;
+                        url('/fj?w=1280') center / cover no-repeat;
             transform: translateZ(0);
             will-change: transform;
         }
@@ -237,7 +237,7 @@
                 {{- if eq .Kind "video"}}
                 <video autoplay muted loop playsinline data-src="{{.PreviewURL}}"></video>
                 {{- else}}
-                <img data-src="{{.PreviewURL}}" alt="{{.Label}}" loading="lazy" decoding="async">
+                <img data-src="{{.PreviewURL}}?w=480" alt="{{.Label}}" loading="lazy" decoding="async">
                 {{- end}}
                 <a href="{{.PreviewURL}}" target="_blank" class="tag">{{.Label}}</a>
             </div>
@@ -289,7 +289,8 @@
             entries.forEach(function (entry) {
                 if (!entry.isIntersecting) return;
                 var media = entry.target;
-                media.src = (media.dataset.src || '') + '?_t=' + Date.now();
+                var d = media.dataset.src || '';
+                media.src = d + (d.indexOf('?') > -1 ? '&' : '?') + '_t=' + Date.now();
                 observer.unobserve(media);
             });
         }, { rootMargin: '0px 0px 100px 0px' });
