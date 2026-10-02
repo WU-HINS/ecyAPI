@@ -41,7 +41,8 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 	if category == "" || limit == 1 {
 		for key, vals := range q {
 			if key == "table" || key == "type" || key == "category" ||
-				key == "num" || key == "count" || key == "limit" || key == "n" {
+				key == "num" || key == "count" || key == "limit" || key == "n" ||
+				key == "w" || key == "quantity" {
 				continue
 			}
 			if store.IsValidIdentifierName(key) {

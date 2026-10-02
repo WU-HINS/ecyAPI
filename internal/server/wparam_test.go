@@ -90,3 +90,16 @@ func TestLinkPlainTextPassesWidthParam(t *testing.T) {
 		t.Fatalf("plain text links missing w param: %q", body)
 	}
 }
+
+// /json?分类&w=480：w 不得被误认成分类名（曾因 map 遍历顺序概率性 404）。
+func TestJSONWParamNotMistakenAsCategory(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		s := newWParamServer(t)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/json?pc&w=480", nil))
+		body := rec.Body.String()
+		if !strings.Contains(body, "pic/pc/x.webp") {
+			t.Fatalf("iter %d: body = %s", i, body)
+		}
+	}
+}
