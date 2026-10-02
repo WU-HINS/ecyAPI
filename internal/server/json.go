@@ -4,6 +4,7 @@ import (
 	"ecyapi/internal/store"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 )
@@ -78,6 +79,12 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?w=NNN 压缩宽度：透传到返回的图片链接，宽度校验由 /pic 预览侧完成。
+	suffix := ""
+	if v := q.Get("w"); v != "" {
+		suffix = "?w=" + url.QueryEscape(v)
+	}
+
 	type rowJSON struct {
 		ID   string `json:"id,omitempty"`
 		Link string `json:"link"`
@@ -85,7 +92,7 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 	dataRows := make([]rowJSON, len(rows))
 	links := make([]string, 0, len(rows))
 	for i, row := range rows {
-		abs := s.absoluteURL(r, row.Link)
+		abs := s.absoluteURL(r, row.Link) + suffix
 		dataRows[i] = rowJSON{ID: row.ID, Link: abs}
 		links = append(links, abs)
 	}

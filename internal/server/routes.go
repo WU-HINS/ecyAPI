@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -639,6 +640,12 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 	if ep.mobile != "" && mobileRe.MatchString(r.UserAgent()) {
 		category = ep.mobile
 	}
+	// ?w=NNN 压缩宽度：透传到输出链接（302 Location / 纯文本链接），
+	// 宽度校验由 /pic 预览侧完成，非法值等于不压缩。
+	suffix := ""
+	if v := r.URL.Query().Get("w"); v != "" {
+		suffix = "?w=" + url.QueryEscape(v)
+	}
 
 	// ?json=NN 按序号返回纯文本链接
 	if v := r.URL.Query().Get("json"); v != "" {
@@ -648,7 +655,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 				plainError(w, "No link found.", http.StatusNotFound)
 				return
 			}
-			plainText(w, s.absoluteURL(r, row.Link))
+			plainText(w, s.absoluteURL(r, row.Link)+suffix)
 			return
 		}
 	}
@@ -663,7 +670,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		}
 		links := make([]string, len(rows))
 		for i, row := range rows {
-			links[i] = s.absoluteURL(r, row.Link)
+			links[i] = s.absoluteURL(r, row.Link) + suffix
 		}
 		plainText(w, strings.Join(links, "\n"))
 		return
@@ -674,7 +681,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, rows[0].Link, http.StatusFound)
+	http.Redirect(w, r, rows[0].Link+suffix, http.StatusFound)
 }
 
 // absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
