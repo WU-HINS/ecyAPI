@@ -63,6 +63,13 @@
         table.bindings { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
         table.bindings th, table.bindings td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; }
         table.bindings th { background: #eef1fa; }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+        .badge.on { background: #e3f2e8; color: #2e7d32; }
+        .badge.off { background: #fdeaea; color: #c0392b; }
+        button.vis { padding: 4px 14px; border: 0; border-radius: 6px; font-size: 13px; cursor: pointer; background: #5e72e4; color: #fff; }
+        button.vis:hover { background: #4557c9; }
+        button.vis.show { background: #2e7d32; }
+        button.vis.show:hover { background: #256428; }
     </style>
 </head>
 <body>
@@ -153,6 +160,33 @@
         </div>
         <button type="submit" class="btn danger">删除分类</button>
     </form>
+
+    <hr>
+    <h2>图库展示管理</h2>
+    <p style="color:#667;font-size:13px;margin:6px 0 2px">
+        控制各分类是否展示在 <a href="/img" target="_blank">网页图库</a>（https://t.alcy.cc/img）。
+        隐藏后图库不再显示该分类，但随机接口与图片访问不受影响。
+    </p>
+    <table class="eps">
+        <thead><tr><th>分类</th><th>图片数</th><th>图库状态</th><th>操作</th></tr></thead>
+        <tbody>
+        {{- range .Tables}}
+            <tr>
+                <td>{{.Name}}</td>
+                <td>{{.Count}}</td>
+                <td>{{if .Hide}}<span class="badge off">已隐藏</span>{{else}}<span class="badge on">展示中</span>{{end}}</td>
+                <td>
+                    <form action="/admin/gallery/visibility" method="post" style="background:none;padding:0">
+                        <input type="hidden" name="category" value="{{.Name}}">
+                        <button type="submit" class="vis {{if .Hide}}show{{end}}">
+                            {{if .Hide}}恢复展示{{else}}从图库隐藏{{end}}
+                        </button>
+                    </form>
+                </td>
+            </tr>
+        {{- end}}
+        </tbody>
+    </table>
 
     <hr>
     <h2>调整前端分类栏排序<span id="sortStatus"></span></h2>

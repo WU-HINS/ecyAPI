@@ -36,13 +36,15 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 
 	tables := s.sortedCategories(r.Context())
 	counts := s.categoryCountMap(r.Context())
+	hidden := s.galleryHiddenSet()
 	type cat struct {
 		Name  string
 		Count int
+		Hide  bool
 	}
 	catList := make([]cat, 0, len(tables))
 	for _, t := range tables {
-		catList = append(catList, cat{Name: t, Count: counts[t]})
+		catList = append(catList, cat{Name: t, Count: counts[t], Hide: hidden[t]})
 	}
 
 	type binding struct {
@@ -299,6 +301,38 @@ func (s *Server) handleAdminEndpointsReorder(w http.ResponseWriter, r *http.Requ
 	fmt.Fprint(w, `{"ok":true}`)
 }
 
+// handleAdminGalleryVisibility 切换分类在图库页的显示/隐藏。
+func (s *Server) handleAdminGalleryVisibility(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.adminResult(w, "参数错误")
+		return
+	}
+	category := strings.TrimSpace(r.PostFormValue("category"))
+	if !storeIsValid(category) {
+		s.adminResult(w, "分类名不合法")
+		return
+	}
+	// 分类须真实存在，防止开关一个不存在的名字
+	if _, err := s.st.Count(r.Context(), category); err != nil {
+		s.adminResult(w, "分类不存在")
+		return
+	}
+	hidden, err := s.toggleGalleryHidden(category)
+	if err != nil {
+		s.adminResult(w, "保存失败: "+err.Error())
+		return
+	}
+	if hidden {
+		s.adminResult(w, "分类 "+category+" 已设置为不在图库展示。")
+	} else {
+		s.adminResult(w, "分类 "+category+" 已恢复在图库展示。")
+	}
+}
+
 // handleAdminCategoryDelete 删除整个分类目录（含全部图片），并同步下线引用该分类的栏目。
 // 须携带 confirm_delete=1 才执行，防止误触。
 func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Request) {
@@ -333,6 +367,11 @@ func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.cleanupPreviewCache(category, "")
+	// 顺带清掉图库隐藏列表中该分类的残留记录
+	if err := s.pruneGalleryHidden(s.sortedCategories(r.Context())); err != nil {
+		s.adminResult(w, "分类已删除，但清理图库隐藏记录失败: "+err.Error())
+		return
+	}
 	msg := fmt.Sprintf("分类 %s 已删除（含 %d 张图片）。", category, count)
 	if len(removed) > 0 {
 		msg += "已同步下线关联栏目：" + strings.Join(removed, "、")
