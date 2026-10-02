@@ -76,9 +76,16 @@ type galleryImage struct {
 	Thumb string
 }
 
-// handleGallery 渲染图库页。
+// handleGallery 渲染图库页。后台设置为隐藏的分类不展示、不可访问。
 func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
-	cats := s.sortedCategories(r.Context())
+	hidden := s.galleryHiddenSet()
+	all := s.sortedCategories(r.Context())
+	cats := make([]string, 0, len(all))
+	for _, c := range all {
+		if !hidden[c] {
+			cats = append(cats, c)
+		}
+	}
 	if len(cats) == 0 {
 		s.render(w, http.StatusInternalServerError, "gallery.html", map[string]any{"LoadError": true})
 		return

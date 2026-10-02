@@ -70,6 +70,9 @@ type Server struct {
 	dataDir   string
 	baseURL   string // 对外展示的 API 域名（含协议），留空按请求推断
 
+	// 图库隐藏分类列表，后台可编辑，持久化到 data/gallery.json
+	galleryHidden []string
+
 	// 首页文案与改动日志，后台可编辑，持久化到 data/settings.json / data/logs.json
 	slogan string
 	share  string
@@ -124,6 +127,9 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	if err := s.loadLogs(); err != nil {
+		return nil, err
+	}
+	if err := s.loadGalleryHidden(); err != nil {
 		return nil, err
 	}
 	funcMap := template.FuncMap{
@@ -468,6 +474,85 @@ func (s *Server) deleteLog(index int) error {
 	return s.saveLogs()
 }
 
+// galleryHiddenFile 图库隐藏分类持久化文件，存于数据目录外。
+const galleryHiddenFile = "data/gallery.json"
+
+// loadGalleryHidden 读取图库隐藏分类列表；文件不存在时全部可见。
+func (s *Server) loadGalleryHidden() error {
+	data, err := os.ReadFile(galleryHiddenFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var hidden []string
+	if err := json.Unmarshal(data, &hidden); err != nil {
+		return fmt.Errorf("parse %s: %w", galleryHiddenFile, err)
+	}
+	s.galleryHidden = hidden
+	return nil
+}
+
+func (s *Server) saveGalleryHidden() error {
+	s.mu.RLock()
+	data, err := json.MarshalIndent(s.galleryHidden, "", "  ")
+	s.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(galleryHiddenFile, data, 0o644)
+}
+
+// toggleGalleryHidden 切换分类在图库页的显示状态并持久化。
+func (s *Server) toggleGalleryHidden(category string) (bool, error) {
+	s.mu.Lock()
+	hidden := false
+	next := make([]string, 0, len(s.galleryHidden))
+	for _, c := range s.galleryHidden {
+		if c == category {
+			hidden = true // 原本隐藏，本次取消隐藏
+			continue
+		}
+		next = append(next, c)
+	}
+	if !hidden {
+		next = append(next, category)
+	}
+	s.galleryHidden = next
+	s.mu.Unlock()
+	return !hidden, s.saveGalleryHidden()
+}
+
+// galleryHiddenSet 返回隐藏分类集合快照。
+func (s *Server) galleryHiddenSet() map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := make(map[string]bool, len(s.galleryHidden))
+	for _, c := range s.galleryHidden {
+		set[c] = true
+	}
+	return set
+}
+
+// pruneGalleryHidden 清理已不存在的隐藏分类记录。
+func (s *Server) pruneGalleryHidden(categories []string) error {
+	exist := make(map[string]bool, len(categories))
+	for _, c := range categories {
+		exist[c] = true
+	}
+	s.mu.Lock()
+	next := s.galleryHidden[:0]
+	for _, c := range s.galleryHidden {
+		if exist[c] {
+			next = append(next, c)
+		}
+	}
+	s.galleryHidden = next
+	s.mu.Unlock()
+	return s.saveGalleryHidden()
+}
+
 // normalizeBaseURL 规整域名：补协议、去尾部斜杠；非法输入返回空串。
 func normalizeBaseURL(v string) string {
 	v = strings.TrimSpace(v)
@@ -546,6 +631,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/upload", s.handleAdminUpload)
 	mux.HandleFunc("POST /admin/delete", s.handleAdminDelete)
 	mux.HandleFunc("POST /admin/category/delete", s.handleAdminCategoryDelete)
+	mux.HandleFunc("POST /admin/gallery/visibility", s.handleAdminGalleryVisibility)
 	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
 	mux.HandleFunc("POST /admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("POST /admin/content", s.handleAdminContent)
