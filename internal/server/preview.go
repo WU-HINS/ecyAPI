@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gen2brain/webp"
 	"golang.org/x/image/bmp"
@@ -37,6 +39,10 @@ const (
 // previewQueueLen 压缩队列容量。队列满时不排队等待：未命中缓存的请求
 // 直接回退原图输出，保证接口永远有响应，只是偶尔多花点流量。
 const previewQueueLen = 25
+
+// previewCacheMaxFiles 缓存文件数量上限：超过后按修改时间删最旧的，
+// 防止磁盘被压缩缩略图无限吃掉。每次新写缓存后异步清理一次。
+const previewCacheMaxFiles = 2000
 
 // previewQueue 压缩任务队列：容量即并发上限。
 var previewQueue = make(chan struct{}, previewQueueLen)
@@ -88,8 +94,9 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	// 原子落盘：先写临时文件再 rename，避免并发读到半截文件。
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
 		tmp := cachePath + ".tmp"
-		if os.WriteFile(tmp, data, 0o644) == nil {
-			_ = os.Rename(tmp, cachePath)
+		if os.WriteFile(tmp, data, 0o644) == nil && os.Rename(tmp, cachePath) == nil {
+			// 落盘成功后异步清理超量缓存，不阻塞本次响应。
+			go s.evictPreviewCache()
 		}
 	}
 
@@ -118,6 +125,42 @@ func previewContentType(ext string) string {
 		return "image/png"
 	}
 	return "image/jpeg"
+}
+
+// evictPreviewCache 缓存文件数超过上限时删掉最旧的。walk 全目录收集
+// 修改时间，2000 以内的文件量排序开销可忽略；并发写导致偶发多删/少删
+// 一个文件无关紧要，下次落盘会再触发清理，无需加锁。
+func (s *Server) evictPreviewCache() {
+	evictPreviewCacheFiles(s.previewCacheRoot(), previewCacheMaxFiles)
+}
+
+// evictPreviewCacheFiles 删除 root 下最旧的缓存文件，保留最新的 max 份。
+func evictPreviewCacheFiles(root string, max int) {
+	type cacheEntry struct {
+		path    string
+		modTime time.Time
+	}
+	var entries []cacheEntry
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		entries = append(entries, cacheEntry{path, info.ModTime()})
+		return nil
+	})
+	if err != nil || len(entries) <= max {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].modTime.Before(entries[j].modTime)
+	})
+	for _, e := range entries[:len(entries)-max] {
+		_ = os.Remove(e.path)
+	}
 }
 
 // cleanupPreviewCache 删除指定分类（或分类内单张图片）的压缩缓存。
