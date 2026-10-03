@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -293,5 +294,39 @@ func TestPreviewKeepsSourceFormatJPEG(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/pic/pc/big.jpg?w=480", nil))
 	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
 		t.Fatalf("content-type = %q, want image/jpeg", ct)
+	}
+}
+
+func TestEvictPreviewCacheKeepsNewest(t *testing.T) {
+	srv, _ := newPreviewServer(t)
+	root := srv.previewCacheRoot()
+	if err := os.MkdirAll(filepath.Join(root, "pc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 写 6 个缓存文件并手工设置递增的修改时间。
+	base := time.Now().Add(-time.Hour)
+	for i := 0; i < 6; i++ {
+		p := filepath.Join(root, "pc", fmt.Sprintf("img%d.jpg.w480", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	evictPreviewCacheFiles(root, 4)
+
+	// 最旧的 2 个应被删除，最新的 4 个保留。
+	for _, i := range []int{0, 1} {
+		if _, err := os.Stat(filepath.Join(root, "pc", fmt.Sprintf("img%d.jpg.w480", i))); !os.IsNotExist(err) {
+			t.Fatalf("oldest cache img%d should be evicted", i)
+		}
+	}
+	for _, i := range []int{2, 3, 4, 5} {
+		if _, err := os.Stat(filepath.Join(root, "pc", fmt.Sprintf("img%d.jpg.w480", i))); err != nil {
+			t.Fatalf("newest cache img%d should be kept: %v", i, err)
+		}
 	}
 }
