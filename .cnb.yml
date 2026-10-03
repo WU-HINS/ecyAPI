@@ -2,12 +2,13 @@ main:
   push:
     - runner: { cpus: 2 }
       docker:
-        image: golang:1.24
+        # CGO 构建（静态链接 libwebp）需要 gcc；alpine 装 build-base 即可
+        image: golang:1.24-alpine
       stages:
         - name: build
-          script: go build ./...
-        - name: vet
-          script: go vet ./...
+          script: apk add --no-cache build-base && CGO_ENABLED=1 go build ./... && go vet ./...
+        - name: test
+          script: apk add --no-cache build-base && CGO_ENABLED=1 go test ./...
 
 $:
   vscode:

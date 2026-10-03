@@ -5,15 +5,14 @@
 // 再重新编码为压缩格式，结果落盘缓存，同一文件同一宽度只压缩一次。
 //
 // 仅影响压缩预览链路：/pic 原图输出不受影响，源图文件不改动。
-// 输出格式按源图扩展名分派：png 源出 png、webp 及其余一律出 jpeg。
+// 输出一律编码为 WebP（q82）：同画质下体积比 JPEG 再小 25~35%。
 //
 // webp 编码不用 gen2brain/webp（wasm2go 实现）：其每次调用会实例化一个
 // 带独立堆的 wasm 模块，批量转码时数百 MB 堆只能等 GC 归还，小内存容器
-// 直接 OOM。x/image/webp 只做解码，无此问题。
+// 直接 OOM。改为静态链接 libwebp（internal/webp），见该包说明。
 package server
 
 import (
-	"bytes"
 	"errors"
 	"image"
 	"image/gif"
@@ -30,6 +29,8 @@ import (
 	"golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
+
+	"ecyapi/internal/webp"
 )
 
 // 预览宽度边界：低于 16px 无意义，高于 4096px 接近不压反扩，
@@ -64,12 +65,11 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		return
 	}
 	path := filepath.Join(s.dataDir, category, file)
-	ext, cachePath := s.previewCachePath(category, file, width)
-	contentType := previewContentType(strings.ToLower(filepath.Ext(cachePath)))
+	_, cachePath := s.previewCachePath(category, file, width)
 
 	// 缓存命中：直接输出（含 CDN 长缓存头）。
 	if data := readCachedPreview(cachePath); data != nil {
-		writePreview(w, data, contentType)
+		writePreview(w, data, "image/webp")
 		return
 	}
 
@@ -83,10 +83,10 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	// 拿到位置后再查一次：排队间隙可能已被并发请求填好缓存。
 	if data := readCachedPreview(cachePath); data != nil {
 		<-previewQueue
-		writePreview(w, data, contentType)
+		writePreview(w, data, "image/webp")
 		return
 	}
-	data, contentType, err := compressPreview(path, width, ext)
+	data, _, err := compressPreview(path, width)
 	<-previewQueue
 	if err != nil {
 		// 压缩失败（坏图/视频等不支持格式）不缓存错误，回退原图。
@@ -103,27 +103,15 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		}
 	}
 
-	writePreview(w, data, contentType)
+	writePreview(w, data, "image/webp")
 }
 
 // previewCachePath 计算缓存文件路径与源图扩展名。
-// 缓存扩展名：png 源存 .png，其余（含 webp）一律 .jpg。
+// 预览统一编码为 WebP，缓存扩展名固定 .webp。
 func (s *Server) previewCachePath(category, file string, width int) (string, string) {
 	ext := strings.ToLower(filepath.Ext(file))
-	cacheExt := ".jpg"
-	if ext == ".png" {
-		cacheExt = ext
-	}
-	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+cacheExt)
+	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+".webp")
 	return ext, cache
-}
-
-// previewContentType 缓存扩展名对应的输出 Content-Type。
-func previewContentType(cacheExt string) string {
-	if cacheExt == ".png" {
-		return "image/png"
-	}
-	return "image/jpeg"
 }
 
 // evictPreviewCache 缓存文件数超过上限时删掉最旧的。walk 全目录收集
@@ -200,15 +188,16 @@ func writePreview(w http.ResponseWriter, data []byte, contentType string) {
 	_, _ = w.Write(data)
 }
 
-// compressPreview 解码源图 → 等比缩放 → 重编码压缩。
+// compressPreview 解码源图 → 等比缩放 → 重编码为 WebP。
 // GIF 取第一帧；视频与 SVG 不支持，返回错误由调用方回退原图。
-func compressPreview(path string, width int, ext string) ([]byte, string, error) {
+func compressPreview(path string, width int) ([]byte, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, "", err
 	}
 	defer f.Close()
 
+	ext := strings.ToLower(filepath.Ext(path))
 	img, err := decodeImage(f, ext)
 	if err != nil {
 		return nil, "", err
@@ -225,19 +214,17 @@ func compressPreview(path string, width int, ext string) ([]byte, string, error)
 		img = dst
 	}
 
-	// 输出格式跟缓存扩展名走：png 源出 png（无损需求场景），其余一律
-	// jpeg q82。webp 源也转 jpeg，见文件头关于 webp 编码器内存问题的说明。
-	var buf bytes.Buffer
-	if ext == ".png" {
-		if err := png.Encode(&buf, img); err != nil {
-			return nil, "", err
-		}
-		return buf.Bytes(), "image/png", nil
+	// 统一编码为 WebP：q82 画质下比 JPEG 小 25~35%，浏览器全兼容。
+	rgba, ok := img.(*image.RGBA)
+	if !ok {
+		rgba = image.NewRGBA(img.Bounds())
+		draw.Draw(rgba, rgba.Bounds(), img, img.Bounds().Min, draw.Src)
 	}
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 82}); err != nil {
+	data, err := webp.EncodeRGBA(rgba, webp.Options{Quality: 82})
+	if err != nil {
 		return nil, "", err
 	}
-	return buf.Bytes(), "image/jpeg", nil
+	return data, "image/webp", nil
 }
 
 // decodeImage 按扩展名选择解码器；GIF 取第一帧。
