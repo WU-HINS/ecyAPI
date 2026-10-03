@@ -63,12 +63,14 @@
             transition: all 0.25s ease;
         }
         .btn:hover { background: rgba(255, 255, 255, 0.28); transform: translateY(-2px); }
-        /* hero 滚出视口后由不透明底接管，背景层不再透出（对齐旧版视觉） */
-        .content { position: relative; z-index: 0; background: #fdf6f0; }
-        /* 卡片网格 */
+        /* hero 滚出视口后由不透明底接管，背景层不再透出（对齐旧版视觉）。
+           padding-top 承载首行卡片的上间距：写成 margin 会被 .content 的外边距塌陷吃掉，
+           露出的仍是横幅背景，视觉上等于卡片贴着横幅。 */
+        .content { position: relative; z-index: 0; background: #fdf6f0; padding-top: 24px; }
+        /* 卡片网格：与 gap 同值，保证横幅与首行卡片、行与行之间的间距统一 */
         .cards {
             max-width: 1280px;
-            margin: -40px auto 0;
+            margin: 0 auto;
             padding: 0 18px 70px;
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -135,7 +137,8 @@
         footer .icon-link svg { width: 26px; height: 26px; display: block; }
         @media (max-width: 640px) {
             .hero { padding: 60px 16px 50px; }
-            .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: -26px; }
+            .content { padding-top: 12px; }
+            .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
             .thumb { height: 120px; }
             .card-body { padding: 10px 12px 12px; }
             .card-body .desc { display: none; }
