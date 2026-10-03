@@ -157,6 +157,7 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 | `ECY_ADMIN_PASSWORD` | `ecy-admin` | 后台登录密码，务必修改 |
 | `ECY_MAX_LINKS` | `50` | 单次请求最大返回条数 |
 | `ECY_BASE_URL` | 空 | 对外域名（如 `https://api.example.com`），JSON/纯文本输出链接使用；后台「站点设置」保存的值优先于该环境变量 |
+| `ECY_MEMORY_LIMIT` | `536870912` | Go 运行时软内存上限（字节），批量 `?w=` 压缩后内存回落更及时；容器内存紧张时可调小 |
 
 ## 栏目管理
 
