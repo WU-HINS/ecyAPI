@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	xwebp "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -13,9 +14,8 @@ import (
 	"testing"
 	"time"
 
-	gwebp "github.com/gen2brain/webp"
-
 	"ecyapi/internal/config"
+	"ecyapi/internal/webp"
 )
 
 // 生成一张 2000x1200 的测试大图（渐变噪声，难以被简单编码压小）。
@@ -64,22 +64,25 @@ func TestPreviewCompressesAndCaches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 一次完整请求：应 200、image/jpeg、明显小于原图。
+	// 一次完整请求：应 200、image/webp、明显小于原图。
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/pic/pc/big.jpg?w=480", nil)
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
 		t.Fatalf("content-type = %q", ct)
 	}
 	body := rec.Body.Bytes()
+	if !bytes.HasPrefix(body, []byte("RIFF")) {
+		t.Fatal("preview body is not a webp (RIFF) file")
+	}
 	if len(body) >= len(big) {
 		t.Fatalf("preview %d bytes >= original %d bytes", len(body), len(big))
 	}
 	// 2000px 宽的图缩到 480 后行数约 288：解码头验证尺寸。
-	dec, err := jpeg.Decode(bytes.NewReader(body))
+	dec, err := xwebp.Decode(bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("decode preview: %v", err)
 	}
@@ -132,7 +135,7 @@ func TestPreviewCustomWidth(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	dec, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes()))
+	dec, err := xwebp.Decode(bytes.NewReader(rec.Body.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,21 +216,19 @@ func TestPreviewCacheCleanupOnDelete(t *testing.T) {
 	}
 }
 
-// 预览输出应保持源图格式：webp 源出 webp，扩展名与 Content-Type 都不变。
-func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
+// webp 源压缩后仍输出合法 webp。
+func TestPreviewWebPSource(t *testing.T) {
 	srv, catDir := newPreviewServer(t)
-	// 用 x/image/webp 无法编码，借 gen2brain/webp 生成一张 webp 源图。
 	src := image.NewRGBA(image.Rect(0, 0, 2000, 1200))
 	for y := 0; y < 1200; y++ {
 		for x := 0; x < 2000; x++ {
 			src.SetRGBA(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), uint8((x + y) % 256), 255})
 		}
 	}
-	var buf bytes.Buffer
-	if err := gwebp.Encode(&buf, src, gwebp.Options{Quality: 90}); err != nil {
+	orig, err := webp.EncodeRGBA(src, webp.Options{Quality: 90})
+	if err != nil {
 		t.Fatal(err)
 	}
-	orig := buf.Bytes()
 	if err := os.WriteFile(filepath.Join(catDir, "photo.webp"), orig, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +244,9 @@ func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
 	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("RIFF")) {
 		t.Fatal("preview body is not a webp (RIFF) file")
 	}
-	// 缓存文件扩展名也应为 .webp。
+	if len(rec.Body.Bytes()) >= len(orig) {
+		t.Fatalf("preview %d bytes >= original %d bytes", len(rec.Body.Bytes()), len(orig))
+	}
 	_, cachePath := srv.previewCachePath("pc", "photo.webp", 480)
 	if filepath.Ext(cachePath) != ".webp" {
 		t.Fatalf("cache ext = %q, want .webp", filepath.Ext(cachePath))
@@ -253,8 +256,8 @@ func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
 	}
 }
 
-// 预览输出应保持源图格式：png 源出 png。
-func TestPreviewKeepsSourceFormatPNG(t *testing.T) {
+// png 源压缩后输出 webp（统一格式）。
+func TestPreviewPNGSourceOutputsWebP(t *testing.T) {
 	srv, catDir := newPreviewServer(t)
 	src := image.NewRGBA(image.Rect(0, 0, 2000, 1200))
 	for y := 0; y < 1200; y++ {
@@ -262,11 +265,12 @@ func TestPreviewKeepsSourceFormatPNG(t *testing.T) {
 			src.SetRGBA(x, y, color.RGBA{uint8(x % 256), uint8(y % 256), uint8((x + y) % 256), 255})
 		}
 	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, src); err != nil {
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, src); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(catDir, "img.png"), buf.Bytes(), 0o644); err != nil {
+	srcPNG := pngBuf.Bytes()
+	if err := os.WriteFile(filepath.Join(catDir, "img.png"), srcPNG, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,16 +279,16 @@ func TestPreviewKeepsSourceFormatPNG(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
-		t.Fatalf("content-type = %q, want image/png", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
+		t.Fatalf("content-type = %q, want image/webp", ct)
 	}
-	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("\x89PNG")) {
-		t.Fatal("preview body is not a png file")
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("RIFF")) {
+		t.Fatal("preview body is not a webp file")
 	}
 }
 
-// jpeg 源保持 jpeg 输出（原有行为不变，防回归）。
-func TestPreviewKeepsSourceFormatJPEG(t *testing.T) {
+// jpeg 源压缩后输出 webp（统一格式）。
+func TestPreviewJPEGSourceOutputsWebP(t *testing.T) {
 	srv, catDir := newPreviewServer(t)
 	big := makeBigJPEG(t, 2000, 1200)
 	if err := os.WriteFile(filepath.Join(catDir, "big.jpg"), big, 0o644); err != nil {
@@ -292,8 +296,11 @@ func TestPreviewKeepsSourceFormatJPEG(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/pic/pc/big.jpg?w=480", nil))
-	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
-		t.Fatalf("content-type = %q, want image/jpeg", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
+		t.Fatalf("content-type = %q, want image/webp", ct)
+	}
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("RIFF")) {
+		t.Fatal("preview body is not a webp file")
 	}
 }
 

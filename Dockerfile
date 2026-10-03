@@ -1,11 +1,14 @@
 # syntax=docker/dockerfile:1
 # ---------- 构建阶段 ----------
+# libwebp 以 musl 静态库形式随源码分发（internal/webp/lib），链接无需系统依赖，
+# 只需 CGO 工具链把 bridge.c 编进来，产物仍是完全静态的二进制。
 FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ecyapi ./cmd/server
+RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w -extldflags '-static'" -o /out/ecyapi ./cmd/server
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.20
