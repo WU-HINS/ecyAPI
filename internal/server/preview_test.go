@@ -216,8 +216,8 @@ func TestPreviewCacheCleanupOnDelete(t *testing.T) {
 	}
 }
 
-// webp 源压缩后仍输出合法 webp。
-func TestPreviewWebPSource(t *testing.T) {
+// webp 源压缩后仍输出合法 webp（统一编码，见 preview.go）。
+func TestPreviewWebPSourceOutputsWebP(t *testing.T) {
 	srv, catDir := newPreviewServer(t)
 	src := image.NewRGBA(image.Rect(0, 0, 2000, 1200))
 	for y := 0; y < 1200; y++ {

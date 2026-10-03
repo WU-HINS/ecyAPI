@@ -6,6 +6,10 @@
 //
 // 仅影响压缩预览链路：/pic 原图输出不受影响，源图文件不改动。
 // 输出一律编码为 WebP（q82）：同画质下体积比 JPEG 再小 25~35%。
+//
+// webp 编码不用 gen2brain/webp（wasm2go 实现）：其每次调用会实例化一个
+// 带独立堆的 wasm 模块，批量转码时数百 MB 堆只能等 GC 归还，小内存容器
+// 直接 OOM。改为静态链接 libwebp（internal/webp），见该包说明。
 package server
 
 import (
