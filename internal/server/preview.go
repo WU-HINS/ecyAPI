@@ -5,7 +5,11 @@
 // 再重新编码为压缩格式，结果落盘缓存，同一文件同一宽度只压缩一次。
 //
 // 仅影响压缩预览链路：/pic 原图输出不受影响，源图文件不改动。
-// 输出保持源图格式（webp/jpeg/png），不改变扩展名与 Content-Type。
+// 输出格式按源图扩展名分派：png 源出 png、webp 及其余一律出 jpeg。
+//
+// webp 编码不用 gen2brain/webp（wasm2go 实现）：其每次调用会实例化一个
+// 带独立堆的 wasm 模块，批量转码时数百 MB 堆只能等 GC 归还，小内存容器
+// 直接 OOM。x/image/webp 只做解码，无此问题。
 package server
 
 import (
@@ -23,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gen2brain/webp"
 	"golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
@@ -62,7 +65,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	}
 	path := filepath.Join(s.dataDir, category, file)
 	ext, cachePath := s.previewCachePath(category, file, width)
-	contentType := previewContentType(ext)
+	contentType := previewContentType(strings.ToLower(filepath.Ext(cachePath)))
 
 	// 缓存命中：直接输出（含 CDN 长缓存头）。
 	if data := readCachedPreview(cachePath); data != nil {
@@ -104,24 +107,20 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 }
 
 // previewCachePath 计算缓存文件路径与源图扩展名。
-// 缓存扩展名与源图一致：webp 源存 .webp、png 源存 .png，其余一律 .jpg。
+// 缓存扩展名：png 源存 .png，其余（含 webp）一律 .jpg。
 func (s *Server) previewCachePath(category, file string, width int) (string, string) {
 	ext := strings.ToLower(filepath.Ext(file))
 	cacheExt := ".jpg"
-	switch ext {
-	case ".webp", ".png":
+	if ext == ".png" {
 		cacheExt = ext
 	}
 	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+cacheExt)
 	return ext, cache
 }
 
-// previewContentType 源扩展名对应的输出 Content-Type。
-func previewContentType(ext string) string {
-	switch ext {
-	case ".webp":
-		return "image/webp"
-	case ".png":
+// previewContentType 缓存扩展名对应的输出 Content-Type。
+func previewContentType(cacheExt string) string {
+	if cacheExt == ".png" {
 		return "image/png"
 	}
 	return "image/jpeg"
@@ -226,16 +225,10 @@ func compressPreview(path string, width int, ext string) ([]byte, string, error)
 		img = dst
 	}
 
-	// 按源图格式重新编码：webp 源出 webp、png 源出 png，其余出 jpeg。
-	// 保持格式不变是需求约束：调用方依赖扩展名/Content-Type 一致性。
+	// 输出格式跟缓存扩展名走：png 源出 png（无损需求场景），其余一律
+	// jpeg q82。webp 源也转 jpeg，见文件头关于 webp 编码器内存问题的说明。
 	var buf bytes.Buffer
-	switch ext {
-	case ".webp":
-		if err := webp.Encode(&buf, img, webp.Options{Quality: 82}); err != nil {
-			return nil, "", err
-		}
-		return buf.Bytes(), "image/webp", nil
-	case ".png":
+	if ext == ".png" {
 		if err := png.Encode(&buf, img); err != nil {
 			return nil, "", err
 		}

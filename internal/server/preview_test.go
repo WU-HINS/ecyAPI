@@ -213,10 +213,10 @@ func TestPreviewCacheCleanupOnDelete(t *testing.T) {
 	}
 }
 
-// 预览输出应保持源图格式：webp 源出 webp，扩展名与 Content-Type 都不变。
-func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
+// webp 源的预览输出转 jpeg（不再用 wasm 实现的 webp 编码器，见 preview.go 文件头说明）。
+func TestPreviewWebPSourceOutputsJPEG(t *testing.T) {
 	srv, catDir := newPreviewServer(t)
-	// 用 x/image/webp 无法编码，借 gen2brain/webp 生成一张 webp 源图。
+	// 用 x/image/webp 无法编码，借 gen2brain/webp 生成一张 webp 源图（仅测试用）。
 	src := image.NewRGBA(image.Rect(0, 0, 2000, 1200))
 	for y := 0; y < 1200; y++ {
 		for x := 0; x < 2000; x++ {
@@ -227,8 +227,7 @@ func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
 	if err := gwebp.Encode(&buf, src, gwebp.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
-	orig := buf.Bytes()
-	if err := os.WriteFile(filepath.Join(catDir, "photo.webp"), orig, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(catDir, "photo.webp"), buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,16 +236,16 @@ func TestPreviewKeepsSourceFormatWebP(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
-		t.Fatalf("content-type = %q, want image/webp", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("content-type = %q, want image/jpeg", ct)
 	}
-	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("RIFF")) {
-		t.Fatal("preview body is not a webp (RIFF) file")
+	if _, err := jpeg.Decode(bytes.NewReader(rec.Body.Bytes())); err != nil {
+		t.Fatalf("preview body is not decodable jpeg: %v", err)
 	}
-	// 缓存文件扩展名也应为 .webp。
+	// 缓存文件扩展名应为 .jpg。
 	_, cachePath := srv.previewCachePath("pc", "photo.webp", 480)
-	if filepath.Ext(cachePath) != ".webp" {
-		t.Fatalf("cache ext = %q, want .webp", filepath.Ext(cachePath))
+	if filepath.Ext(cachePath) != ".jpg" {
+		t.Fatalf("cache ext = %q, want .jpg", filepath.Ext(cachePath))
 	}
 	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("cache not written: %v", err)
