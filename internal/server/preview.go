@@ -10,6 +10,10 @@
 // webp 编码不用 gen2brain/webp（wasm2go 实现）：其每次调用会实例化一个
 // 带独立堆的 wasm 模块，批量转码时数百 MB 堆只能等 GC 归还，小内存容器
 // 直接 OOM。改为静态链接 libwebp（internal/webp），见该包说明。
+//
+// 内存策略：静态库后峰值本身已正常，但 Go 运行时默认把空闲堆页留在手里
+// 不还给 OS，批量转码后 RSS 常驻在峰值附近不动，监控上像泄漏。这里在
+// 压缩队列排空（批量任务结束）时主动 FreeOSMemory 把空闲页归还系统。
 package server
 
 import (
@@ -21,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,12 +87,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	}
 	// 拿到位置后再查一次：排队间隙可能已被并发请求填好缓存。
 	if data := readCachedPreview(cachePath); data != nil {
-		<-previewQueue
+		s.releasePreviewSlot()
 		writePreview(w, data, "image/webp")
 		return
 	}
 	data, _, err := compressPreview(path, width)
-	<-previewQueue
+	s.releasePreviewSlot()
 	if err != nil {
 		// 压缩失败（坏图/视频等不支持格式）不缓存错误，回退原图。
 		s.handlePic(w, r)
@@ -112,6 +117,16 @@ func (s *Server) previewCachePath(category, file string, width int) (string, str
 	ext := strings.ToLower(filepath.Ext(file))
 	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+".webp")
 	return ext, cache
+}
+
+// releasePreviewSlot 释放压缩队列占位。队列从满变为空闲（一批转码刚结束）
+// 时调用 FreeOSMemory：跑一轮 GC 并把空闲堆页归还操作系统，避免批量
+// 压缩的峰值内存长期驻留 RSS。服务空闲期到达的零星请求不触发，开销可忽略。
+func (s *Server) releasePreviewSlot() {
+	if len(previewQueue) == 0 {
+		debug.FreeOSMemory()
+	}
+	<-previewQueue
 }
 
 // evictPreviewCache 缓存文件数超过上限时删掉最旧的。walk 全目录收集

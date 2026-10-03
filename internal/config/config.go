@@ -3,6 +3,7 @@ package config
 
 import (
 	"os"
+	"runtime/debug"
 	"strconv"
 )
 
@@ -31,8 +32,24 @@ func envInt(key string, def int) int {
 	return def
 }
 
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 // Load 从环境变量加载配置。
 func Load() Config {
+	// Go 运行时默认按需保留堆内存（GOGC=100 才触发下一轮 GC，空闲页也
+	// 不急于还给 OS），批量图片压缩后 RSS 常驻峰值不下落，容器监控里
+	// 看起来像"内存泄漏"。GC 更早触发 + 软内存上限双管齐下，配合压缩
+	// 队列排空时主动归还（见 preview.go），让 RSS 跟着实际用量回落。
+	debug.SetGCPercent(50)
+	debug.SetMemoryLimit(envInt64("ECY_MEMORY_LIMIT", 512<<20))
+
 	return Config{
 		Addr:          env("ECY_ADDR", ":8080"),
 		DataDir:       env("ECY_DATA_DIR", "data/categories"),
