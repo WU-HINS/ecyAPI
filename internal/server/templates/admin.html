@@ -84,19 +84,18 @@
     <h1>图片管理系统 <a href="/admin?logout=1" class="logout">退出登录</a></h1>
 
     <h2>图片管理</h2>
-    <form id="uploadForm" action="/admin/upload" method="post" enctype="multipart/form-data">
-        <label for="tableSelect">选择分类：</label>
-        <select id="tableSelect" name="category" onchange="loadImages()">
-            {{- range .Tables}}
-            <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
-            {{- end}}
-        </select>
-        <div style="margin-top:16px">
-            <label for="files">上传新增图片（可多选）：</label>
-            <input type="file" id="files" name="files" accept="image/*,video/mp4,video/webm" multiple>
-            <input type="submit" value="上传图片">
-        </div>
-    </form>
+    <label for="tableSelect">选择分类：</label>
+    <select id="tableSelect" name="category" onchange="loadImages()">
+        {{- range .Tables}}
+        <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
+        {{- end}}
+    </select>
+    <div style="margin-top:16px">
+        <label for="files">上传新增图片（可多选，自动分批上传）：</label>
+        <input type="file" id="files" name="files" accept="image/*,video/mp4,video/webm" multiple>
+        <button type="button" id="uploadBtn" onclick="uploadFiles()">上传图片</button>
+        <span id="uploadStatus" style="font-size:13px;color:#667"></span>
+    </div>
 
     <form id="deleteForm" action="/admin/delete" method="post">
         <input type="hidden" name="category" id="deleteCategory">
@@ -492,6 +491,61 @@
                 tr.addEventListener('drop', function (e) { e.preventDefault(); });
             });
         })();
+
+
+        // 分批上传：单请求体积过大会被服务端 ReadTimeout 掐断（ERR_HTTP2_PROTOCOL_ERROR），
+        // 按每批 30 张切片提交，单批传输时间可控且可显示进度。
+        var UPLOAD_BATCH = 30;
+        function setUploadStatus(text) {
+            document.getElementById('uploadStatus').textContent = text;
+        }
+        function uploadFiles() {
+            var input = document.getElementById('files');
+            var btn = document.getElementById('uploadBtn');
+            if (!input.files.length) { alert('请先选择要上传的图片'); return; }
+            var cat = currentCategory();
+            if (!cat) { alert('请先选择分类'); return; }
+            var files = Array.prototype.slice.call(input.files);
+            var batches = [];
+            for (var i = 0; i < files.length; i += UPLOAD_BATCH) {
+                batches.push(files.slice(i, i + UPLOAD_BATCH));
+            }
+            btn.disabled = true;
+            var done = 0, failed = 0;
+            setUploadStatus('上传中 0/' + files.length + '…');
+
+            function next(idx) {
+                if (idx >= batches.length) {
+                    input.value = '';
+                    btn.disabled = false;
+                    setUploadStatus('上传完成：成功 ' + done + ' 张' + (failed ? '，失败 ' + failed + ' 张' : ''));
+                    if (done) loadImages();
+                    return;
+                }
+                var fd = new FormData();
+                fd.append('category', cat);
+                batches[idx].forEach(function (f) { fd.append('files', f); });
+                fetch('/admin/upload', { method: 'POST', body: fd })
+                    .then(function (r) { return r.text().then(function (t) { return { ok: r.ok, t: t }; }); })
+                    .then(function (res) {
+                        var m = res.t.match(/成功上传 (\d+) \/ (\d+) 张/);
+                        if (res.ok && m) {
+                            done += parseInt(m[1], 10);
+                            failed += parseInt(m[2], 10) - parseInt(m[1], 10);
+                        } else {
+                            failed += batches[idx].length;
+                        }
+                        setUploadStatus('上传中 ' + (done + failed) + '/' + files.length + '…');
+                        next(idx + 1);
+                    })
+                    .catch(function () {
+                        failed += batches[idx].length;
+                        setUploadStatus('上传中 ' + (done + failed) + '/' + files.length + '…');
+                        next(idx + 1);
+                    });
+            }
+            next(0);
+        }
 
         document.addEventListener('DOMContentLoaded', function () {
             if (document.getElementById('tableSelect').value) loadImages();
