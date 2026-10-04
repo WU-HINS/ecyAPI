@@ -180,6 +180,7 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 - **静态资源免日志**：`/pic/` 大流量请求跳过访问日志，避免标准库 log 互斥锁成为热点
 - **超时与限流**：HTTP 服务配置读/写/空闲超时，防止慢客户端耗尽连接
 - **CDN 友好**：图片响应带 7 天强缓存头
+- **h2c 回源**：明文端口直接讲 HTTP/2（prior knowledge 与 Upgrade 均支持），CDN 可用 HTTP/2 回源
 
 ## 开发
 
