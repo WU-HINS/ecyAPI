@@ -811,8 +811,10 @@ func plainText(w http.ResponseWriter, body string) {
 }
 
 func plainError(w http.ResponseWriter, msg string, status int) {
-	w.WriteHeader(status)
+	// Header 必须在 WriteHeader 之前设置：顺序颠倒时状态行已发出，
+	// 后设的 Content-Type 被丢弃，浏览器面对无类型的 404 会按下载处理。
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
 	fmt.Fprint(w, msg)
 }
 
