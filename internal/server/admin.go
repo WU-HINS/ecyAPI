@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"ecyapi/internal/store"
 )
@@ -101,6 +102,10 @@ func (s *Server) handleAdminUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "未授权", http.StatusUnauthorized)
 		return
 	}
+	// 批量上传的单个请求体可达上百 MB，公网上行传输常超过全局 ReadTimeout，
+	// 这里按请求放宽读超时；ReadHeaderTimeout 仍在连接层防慢连接攻击。
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
 	category := strings.TrimSpace(r.FormValue("category"))
 	if !storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
