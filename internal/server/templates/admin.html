@@ -146,6 +146,33 @@
         .badge.tag { background: #eef1ff; color: var(--accent); }
         .empty-tip { text-align: center; color: var(--ink-3); font-size: 13px; padding: 28px 0; }
 
+        /* 拖拽上传区 */
+        .dropzone {
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+            border: 1.5px dashed #d4d4d8; border-radius: var(--r-md);
+            padding: 26px 20px 20px; cursor: pointer; text-align: center;
+            background: #fafafa; transition: border-color .2s, background .2s, box-shadow .2s;
+            margin-bottom: 14px; position: relative;
+        }
+        .dropzone:hover { border-color: #b6b8c2; background: #f6f6f8; }
+        .dropzone.dragover {
+            border-color: var(--accent); background: #f0f3ff;
+            box-shadow: 0 0 0 3px rgba(59,91,255,.1);
+        }
+        .dropzone .dz-icon {
+            width: 38px; height: 38px; border-radius: 12px; margin-bottom: 6px;
+            background: #eef1ff; color: var(--accent); display: grid; place-items: center;
+        }
+        .dropzone.dragover .dz-icon { background: #dfe6ff; }
+        .dropzone .dz-main { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+        .dropzone .dz-sub { font-size: 12px; color: var(--ink-3); line-height: 1.7; }
+        .dropzone input[type=file] { display: none; }
+        .dropzone .dz-filename {
+            font-size: 12px; color: var(--accent); font-weight: 500; max-width: 70%;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .dropzone.has-file { border-style: solid; border-color: #c7cdfa; background: #f6f7ff; }
+
         /* 图片网格 */
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
         .card { position: relative; border-radius: var(--r-md); overflow: hidden; background: #f4f4f5; box-shadow: var(--shadow-sm); transition: transform .25s var(--ease), box-shadow .25s var(--ease); }
@@ -279,7 +306,7 @@
                         <span class="hint">每页加载 40 张，全选/删除仅作用于当前页</span>
                     </h3>
                     <div class="row" style="align-items:flex-end;margin-bottom:14px">
-                        <div class="field" style="max-width:260px;margin:0">
+                        <div class="field" style="max-width:280px;margin:0">
                             <label for="tableSelect">选择分类</label>
                             <select id="tableSelect" onchange="loadImages()">
                                 {{- range .Tables}}
@@ -287,14 +314,16 @@
                                 {{- end}}
                             </select>
                         </div>
-                        <div class="field" style="flex:0 1 300px;margin:0">
-                            <label for="files">上传图片（可多选，自动分批）</label>
-                            <input type="file" id="files" accept="image/*,video/mp4,video/webm" multiple
-                                   style="font-size:12.5px;color:var(--ink-2)">
-                        </div>
-                        <button type="button" class="btn" id="uploadBtn" onclick="uploadFiles()">上传</button>
+                        <span id="uploadStatus" style="font-size:12.5px;color:var(--ink-2);padding-bottom:9px"></span>
                     </div>
-                    <span id="uploadStatus" style="font-size:12.5px;color:var(--ink-2)"></span>
+                    <div class="dropzone" id="dropzone">
+                        <span class="dz-icon"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
+                        <span class="dz-main">拖拽图片到这里，或点击选择文件</span>
+                        <span class="dz-sub">支持多选，自动分批上传 · 图片 / MP4 / WebM</span>
+                        <span class="dz-filename" id="dzFilename"></span>
+                        <input type="file" id="files" accept="image/*,video/mp4,video/webm" multiple>
+                        <button type="button" class="btn" id="uploadBtn" style="margin-top:10px" onclick="uploadFiles(event)">上传所选文件</button>
+                    </div>
 
                     <form id="deleteForm" action="/admin/delete" method="post">
                         <input type="hidden" name="category" id="deleteCategory">
@@ -842,6 +871,47 @@
             }
             next(0);
         }
+
+        /* 拖拽上传区：点击选择 / 拖入文件 / 高亮反馈 */
+        (function () {
+            var dz = document.getElementById('dropzone');
+            var input = document.getElementById('files');
+            var nameEl = document.getElementById('dzFilename');
+            if (!dz) return;
+            dz.addEventListener('click', function (e) {
+                if (e.target.closest('#uploadBtn')) return;
+                input.click();
+            });
+            ['dragenter', 'dragover'].forEach(function (ev) {
+                dz.addEventListener(ev, function (e) {
+                    e.preventDefault(); e.stopPropagation();
+                    dz.classList.add('dragover');
+                });
+            });
+            ['dragleave', 'drop'].forEach(function (ev) {
+                dz.addEventListener(ev, function (e) {
+                    e.preventDefault(); e.stopPropagation();
+                    dz.classList.remove('dragover');
+                });
+            });
+            dz.addEventListener('drop', function (e) {
+                var files = e.dataTransfer && e.dataTransfer.files;
+                if (!files || !files.length) return;
+                input.files = files;
+                showSelectedFiles();
+            });
+            input.addEventListener('change', showSelectedFiles);
+            function showSelectedFiles() {
+                var n = input.files.length;
+                if (!n) { nameEl.textContent = ''; dz.classList.remove('has-file'); return; }
+                dz.classList.add('has-file');
+                nameEl.textContent = n === 1 ? '已选 1 个文件：' + input.files[0].name : '已选 ' + n + ' 个文件';
+            }
+            /* 防止误拖到页面其它位置触发浏览器直接打开文件 */
+            ['dragover', 'drop'].forEach(function (ev) {
+                document.addEventListener(ev, function (e) { e.preventDefault(); });
+            });
+        })();
 
         document.addEventListener('DOMContentLoaded', function () {
             if (document.getElementById('tableSelect').value) loadImages();
