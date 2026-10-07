@@ -3,336 +3,632 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>图片管理后台</title>
+    <title>后台管理</title>
     <style>
-        body { font-family: 'Segoe UI', 'PingFang SC', sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; color: #333; }
-        h1 { border-bottom: 2px solid #5e72e4; padding-bottom: 10px; }
-        h2 { margin-top: 34px; }
-        form { background: #f6f8ff; border-radius: 10px; padding: 22px; }
-        label { font-weight: 600; }
-        select, input[type=text], input[type=file], textarea {
-            width: 100%; margin-top: 6px; padding: 9px;
-            border: 1px solid #ccd3f0; border-radius: 6px; font-size: 14px; box-sizing: border-box;
+        /* ===== 设计令牌（取自 Marvis UI 风格） ===== */
+        :root {
+            --bg: #f7f7f8; --card: #ffffff;
+            --ink: #1c1c1e; --ink-2: #71717a; --ink-3: #a1a1aa;
+            --line: rgba(0,0,0,.06); --line-2: rgba(0,0,0,.09);
+            --hover: rgba(0,0,0,.045);
+            --accent: #3b5bff;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+            --shadow-md: 0 1px 3px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.05);
+            --ease: cubic-bezier(.22,1,.36,1);
+            --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+            --danger: #e5484d;
         }
-        textarea { resize: vertical; font-family: inherit; }
-        table.logs { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
-        table.logs td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; vertical-align: middle; }
-        table.logs td.idx { width: 40px; color: #99a; }
-        table.logs td.op { width: 70px; }
-        table.logs button.del {
-            padding: 4px 12px; background: #c0392b; color: #fff;
-            border: 0; border-radius: 6px; font-size: 13px; cursor: pointer;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+            background: var(--bg); color: var(--ink); font-size: 14px;
+            -webkit-font-smoothing: antialiased;
         }
-        table.logs button.del:hover { background: #96281b; }
-        table.eps { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
-        table.eps th, table.eps td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; vertical-align: middle; }
-        table.eps th { background: #eef1fa; }
-        table.eps td.idx { width: 40px; color: #99a; }
-        table.eps td.grip { width: 36px; cursor: grab; color: #aab; font-size: 16px; user-select: none; text-align: center; }
-        table.eps tbody tr { background: #fff; transition: background 0.15s; }
-        table.eps tbody tr.dragging { opacity: 0.55; background: #eef1fa; }
-        table.eps tbody tr.drop-before td { border-top: 2px solid #5e72e4; }
-        #sortStatus { font-size: 13px; margin-left: 10px; color: #667; }
-        #sortStatus.ok { color: #2e7d32; }
-        #sortStatus.err { color: #c0392b; }
-        input[type=submit], .btn {
-            margin-top: 14px; padding: 9px 26px; background: #5e72e4; color: #fff;
-            border: 0; border-radius: 6px; font-size: 14px; cursor: pointer;
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.14); border-radius: 99px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        button { font-family: inherit; border: none; background: none; cursor: pointer; color: inherit; }
+        input, textarea, select { font-family: inherit; border: none; outline: none; color: inherit; }
+        :focus-visible { outline: 2px solid rgba(59,91,255,.5); outline-offset: 2px; border-radius: 6px; }
+
+        /* ===== 侧边栏：漂浮白卡 ===== */
+        #app { display: flex; min-height: 100vh; }
+        #sidebar {
+            width: 224px; flex-shrink: 0; user-select: none; position: sticky; top: 0;
+            height: 100vh; margin: 14px 0 14px 14px;
+            background: #fff; border-radius: 20px;
+            border: 1px solid rgba(0,0,0,.04);
+            box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 12px 32px rgba(0,0,0,.05);
+            display: flex; flex-direction: column; padding: 18px 12px 12px;
+            overflow-y: auto;
         }
-        input[type=submit]:hover, .btn:hover { background: #4557c9; }
-        .btn.danger { background: #c0392b; }
-        .btn.danger:hover { background: #96281b; }
-        .logout { color: #c0392b; text-decoration: none; margin-left: 16px; }
-        .err { color: #c0392b; }
-        hr { margin: 26px 0; border: 0; border-top: 1px solid #e4e8f0; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
-        .card { position: relative; border: 1px solid #dde3f0; border-radius: 8px; overflow: hidden; background: #fff; }
-        .card img { width: 100%; height: 110px; object-fit: cover; display: block; background: #f0f2f8; }
-        .card video { width: 100%; height: 110px; object-fit: cover; display: block; background: #000; }
-        .card .name { font-size: 11px; color: #667; padding: 4px 6px; word-break: break-all; }
-        .card .ck { position: absolute; top: 6px; left: 6px; transform: scale(1.3); z-index: 2; }
-        .row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-        .pager { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
-        .pager button {
-            padding: 6px 14px; background: #5e72e4; color: #fff;
-            border: 0; border-radius: 6px; font-size: 13px; cursor: pointer;
+        .brand { display: flex; align-items: center; gap: 8px; padding: 2px 10px 14px; }
+        .brand-mark {
+            width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+            background: linear-gradient(135deg, #3b5bff, #7a5cff);
+            display: grid; place-items: center; box-shadow: 0 3px 8px rgba(59,91,255,.3);
         }
-        .pager button:disabled { background: #c3c9e8; cursor: not-allowed; }
-        .pager .page-info { font-size: 13px; color: #667; }
-        .row > div { flex: 1; min-width: 160px; }
-        table.bindings { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
-        table.bindings th, table.bindings td { padding: 8px 10px; border-bottom: 1px solid #e4e8f0; text-align: left; }
-        table.bindings th { background: #eef1fa; }
-        .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-        .badge.on { background: #e3f2e8; color: #2e7d32; }
-        .badge.off { background: #fdeaea; color: #c0392b; }
-        button.vis { padding: 4px 14px; border: 0; border-radius: 6px; font-size: 13px; cursor: pointer; background: #5e72e4; color: #fff; }
-        button.vis:hover { background: #4557c9; }
-        button.vis.show { background: #2e7d32; }
-        button.vis.show:hover { background: #256428; }
+        .brand b { font-size: 17px; font-weight: 800; letter-spacing: -.02em; }
+        .brand .badge {
+            font-size: 10px; font-weight: 600; color: var(--ink-2); background: #f4f4f5;
+            border-radius: 99px; padding: 2px 8px; letter-spacing: .04em; flex-shrink: 0; white-space: nowrap;
+        }
+        .nav { display: flex; flex-direction: column; gap: 2px; }
+        .nav-label { font-size: 11px; color: var(--ink-3); padding: 18px 10px 6px; font-weight: 600; letter-spacing: .06em; }
+        .nav-item {
+            display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px;
+            font-size: 13.5px; font-weight: 500; color: #3f3f46; text-align: left; width: 100%;
+            transition: background .18s var(--ease), color .18s;
+        }
+        .nav-item:hover { background: #f6f6f7; }
+        .nav-item.active { background: #f0f0f2; color: var(--ink); font-weight: 600; }
+        .nav-item svg { flex-shrink: 0; }
+        .side-footer {
+            display: flex; align-items: center; gap: 9px; margin-top: auto; padding-top: 12px; flex-shrink: 0;
+        }
+        .side-footer .who { font-size: 13px; font-weight: 500; flex: 1; min-width: 0; text-align: left; }
+        .logout-btn {
+            font-size: 12.5px; color: var(--ink-2); border: 1px solid var(--line-2);
+            border-radius: 8px; padding: 5px 12px; font-weight: 600;
+            box-shadow: var(--shadow-sm); transition: background .15s, color .15s;
+        }
+        .logout-btn:hover { background: #fdeaea; color: var(--danger); }
+
+        /* ===== 主区域 ===== */
+        #main { flex: 1; min-width: 0; padding: 30px 34px 48px; }
+        .view { display: none; flex-direction: column; gap: 18px; max-width: 960px; }
+        .view.show { display: flex; animation: viewIn .32s var(--ease); }
+        @keyframes viewIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        .page-head h1 { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+        .page-head p { font-size: 13px; color: var(--ink-2); margin-top: 5px; line-height: 1.6; }
+        .panel {
+            background: var(--card); border-radius: var(--r-lg); padding: 20px 22px;
+            box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 6px 18px rgba(0,0,0,.04);
+        }
+        .panel h3 {
+            font-size: 14.5px; font-weight: 700; margin-bottom: 14px;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .panel h3 .hint { font-size: 12px; color: var(--ink-3); font-weight: 400; margin-left: auto; }
+
+        /* 表单 */
+        .field { margin-bottom: 13px; }
+        .field label { display: block; font-size: 12.5px; font-weight: 600; color: #3f3f46; margin-bottom: 6px; }
+        .field input[type=text], .field input[type=password], .field select, .field textarea {
+            width: 100%; padding: 8px 12px; font-size: 13.5px; color: var(--ink);
+            background: #f4f4f5; border-radius: 10px; border: 1px solid transparent;
+            transition: background .2s, box-shadow .2s;
+        }
+        .field input:focus, .field select:focus, .field textarea:focus {
+            background: #eef0f3; box-shadow: 0 0 0 2px rgba(59,91,255,.12);
+        }
+        .field textarea { resize: vertical; min-height: 58px; line-height: 1.6; }
+        .field ::placeholder { color: #b8b8bf; }
+        .field select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2.4'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+        .field-desc { font-size: 12px; color: var(--ink-3); margin-top: 5px; line-height: 1.65; }
+        .btn {
+            padding: 8px 22px; background: var(--ink); color: #fff; border-radius: 10px;
+            font-size: 13px; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,.16);
+            transition: transform .15s var(--ease), box-shadow .15s, background .15s;
+        }
+        .btn:hover { box-shadow: 0 6px 16px rgba(0,0,0,.2); }
+        .btn:active { transform: scale(.96); }
+        .btn.danger { background: var(--danger); }
+        .btn.ghost {
+            background: #fff; color: var(--ink); border: 1px solid var(--line-2);
+            box-shadow: var(--shadow-sm);
+        }
+        .btn.ghost:hover { background: #f6f6f7; box-shadow: var(--shadow-sm); }
+        .btn.ghost.danger { color: var(--danger); background: #fff; }
+        .btn:disabled { background: #e0e0e4; box-shadow: none; cursor: not-allowed; }
+        .btn.ghost.vis-restore { background: #2e7d32; color: #fff; border: none; }
+        .btn.ghost.vis-restore:hover { background: #256428; }
+        .row { display: flex; gap: 14px; flex-wrap: wrap; }
+        .row .field { flex: 1; min-width: 180px; }
+        .form-actions { margin-top: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+        /* 表格 */
+        table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        table.tbl th {
+            text-align: left; font-size: 11.5px; color: var(--ink-3); font-weight: 600;
+            letter-spacing: .05em; padding: 4px 10px 10px; border-bottom: 1px solid var(--line-2);
+        }
+        table.tbl td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+        table.tbl tr:last-child td { border-bottom: none; }
+        table.tbl td.idx { width: 36px; color: var(--ink-3); }
+        table.tbl td.grip { width: 30px; cursor: grab; color: #c9cad0; font-size: 15px; user-select: none; text-align: center; }
+        table.tbl td.grip:hover { color: var(--ink-2); }
+        table.tbl tr.dragging { opacity: .55; }
+        table.tbl tr.drop-before td { border-top: 2px solid var(--accent); }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 11.5px; font-weight: 600; }
+        .badge.on { background: #e9f8f0; color: #218838; }
+        .badge.off { background: #fdeaea; color: var(--danger); }
+        .badge.tag { background: #eef1ff; color: var(--accent); }
+        .empty-tip { text-align: center; color: var(--ink-3); font-size: 13px; padding: 28px 0; }
+
+        /* 图片网格 */
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
+        .card { position: relative; border-radius: var(--r-md); overflow: hidden; background: #f4f4f5; box-shadow: var(--shadow-sm); transition: transform .25s var(--ease), box-shadow .25s var(--ease); }
+        .card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+        .card img, .card video { width: 100%; height: 108px; object-fit: cover; display: block; background: #ececf0; }
+        .card .name { font-size: 10.5px; color: var(--ink-2); padding: 5px 8px; word-break: break-all; background: #fff; }
+        .card .ck { position: absolute; top: 7px; left: 7px; transform: scale(1.25); z-index: 2; }
+        .pager { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .pager button { padding: 6px 16px; background: #fff; color: var(--ink); border: 1px solid var(--line-2); border-radius: 9px; font-size: 12.5px; font-weight: 600; box-shadow: var(--shadow-sm); transition: background .15s; }
+        .pager button:hover { background: #f6f6f7; }
+        .pager button:disabled { color: #c3c4ca; cursor: not-allowed; background: #f7f7f8; }
+        .pager .page-info { font-size: 12.5px; color: var(--ink-2); }
+
+        /* Toast / 状态提示 */
+        #toast {
+            position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%) translateY(16px); z-index: 99;
+            background: #1c1c1e; color: #fff; font-size: 13px; padding: 9px 20px; border-radius: 99px;
+            box-shadow: 0 10px 30px rgba(0,0,0,.25); opacity: 0; pointer-events: none;
+            transition: all .32s var(--ease); max-width: 86vw;
+        }
+        #toast.show { opacity: 1; transform: translateX(-50%); }
+        #sortStatus { font-size: 12px; margin-left: 10px; color: var(--ink-2); font-weight: 400; }
+        #sortStatus.ok { color: #218838; }
+        #sortStatus.err { color: var(--danger); }
+
+        /* 移动端 */
+        #menuBtn {
+            display: none; position: fixed; top: 12px; left: 12px; z-index: 44;
+            width: 38px; height: 38px; border-radius: 12px; background: #fff;
+            box-shadow: var(--shadow-md); place-items: center; color: var(--ink);
+        }
+        @media (max-width: 768px) {
+            #sidebar {
+                position: fixed; top: 0; bottom: 0; left: 0; z-index: 46; margin: 10px;
+                width: min(268px, 82vw); transform: translateX(calc(-100% - 24px));
+                transition: transform .34s var(--ease); height: auto;
+            }
+            #sidebar.open { transform: none; }
+            #menuBtn { display: grid; }
+            #main { padding: 64px 14px 32px; }
+            .view { max-width: 100%; }
+        }
     </style>
 </head>
 <body>
 {{- if not .Authed}}
-    <h2>请输入密码访问页面</h2>
-    {{- if .LoginError}}<p class="err">密码错误，请重试。</p>{{end}}
-    <form method="post">
-        <input type="password" name="login_password" placeholder="密码" autocomplete="current-password" required>
-        <input type="submit" value="登录">
-    </form>
+    <div style="min-height:100vh;display:grid;place-items:center;padding:20px">
+        <div class="panel" style="width:min(360px,92vw);padding:30px 28px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                <span class="brand-mark"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z"/></svg></span>
+                <b style="font-size:18px;font-weight:800;letter-spacing:-.02em">后台管理</b>
+            </div>
+            <p style="font-size:12.5px;color:var(--ink-3);margin-bottom:20px">请输入密码访问页面</p>
+            {{- if .LoginError}}<p style="color:var(--danger);font-size:13px;margin-bottom:14px">密码错误，请重试。</p>{{end}}
+            <form method="post">
+                <div class="field">
+                    <label for="login_password">密码</label>
+                    <input type="password" id="login_password" name="login_password"
+                           placeholder="请输入管理密码" autocomplete="current-password" required>
+                </div>
+                <button type="submit" class="btn" style="width:100%;margin-top:8px">登 录</button>
+            </form>
+        </div>
+    </div>
 {{- else}}
-    <h1>图片管理系统 <a href="/admin?logout=1" class="logout">退出登录</a></h1>
+    <button id="menuBtn" title="打开菜单">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
 
-    <h2>图片管理</h2>
-    <label for="tableSelect">选择分类：</label>
-    <select id="tableSelect" name="category" onchange="loadImages()">
-        {{- range .Tables}}
-        <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
-        {{- end}}
-    </select>
-    <div style="margin-top:16px">
-        <label for="files">上传新增图片（可多选，自动分批上传）：</label>
-        <input type="file" id="files" name="files" accept="image/*,video/mp4,video/webm" multiple>
-        <button type="button" id="uploadBtn" onclick="uploadFiles()">上传图片</button>
-        <span id="uploadStatus" style="font-size:13px;color:#667"></span>
+    <div id="app">
+        <!-- 侧边栏 -->
+        <aside id="sidebar">
+            <div class="brand">
+                <span class="brand-mark"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z"/></svg></span>
+                <b>ecyAPI</b><span class="badge">管理后台</span>
+            </div>
+
+            <div class="nav-label">内容管理</div>
+            <nav class="nav">
+                <button class="nav-item active" data-view="images">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm1 2v12.3l4.2-4.2 3 3L16.5 12 19 14.5V5H5zm3.5 1A1.8 1.8 0 1 1 8.5 9.7 1.8 1.8 0 0 1 8.5 6z"/></svg>
+                    图片管理
+                </button>
+                <button class="nav-item" data-view="category">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></svg>
+                    分类管理
+                </button>
+                <button class="nav-item" data-view="endpoints">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z"/></svg>
+                    栏目与排序
+                </button>
+                <button class="nav-item" data-view="gallery">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm8 1.5V8h4.5L14 3.5zM8 12h8v1.6H8V12zm0 4h8v1.6H8V16z"/></svg>
+                    图库展示
+                </button>
+            </nav>
+
+            <div class="nav-label">站点设置</div>
+            <nav class="nav">
+                <button class="nav-item" data-view="settings">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.5 4a7.6 7.6 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a8 8 0 0 0-2-1.2L15.5 3h-4l-.5 2.6a8 8 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a8 8 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a8 8 0 0 0 2 1.2l.5 2.6h4l.5-2.6a8 8 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2z"/></svg>
+                    站点设置
+                </button>
+                <button class="nav-item" data-view="content">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm3 6a1.2 1.2 0 1 0 0 2.4A1.2 1.2 0 0 0 8 9zm-1 9 4-4 3 3 4-4 3 3v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-0z"/></svg>
+                    首页文案
+                </button>
+                <button class="nav-item" data-view="logs">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 2h10a1 1 0 0 1 1 1v17l-3-2-3 2-3-2-3 2V3a1 1 0 0 1 1-1zm2 5h6v1.8H9V7zm0 4h6v1.8H9V11z"/></svg>
+                    改动日志
+                </button>
+            </nav>
+
+            <div class="side-footer">
+                <span class="who">管理员</span>
+                <a class="logout-btn" href="/admin?logout=1">退出登录</a>
+            </div>
+        </aside>
+
+        <!-- 主区域 -->
+        <main id="main">
+
+            <!-- 图片管理 -->
+            <section class="view show" id="view-images">
+                <div class="page-head">
+                    <h1>图片管理</h1>
+                    <p>按分类上传、浏览与删除图片；支持多选批量上传与分页浏览。</p>
+                </div>
+                <div class="panel">
+                    <h3>上传与浏览
+                        <span class="hint">每页加载 40 张，全选/删除仅作用于当前页</span>
+                    </h3>
+                    <div class="row" style="align-items:flex-end;margin-bottom:14px">
+                        <div class="field" style="max-width:260px;margin:0">
+                            <label for="tableSelect">选择分类</label>
+                            <select id="tableSelect" onchange="loadImages()">
+                                {{- range .Tables}}
+                                <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
+                                {{- end}}
+                            </select>
+                        </div>
+                        <div class="field" style="flex:0 1 300px;margin:0">
+                            <label for="files">上传图片（可多选，自动分批）</label>
+                            <input type="file" id="files" accept="image/*,video/mp4,video/webm" multiple
+                                   style="font-size:12.5px;color:var(--ink-2)">
+                        </div>
+                        <button type="button" class="btn" id="uploadBtn" onclick="uploadFiles()">上传</button>
+                    </div>
+                    <span id="uploadStatus" style="font-size:12.5px;color:var(--ink-2)"></span>
+
+                    <form id="deleteForm" action="/admin/delete" method="post">
+                        <input type="hidden" name="category" id="deleteCategory">
+                        <div class="form-actions" style="margin:6px 0 14px">
+                            <button type="button" class="btn ghost" onclick="toggleAll(true)">全选</button>
+                            <button type="button" class="btn ghost" onclick="toggleAll(false)">取消全选</button>
+                            <button type="submit" class="btn danger"
+                                    onclick="return confirm('确认删除选中的图片吗？此操作不可恢复。')">删除选中</button>
+                        </div>
+                        <div class="grid" id="imageGrid"></div>
+                        <div class="pager" id="pager" style="margin-top:16px;display:none">
+                            <button type="button" id="prevPage" onclick="gotoPage(currentPage - 1)">上一页</button>
+                            <span class="page-info" id="pageInfo"></span>
+                            <button type="button" id="nextPage" onclick="gotoPage(currentPage + 1)">下一页</button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- 分类管理 -->
+            <section class="view" id="view-category">
+                <div class="page-head">
+                    <h1>分类管理</h1>
+                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口。</p>
+                </div>
+                <div class="panel">
+                    <h3>创建新分类</h3>
+                    <form action="/admin/create" method="post" onsubmit="return checkTableName()">
+                        <div class="field">
+                            <label for="new_table_name">分类名</label>
+                            <input type="text" id="new_table_name" name="new_table_name"
+                                   placeholder="例如：link_work，以字母开头，仅含字母/数字/下划线" required>
+                        </div>
+                        <div class="row">
+                            <div class="field">
+                                <label for="new_table_label">栏目名称</label>
+                                <input type="text" id="new_table_label" name="new_table_label"
+                                       placeholder="首页卡片名称，留空则与分类名相同">
+                            </div>
+                            <div class="field">
+                                <label for="new_table_desc">栏目描述（可选）</label>
+                                <input type="text" id="new_table_desc" name="new_table_desc"
+                                       placeholder="首页卡片上的一句话描述">
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">创建分类</button>
+                        </div>
+                        <p class="field-desc" style="margin-top:10px">创建后自动在首页展示卡片，并开通 /分类名 随机跳转接口；上传图片后即可访问。</p>
+                    </form>
+                </div>
+
+                <div class="panel">
+                    <h3>删除分类</h3>
+                    <form action="/admin/category/delete" method="post" onsubmit="return checkDeleteCategory()">
+                        <div class="field" style="max-width:360px">
+                            <label for="del_cat_select">选择要删除的分类</label>
+                            <select id="del_cat_select" name="category">
+                                {{- range .Tables}}
+                                <option value="{{.Name}}">{{.Name}} ({{.Count}} 张图片)</option>
+                                {{- end}}
+                            </select>
+                        </div>
+                        <label style="display:flex;align-items:flex-start;gap:9px;font-weight:400;font-size:13px;color:var(--ink-2);margin:4px 0 0;line-height:1.7;cursor:pointer">
+                            <input type="checkbox" id="del_cat_confirm" name="confirm_delete" value="1"
+                                   style="width:auto;margin-top:3px;transform:scale(1.2)">
+                            <span>我已知晓该操作将删除该分类目录下全部图片，且<b>不可恢复</b>；引用该分类的首页栏目也会一并下线。</span>
+                        </label>
+                        <div class="form-actions">
+                            <button type="submit" class="btn danger">删除分类</button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+
+            <!-- 栏目与排序 -->
+            <section class="view" id="view-endpoints">
+                <div class="page-head">
+                    <h1>栏目与排序</h1>
+                    <p>双端自适应栏目会按访问设备自动切换分类；拖动 ⋮⋮ 调整首页卡片与文档页的展示顺序。</p>
+                </div>
+                <div class="panel">
+                    <h3>新增双端自适应栏目</h3>
+                    <form action="/admin/binding" method="post" onsubmit="return checkBinding()">
+                        <div class="row">
+                            <div class="field">
+                                <label for="binding_desk">PC 端分类</label>
+                                <select id="binding_desk" name="binding_desk">
+                                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="binding_mobile">移动端分类</label>
+                                <select id="binding_mobile" name="binding_mobile">
+                                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="field">
+                                <label for="binding_path">新栏目路径</label>
+                                <input type="text" id="binding_path" name="binding_path"
+                                       placeholder="访问路径，如 szs，以字母开头，仅含字母/数字/下划线" required>
+                            </div>
+                            <div class="field">
+                                <label for="binding_label">栏目名称</label>
+                                <input type="text" id="binding_label" name="binding_label"
+                                       placeholder="例如：随手拍自适应" required>
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label for="binding_desc">栏目描述（可选）</label>
+                            <input type="text" id="binding_desc" name="binding_desc" placeholder="一句话描述该栏目">
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">创建双端栏目</button>
+                        </div>
+                    </form>
+                    {{- if .Bindings}}
+                    <h3 style="margin-top:22px">已有双端栏目</h3>
+                    <table class="tbl">
+                        <thead><tr><th>路径</th><th>名称</th><th>PC 分类</th><th>移动端分类</th></tr></thead>
+                        <tbody>
+                        {{- range .Bindings}}
+                            <tr><td><code>/{{.Path}}</code></td><td>{{.Label}}</td><td>{{.Desk}}</td><td>{{.Mobile}}</td></tr>
+                        {{- end}}
+                        </tbody>
+                    </table>
+                    {{- end}}
+                </div>
+
+                <div class="panel">
+                    <h3>前端分类栏排序<span id="sortStatus"></span></h3>
+                    <p class="field-desc" style="margin:-8px 0 10px">按住 <b>⋮⋮</b> 拖动行即可调整顺序，松开后自动保存（控制首页卡片与文档页展示顺序）。</p>
+                    <table class="tbl">
+                        <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>类型</th></tr></thead>
+                        <tbody id="epsBody">
+                        {{- range $i, $ep := .Endpoints}}
+                            <tr draggable="true" data-path="{{$ep.Path}}">
+                                <td class="grip" title="拖动排序">⋮⋮</td>
+                                <td class="idx">{{$i}}</td>
+                                <td><code>/{{$ep.Path}}</code></td>
+                                <td>{{$ep.Label}}</td>
+                                <td>{{if $ep.Adaptive}}<span class="badge tag">自适应</span>{{else}}单端{{end}}</td>
+                            </tr>
+                        {{- end}}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- 图库展示 -->
+            <section class="view" id="view-gallery">
+                <div class="page-head">
+                    <h1>图库展示</h1>
+                    <p>控制各分类是否展示在 <a href="/img" target="_blank">网页图库</a>；隐藏后图库不再显示该分类，但随机接口与图片访问不受影响。</p>
+                </div>
+                <div class="panel">
+                    <table class="tbl">
+                        <thead><tr><th>分类</th><th>图片数</th><th>图库状态</th><th style="text-align:right">操作</th></tr></thead>
+                        <tbody>
+                        {{- range .Tables}}
+                            <tr>
+                                <td>{{.Name}}</td>
+                                <td>{{.Count}}</td>
+                                <td>{{if .Hide}}<span class="badge off">已隐藏</span>{{else}}<span class="badge on">展示中</span>{{end}}</td>
+                                <td style="text-align:right">
+                                    <form action="/admin/gallery/visibility" method="post">
+                                        <input type="hidden" name="category" value="{{.Name}}">
+                                        <button type="submit" class="btn ghost{{if .Hide}} vis-restore{{end}}">
+                                            {{if .Hide}}恢复展示{{else}}从图库隐藏{{end}}
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {{- end}}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- 站点设置 -->
+            <section class="view" id="view-settings">
+                <div class="page-head">
+                    <h1>站点设置</h1>
+                    <p>保存后 JSON 接口与纯文本接口输出的图片链接将统一使用该域名。</p>
+                </div>
+                <div class="panel">
+                    <h3>API 对外域名</h3>
+                    <form action="/admin/settings" method="post">
+                        <div class="field">
+                            <label for="base_url">域名</label>
+                            <input type="text" id="base_url" name="base_url" value="{{.BaseURL}}"
+                                   placeholder="例如：https://api.example.com，留空则按请求自动推断">
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">保存域名</button>
+                        </div>
+                        <p class="field-desc" style="margin-top:10px">
+                            清空并保存即恢复自动推断。
+                            {{- if .BaseURL}}<br>当前生效：<strong>{{.BaseURL}}</strong>{{- end}}
+                        </p>
+                    </form>
+                </div>
+            </section>
+
+            <!-- 首页文案 -->
+            <section class="view" id="view-content">
+                <div class="page-head">
+                    <h1>首页文案</h1>
+                    <p>保存后立即生效；标语与分享语留空并保存即恢复默认文案。</p>
+                </div>
+                <div class="panel">
+                    <form action="/admin/content" method="post">
+                        <div class="field">
+                            <label for="slogan">标语（横幅大标题下方一行）</label>
+                            <textarea id="slogan" name="slogan" rows="2" placeholder="留空则恢复默认">{{.Slogan}}</textarea>
+                        </div>
+                        <div class="field">
+                            <label for="share">分享语（meta 区第一行）</label>
+                            <textarea id="share" name="share" rows="2" placeholder="留空则恢复默认">{{.Share}}</textarea>
+                        </div>
+                        <div class="row">
+                            <div class="field">
+                                <label for="icp">备案号文字（meta 区链接文字）</label>
+                                <input type="text" id="icp" name="icp" value="{{.ICP}}" placeholder="留空则恢复默认">
+                            </div>
+                            <div class="field">
+                                <label for="icp_url">备案号链接（点击备案号跳转的地址）</label>
+                                <input type="text" id="icp_url" name="icp_url" value="{{.ICPURL}}"
+                                       placeholder="留空则不生成链接">
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">保存首页文案</button>
+                        </div>
+                        <p class="field-desc" style="margin-top:10px">
+                            备案号链接留空时不生成超链接（仅展示文字）；备案号文字保持默认且链接留空时，将回退到默认官方查询链接。
+                        </p>
+                        <p class="field-desc">
+                            支持少量 HTML 标签：换行 <code>&lt;br&gt;</code>、加粗 <code>&lt;b&gt;/&lt;strong&gt;</code>、
+                            斜体 <code>&lt;i&gt;/&lt;em&gt;</code>、下划线 <code>&lt;u&gt;</code>、删除线 <code>&lt;s&gt;/&lt;del&gt;</code>、
+                            小字 <code>&lt;small&gt;</code>、上下标 <code>&lt;sub&gt;/&lt;sup&gt;</code>、段落 <code>&lt;p&gt;</code>、
+                            行内容器 <code>&lt;span&gt;</code>、代码 <code>&lt;code&gt;</code>、高亮 <code>&lt;mark&gt;</code>、
+                            链接 <code>&lt;a href="..."&gt;</code>（自动补 noopener，仅允许 http/https/mailto）。
+                            其余标签一律按纯文本原样显示，不会被解析。
+                        </p>
+                    </form>
+                </div>
+            </section>
+
+            <!-- 改动日志 -->
+            <section class="view" id="view-logs">
+                <div class="page-head">
+                    <h1>改动日志</h1>
+                    <p>展示在首页的站点更新记录，新日志会插入到最顶部。</p>
+                </div>
+                <div class="panel">
+                    <h3>新增日志</h3>
+                    <form action="/admin/logs/add" method="post" onsubmit="return checkLog()">
+                        <div class="field">
+                            <label for="log_text">日志内容</label>
+                            <textarea id="log_text" name="log_text" rows="2"
+                                      placeholder="例如：2026.9 — 上线新功能……" required></textarea>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">添加日志</button>
+                        </div>
+                    </form>
+                    {{- if .Logs}}
+                    <h3 style="margin-top:22px">已有日志</h3>
+                    <table class="tbl">
+                        <tbody>
+                        {{- range $i, $log := .Logs}}
+                            <tr>
+                                <td class="idx">{{$i}}</td>
+                                <td>{{$log}}</td>
+                                <td style="width:64px;text-align:right">
+                                    <form action="/admin/logs/delete" method="post"
+                                          onsubmit="return confirm('确认删除这条日志吗？')">
+                                        <input type="hidden" name="log_index" value="{{$i}}">
+                                        <button type="submit" class="btn ghost danger" style="padding:4px 12px;font-size:12px">删除</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {{- end}}
+                        </tbody>
+                    </table>
+                    {{- else}}
+                    <p class="empty-tip" style="margin-top:10px">暂无日志，首页将隐藏改动日志板块。</p>
+                    {{- end}}
+                </div>
+            </section>
+
+        </main>
     </div>
 
-    <form id="deleteForm" action="/admin/delete" method="post">
-        <input type="hidden" name="category" id="deleteCategory">
-        <div class="row" style="margin-top:18px">
-            <div style="flex:0 0 auto;min-width:0">
-                <button type="button" class="btn" onclick="toggleAll(true)">全选</button>
-                <button type="button" class="btn" onclick="toggleAll(false)">取消全选</button>
-                <button type="submit" class="btn danger" onclick="return confirm('确认删除选中的图片吗？此操作不可恢复。')">删除选中</button>
-                <span style="font-size:12px;color:#99a;align-self:center">（每页加载 40 张，全选/删除仅作用于当前页）</span>
-            </div>
-        </div>
-        <div class="grid" id="imageGrid"></div>
-        <div class="pager" id="pager" style="display:none">
-            <button type="button" id="prevPage" onclick="gotoPage(currentPage - 1)">上一页</button>
-            <span class="page-info" id="pageInfo"></span>
-            <button type="button" id="nextPage" onclick="gotoPage(currentPage + 1)">下一页</button>
-        </div>
-    </form>
-
-    <hr>
-    <h2>创建新分类</h2>
-    <form action="/admin/create" method="post" onsubmit="return checkTableName()">
-        <label for="new_table_name">输入新分类名：</label>
-        <input type="text" id="new_table_name" name="new_table_name"
-               placeholder="例如：link_work，以字母开头，仅含字母/数字/下划线" required>
-        <div class="row" style="margin-top:12px">
-            <div>
-                <label for="new_table_label">栏目名称：</label>
-                <input type="text" id="new_table_label" name="new_table_label"
-                       placeholder="首页卡片名称，留空则与分类名相同">
-            </div>
-            <div>
-                <label for="new_table_desc">栏目描述（可选）：</label>
-                <input type="text" id="new_table_desc" name="new_table_desc"
-                       placeholder="首页卡片上的一句话描述">
-            </div>
-        </div>
-        <input type="submit" value="创建分类">
-        <p style="color:#667;font-size:13px;margin-top:6px">创建后自动在首页展示卡片，并开通 /分类名 随机跳转接口；上传图片后即可访问。</p>
-    </form>
-
-    <hr>
-    <h2>删除分类</h2>
-    <form action="/admin/category/delete" method="post" onsubmit="return checkDeleteCategory()">
-        <div class="row">
-            <div>
-                <label for="del_cat_select">选择要删除的分类：</label>
-                <select id="del_cat_select" name="category">
-                    {{- range .Tables}}
-                    <option value="{{.Name}}">{{.Name}} ({{.Count}} 张图片)</option>
-                    {{- end}}
-                </select>
-            </div>
-        </div>
-        <div style="margin-top:12px">
-            <label style="display:flex;align-items:center;gap:8px;font-weight:normal">
-                <input type="checkbox" id="del_cat_confirm" name="confirm_delete" value="1"
-                       style="width:auto;margin:0;transform:scale(1.2)">
-                我已知晓该操作将删除该分类目录下全部图片，且<b>不可恢复</b>；引用该分类的首页栏目也会一并下线。
-            </label>
-        </div>
-        <button type="submit" class="btn danger">删除分类</button>
-    </form>
-
-    <hr>
-    <h2>图库展示管理</h2>
-    <p style="color:#667;font-size:13px;margin:6px 0 2px">
-        控制各分类是否展示在 <a href="/img" target="_blank">网页图库</a>（https://t.alcy.cc/img）。
-        隐藏后图库不再显示该分类，但随机接口与图片访问不受影响。
-    </p>
-    <table class="eps">
-        <thead><tr><th>分类</th><th>图片数</th><th>图库状态</th><th>操作</th></tr></thead>
-        <tbody>
-        {{- range .Tables}}
-            <tr>
-                <td>{{.Name}}</td>
-                <td>{{.Count}}</td>
-                <td>{{if .Hide}}<span class="badge off">已隐藏</span>{{else}}<span class="badge on">展示中</span>{{end}}</td>
-                <td>
-                    <form action="/admin/gallery/visibility" method="post" style="background:none;padding:0">
-                        <input type="hidden" name="category" value="{{.Name}}">
-                        <button type="submit" class="vis {{if .Hide}}show{{end}}">
-                            {{if .Hide}}恢复展示{{else}}从图库隐藏{{end}}
-                        </button>
-                    </form>
-                </td>
-            </tr>
-        {{- end}}
-        </tbody>
-    </table>
-
-    <hr>
-    <h2>调整前端分类栏排序<span id="sortStatus"></span></h2>
-    <p style="color:#667;font-size:13px;margin:6px 0 2px">按住 <b>⋮⋮</b> 拖动行即可调整顺序，松开后自动保存（控制首页卡片与文档页展示顺序）。</p>
-    <table class="eps">
-        <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>类型</th></tr></thead>
-        <tbody id="epsBody">
-        {{- range $i, $ep := .Endpoints}}
-            <tr draggable="true" data-path="{{$ep.Path}}">
-                <td class="grip" title="拖动排序">⋮⋮</td>
-                <td class="idx">{{$i}}</td>
-                <td>/{{$ep.Path}}</td>
-                <td>{{$ep.Label}}</td>
-                <td>{{if $ep.Adaptive}}自适应{{else}}单端{{end}}</td>
-            </tr>
-        {{- end}}
-        </tbody>
-    </table>
-
-    <hr>
-    <h2>站点设置</h2>
-    <form action="/admin/settings" method="post">
-        <label for="base_url">API 对外域名：</label>
-        <input type="text" id="base_url" name="base_url" style="min-width:320px"
-               value="{{.BaseURL}}" placeholder="例如：https://api.example.com，留空则按请求自动推断">
-        <input type="submit" value="保存域名">
-        <p style="color:#667;font-size:13px;margin-top:6px">
-            保存后，JSON 接口与纯文本接口输出的图片链接将统一使用该域名；清空并保存即恢复自动推断。
-            {{- if .BaseURL}}<br>当前生效：<strong>{{.BaseURL}}</strong>{{- end}}
-        </p>
-    </form>
-
-    <hr>
-    <h2>首页文案</h2>
-    <form action="/admin/content" method="post">
-        <label for="slogan">标语（横幅大标题下方一行）：</label>
-        <textarea id="slogan" name="slogan" rows="2"
-                  placeholder="留空则恢复默认">{{.Slogan}}</textarea>
-        <div style="margin-top:12px">
-            <label for="share">分享语（meta 区第一行）：</label>
-            <textarea id="share" name="share" rows="2"
-                      placeholder="留空则恢复默认">{{.Share}}</textarea>
-        </div>
-        <div style="margin-top:12px">
-            <label for="icp">备案号文字（meta 区链接文字）：</label>
-            <input type="text" id="icp" name="icp" value="{{.ICP}}" placeholder="留空则恢复默认">
-        </div>
-        <div style="margin-top:12px">
-            <label for="icp_url">备案号链接（点击备案号跳转的地址）：</label>
-            <input type="text" id="icp_url" name="icp_url" value="{{.ICPURL}}"
-                   placeholder="例如：https://icp.gov.moe/?keyword=20239001，留空则不生成链接">
-        </div>
-        <input type="submit" value="保存首页文案">
-        <p style="color:#667;font-size:13px;margin-top:6px">
-            保存后立即生效；标语与分享语留空并保存即恢复默认文案。
-            备案号链接留空时不生成超链接（仅展示文字）；备案号文字保持默认且链接留空时，将回退到默认官方查询链接。
-        </p>
-        <p style="color:#667;font-size:13px;margin-top:6px">
-            支持少量 HTML 标签：换行 <code>&lt;br&gt;</code>、加粗 <code>&lt;b&gt;/&lt;strong&gt;</code>、
-            斜体 <code>&lt;i&gt;/&lt;em&gt;</code>、下划线 <code>&lt;u&gt;</code>、删除线 <code>&lt;s&gt;/&lt;del&gt;</code>、
-            小字 <code>&lt;small&gt;</code>、上下标 <code>&lt;sub&gt;/&lt;sup&gt;</code>、段落 <code>&lt;p&gt;</code>、
-            行内容器 <code>&lt;span&gt;</code>、代码 <code>&lt;code&gt;</code>、高亮 <code>&lt;mark&gt;</code>、
-            链接 <code>&lt;a href="..."&gt;</code>（自动补 noopener，仅允许 http/https/mailto）。
-            其余标签一律按纯文本原样显示，不会被解析。
-        </p>
-    </form>
-
-    <hr>
-    <h2>改动日志管理</h2>
-    <form action="/admin/logs/add" method="post" onsubmit="return checkLog()">
-        <label for="log_text">新增日志（显示在最顶部）：</label>
-        <textarea id="log_text" name="log_text" rows="2"
-                  placeholder="例如：2026.9 — 上线新功能……" required></textarea>
-        <input type="submit" value="添加日志">
-    </form>
-    {{- if .Logs}}
-    <table class="logs">
-        <tbody>
-        {{- range $i, $log := .Logs}}
-            <tr>
-                <td class="idx">{{$i}}</td>
-                <td>{{$log}}</td>
-                <td class="op">
-                    <form action="/admin/logs/delete" method="post" style="background:none;padding:0"
-                          onsubmit="return confirm('确认删除这条日志吗？')">
-                        <input type="hidden" name="log_index" value="{{$i}}">
-                        <button type="submit" class="del">删除</button>
-                    </form>
-                </td>
-            </tr>
-        {{- end}}
-        </tbody>
-    </table>
-    {{- else}}
-    <p style="color:#889;margin-top:10px">暂无日志，首页将隐藏改动日志板块。</p>
-    {{- end}}
-
-    <hr>
-    <h2>新增双端自适应栏目</h2>
-    <form action="/admin/binding" method="post" onsubmit="return checkBinding()">
-        <div class="row">
-            <div>
-                <label for="binding_desk">PC 端分类：</label>
-                <select id="binding_desk" name="binding_desk">
-                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-                </select>
-            </div>
-            <div>
-                <label for="binding_mobile">移动端分类：</label>
-                <select id="binding_mobile" name="binding_mobile">
-                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
-                </select>
-            </div>
-        </div>
-        <div class="row" style="margin-top:12px">
-            <div>
-                <label for="binding_path">新栏目路径（访问路径，如 szs）：</label>
-                <input type="text" id="binding_path" name="binding_path" placeholder="以字母开头，仅含字母/数字/下划线" required>
-            </div>
-            <div>
-                <label for="binding_label">栏目名称：</label>
-                <input type="text" id="binding_label" name="binding_label" placeholder="例如：随手拍自适应" required>
-            </div>
-        </div>
-        <div style="margin-top:12px">
-            <label for="binding_desc">栏目描述（可选）：</label>
-            <input type="text" id="binding_desc" name="binding_desc" placeholder="一句话描述该栏目">
-        </div>
-        <input type="submit" value="创建双端栏目">
-    </form>
-
-    {{- if .Bindings}}
-    <table class="bindings">
-        <thead><tr><th>路径</th><th>名称</th><th>PC 分类</th><th>移动端分类</th></tr></thead>
-        <tbody>
-        {{- range .Bindings}}
-            <tr><td>/{{.Path}}</td><td>{{.Label}}</td><td>{{.Desk}}</td><td>{{.Mobile}}</td></tr>
-        {{- end}}
-        </tbody>
-    </table>
-    {{- end}}
+    <div id="toast"></div>
 
     <script>
         var nameRe = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
         var currentPage = 1;
         function currentCategory() { return document.getElementById('tableSelect').value; }
         function isVideo(name) { return /\.(mp4|webm)$/i.test(name); }
+
+        /* 侧边栏视图切换 + 移动端抽屉 */
+        function showView(name) {
+            closeDrawer();
+            document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('show'); });
+            var target = document.getElementById('view-' + name);
+            if (target) target.classList.add('show');
+            document.querySelectorAll('.nav-item[data-view]').forEach(function (b) {
+                b.classList.toggle('active', b.dataset.view === name);
+            });
+        }
+        document.querySelectorAll('.nav-item[data-view]').forEach(function (b) {
+            b.addEventListener('click', function () { showView(b.dataset.view); });
+        });
+        var sidebarEl = document.getElementById('sidebar');
+        function openDrawer() { sidebarEl.classList.add('open'); }
+        function closeDrawer() { sidebarEl.classList.remove('open'); }
+        document.getElementById('menuBtn').addEventListener('click', openDrawer);
+        document.addEventListener('click', function (e) {
+            if (!sidebarEl.contains(e.target) && !document.getElementById('menuBtn').contains(e.target)) closeDrawer();
+        });
+
+        /* Toast 轻提示 */
+        var toastTimer;
+        function toast(msg) {
+            var t = document.getElementById('toast');
+            t.textContent = msg; t.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+        }
 
         function loadImages() { gotoPage(1); }
 
@@ -342,7 +638,7 @@
             document.getElementById('deleteCategory').value = cat;
             var grid = document.getElementById('imageGrid');
             var pager = document.getElementById('pager');
-            grid.innerHTML = '<p style="color:#889">加载中…</p>';
+            grid.innerHTML = '<p class="empty-tip">加载中…</p>';
             fetch('/admin/data?table=' + encodeURIComponent(cat) + '&page=' + page)
                 .then(function (r) { return r.json(); })
                 .then(function (res) {
@@ -350,7 +646,7 @@
                     var rows = res.items || [];
                     currentPage = res.page || 1;
                     if (rows.length === 0) {
-                        grid.innerHTML = '<p style="color:#889">该分类暂无图片</p>';
+                        grid.innerHTML = '<p class="empty-tip">该分类暂无图片</p>';
                         pager.style.display = 'none';
                         return;
                     }
@@ -371,7 +667,7 @@
                     document.getElementById('nextPage').disabled = res.page >= totalPages;
                     pager.style.display = totalPages > 1 ? 'flex' : 'none';
                 })
-                .catch(function () { grid.innerHTML = '<p style="color:#c00">加载失败</p>'; });
+                .catch(function () { grid.innerHTML = '<p class="empty-tip" style="color:var(--danger)">加载失败</p>'; });
         }
 
         function toggleAll(on) {
