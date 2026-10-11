@@ -2,7 +2,7 @@
 # ---------- 构建阶段 ----------
 # libwebp 以 musl 静态库形式随源码分发（internal/webp/lib），链接无需系统依赖，
 # 只需 CGO 工具链把 bridge.c 编进来，产物仍是完全静态的二进制。
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
