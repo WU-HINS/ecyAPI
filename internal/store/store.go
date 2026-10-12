@@ -31,6 +31,16 @@ var imageExts = map[string]bool{
 	".mp4": true, ".webm": true,
 }
 
+// videoExts 视频扩展名：不支持 ?w= 压缩预览，需走流式输出。
+var videoExts = map[string]bool{
+	".mp4": true, ".webm": true,
+}
+
+// IsVideoFile 判断文件名是否为视频。
+func IsVideoFile(name string) bool {
+	return videoExts[strings.ToLower(filepath.Ext(name))]
+}
+
 var identifierRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
 // IsValidIdentifier 校验分类名，防路径穿越。

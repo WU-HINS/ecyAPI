@@ -337,3 +337,29 @@ func TestEvictPreviewCacheKeepsNewest(t *testing.T) {
 		}
 	}
 }
+
+// 视频文件带 ?w= 请求时应跳过压缩预览，直接流式回源（200 + 原始字节），
+// 且不占用压缩队列、不产生缓存文件。
+func TestPreviewSkipsVideo(t *testing.T) {
+	srv, catDir := newPreviewServer(t)
+	// 构造一个最小 mp4（内容只需扩展名正确即可命中短路逻辑）。
+	mp4 := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + "fake-mdat")
+	if err := os.WriteFile(filepath.Join(catDir, "v.mp4"), mp4, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/pic/pc/v.mp4?w=480", nil)
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "video/mp4" {
+		t.Fatalf("content-type = %q, want video/mp4", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), mp4) {
+		t.Fatal("video body should be the original bytes, not a preview")
+	}
+	if _, err := os.Stat(filepath.Join(srv.previewCacheRoot(), "pc", "v.mp4.w480.webp")); !os.IsNotExist(err) {
+		t.Fatal("video should not produce preview cache")
+	}
+}

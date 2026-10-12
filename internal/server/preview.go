@@ -35,6 +35,7 @@ import (
 	"golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
 
+	"ecyapi/internal/store"
 	"ecyapi/internal/webp"
 )
 
@@ -67,6 +68,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	width, err := strconv.Atoi(widthParam)
 	if err != nil || width < previewMinWidth || width > previewMaxWidth {
 		http.NotFound(w, r)
+		return
+	}
+	// 视频不支持压缩预览：直接回退原视频流式输出，
+	// 避免占用压缩队列后必然失败的解码尝试。
+	if store.IsVideoFile(file) {
+		s.handlePic(w, r)
 		return
 	}
 	path := filepath.Join(s.dataDir, category, file)

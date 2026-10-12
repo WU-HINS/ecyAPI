@@ -238,7 +238,7 @@
         <div class="card">
             <div class="thumb">
                 {{- if eq .Kind "video"}}
-                <video autoplay muted loop playsinline data-src="{{.PreviewURL}}"></video>
+                <video muted loop playsinline preload="metadata" data-src="{{.PreviewURL}}"></video>
                 {{- else}}
                 <img data-src="{{.PreviewURL}}?w=480" alt="{{.Label}}" loading="lazy" decoding="async">
                 {{- end}}
@@ -294,6 +294,9 @@
                 var media = entry.target;
                 var d = media.dataset.src || '';
                 media.src = d + (d.indexOf('?') > -1 ? '&' : '?') + '_t=' + Date.now();
+                // 视频先 preload=metadata 秒出首帧画面，进入视口再起播，
+                // 避免一进首页就全量拉流抢带宽。
+                if (media.tagName === 'VIDEO') media.play().catch(function () {});
                 observer.unobserve(media);
             });
         }, { rootMargin: '0px 0px 100px 0px' });
