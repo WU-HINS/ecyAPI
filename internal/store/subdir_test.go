@@ -8,9 +8,14 @@ import (
 	"testing"
 )
 
-// TestIsValidCategory 表驱动校验分类路径规则：支持 a/b，拒绝穿越与非法段。
+// TestIsValidCategory 表驱动校验分类路径：宽松命名（数字开头、横线、点、中文、空格）
+// 但必须拒绝穿越、隐藏目录、URL 保留字符与内置路由保留名。
 func TestIsValidCategory(t *testing.T) {
-	valid := []string{"a", "ab", "a1", "a_b", "a/b", "a/b/c", "anime/2024", "pc/mobile", "a/2024/10"}
+	valid := []string{
+		"a", "ab", "a1", "a_b", "a/b", "a/b/c", "anime/2024", "pc/mobile", "a/2024/10",
+		"1abc", "2024-01", "pixiv.1", "a.b.c", "KuroiDa", "中文目录", "a b", "A B C",
+		"a+b", "a@b", "a&b", "a(b)", "a'b",
+	}
 	for _, name := range valid {
 		if !IsValidCategory(name) {
 			t.Errorf("%q 应合法", name)
@@ -18,8 +23,10 @@ func TestIsValidCategory(t *testing.T) {
 	}
 	invalid := []string{
 		"", "/a", "a/", "a//b", "..", ".", "../etc", "a/../b", "a/./b",
-		"1a", "a-b", "a.b", "a b", "a\\b", "a/b/c/d", "a/-b", "a/ b",
-		strings.Repeat("a", 65), strings.Repeat("a/", 64) + "a",
+		"a\\b", "a/b/c/d", "a/ b", "a/b ", "a/b.",
+		".hidden", "a/.git", "a?b", "a#b", "a%b", "a\tb",
+		"pic", "json", "admin", "img", "docs", "healthz", "pic/sub",
+		strings.Repeat("a", maxSegmentLen+1), strings.Repeat("a", 64) + "/" + strings.Repeat("b", 64) + "/" + strings.Repeat("c", 64) + "/d",
 	}
 	for _, name := range invalid {
 		if IsValidCategory(name) {

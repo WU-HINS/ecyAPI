@@ -679,7 +679,7 @@ func (s *Server) addEndpoint(path, desk, mobile, label, desc string) error {
 // addEndpointSpec 校验并持久化一个栏目。
 func (s *Server) addEndpointSpec(ep endpoint) error {
 	if !store.IsValidCategory(ep.path) {
-		return fmt.Errorf("栏目路径不合法（首段字母开头，每段仅字母/数字/下划线，最多 3 段，如 anime/2024）")
+		return fmt.Errorf("栏目路径不合法（不能以 . 开头、不能含 ? # %% 或控制字符；最多 3 段、每段 ≤128 字节）")
 	}
 	if hasReservedTop(ep.path) {
 		return fmt.Errorf("栏目路径不能以 %s 开头（与内置接口冲突）", strings.SplitN(ep.path, "/", 2)[0])
@@ -762,20 +762,9 @@ func splitPicPath(p string) (category, file string, ok bool) {
 	return rel[:i], rel[i+1:], true
 }
 
-// reservedTop 与固定路由冲突的首段名：创建分类/栏目时拒绝，避免 /pic、/img 等被遮蔽。
-var reservedTop = map[string]bool{
-	"pic": true, "json": true, "admin": true,
-	"img": true, "docs": true, "healthz": true, "favicon.ico": true,
-}
-
 // hasReservedTop 判断分类路径/栏目路径的首段是否与内置路由冲突。
-func hasReservedTop(name string) bool {
-	top := name
-	if i := strings.IndexByte(name, '/'); i >= 0 {
-		top = name[:i]
-	}
-	return reservedTop[top]
-}
+// 规则与 store 扫描共用一份（store.IsReservedTop），避免两边不一致。
+func hasReservedTop(name string) bool { return store.IsReservedTop(name) }
 
 // handlePic 提供本地图片访问：/pic/{分类路径}/{文件名}。
 // 分类路径支持多级子目录，如 /pic/a/b/f.png 对应分类 a/b 下的 f.png。
@@ -854,6 +843,16 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		s.renderLink(w, r, ep)
 		return
+	}
+	// 磁盘目录即接口：没有在后台建过栏目的分类，URL 也能直接用。
+	// 方向按设备自动判定（桌面横图 / 移动竖图），可用 ?orientation= 覆盖。
+	if store.IsValidCategory(path) {
+		if _, err := s.st.CountWith(r.Context(), path, store.OrientationAny); err == nil {
+			s.renderLink(w, r, endpoint{
+				path: path, desk: path, label: path, kind: "image", auto: true,
+			})
+			return
+		}
 	}
 	http.NotFound(w, r)
 }

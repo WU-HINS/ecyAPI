@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrNotFound 表示分类不存在或分类内无有效图片。
@@ -41,25 +42,76 @@ func IsVideoFile(name string) bool {
 	return videoExts[strings.ToLower(filepath.Ext(name))]
 }
 
-var identifierRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
-
 // 分类支持多级子目录：data/categories/<段1>/<段2>/.../<段N>，
 // 对外即分类路径 "段1/段2"（如 /pic/a/b/f.png 对应分类 a/b）。
-// 每段仍须符合 identifier 规则；层级与总长设上限，防超深目录与超长路径。
+// 层级与总长设上限，防超深目录与超长路径。
 const (
 	maxCategoryDepth = 3
-	maxCategoryLen   = 128
+	maxCategoryLen   = 256
+	maxSegmentLen    = 128 // 单段字节数上限（中文约 42 字）
 )
 
-// IsValidIdentifier 校验单段名称（分类路径的一段、栏目路径的一段），防路径穿越。
-func IsValidIdentifier(name string) bool { return identifierRe.MatchString(name) }
+// reservedTop 与内置路由冲突的首段名：这类目录不会被载入为分类，
+// 也不会被后台创建，避免 /pic、/json 等被遮蔽。
+var reservedTop = map[string]bool{
+	"pic": true, "json": true, "admin": true, "img": true,
+	"docs": true, "healthz": true, "favicon.ico": true,
+}
 
-// subSegmentRe 二级及以后的段：允许数字开头，便于 anime/2024 这类年份目录。
-// 仍然只允许字母/数字/下划线，因此不可能出现 "."、".."、反斜杠或空段。
-var subSegmentRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+// IsReservedTop 判断分类路径的首段是否与内置路由冲突。
+func IsReservedTop(name string) bool {
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		name = name[:i]
+	}
+	return reservedTop[name]
+}
+
+// IsValidSegment 校验单段目录名，规则尽量宽松但保证安全：
+//
+//   - 允许：字母、数字、中文等任意 UTF-8 字符，以及 _ - . + @ ( ) & , ' ! 空格
+//     （例如 2024-01、pixiv.1、KuroiDa、中文目录、A B）
+//   - 拒绝：空段、"."、".."、以 "." 开头（隐藏目录）、含 / 或 \、
+//     控制字符、URL 语义字符 ? # %、首尾空格与结尾的点
+//   - 单段 ≤ maxSegmentLen 字节
+//
+// 只要不含 / 与 ".."，拼接后就不可能穿越到数据根目录之外。
+func IsValidSegment(name string) bool {
+	if name == "" || len(name) > maxSegmentLen {
+		return false
+	}
+	if name == "." || name == ".." {
+		return false
+	}
+	if strings.HasPrefix(name, ".") {
+		return false // 隐藏目录（.git/.Trash 等）不作为分类
+	}
+	if strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ") {
+		return false
+	}
+	if strings.HasSuffix(name, ".") {
+		return false // Windows 上非法，URL 里也容易被误处理
+	}
+	if !utf8.ValidString(name) {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r == '/' || r == '\\':
+			return false
+		case r < 0x20 || r == 0x7f:
+			return false // 控制字符
+		case r == '?' || r == '#' || r == '%':
+			return false // URL 保留字符，避免路径歧义
+		}
+	}
+	return true
+}
+
+// IsValidIdentifier 兼容旧名：等价于 IsValidSegment（单段校验）。
+func IsValidIdentifier(name string) bool { return IsValidSegment(name) }
 
 // IsValidCategory 校验分类路径：1~maxCategoryDepth 段，以 "/" 分隔。
-// 首段须字母开头（与旧版单级分类名规则一致），后续段允许数字开头（a/2024）。
+// 每段走 IsValidSegment；首段不能是内置路由保留名。
 // 空串、空段（a//b）、"."、".."、反斜杠、绝对路径（/a）一律拒绝。
 func IsValidCategory(name string) bool {
 	if name == "" || len(name) > maxCategoryLen {
@@ -69,15 +121,12 @@ func IsValidCategory(name string) bool {
 	if len(segs) > maxCategoryDepth {
 		return false
 	}
-	if !IsValidIdentifier(segs[0]) {
-		return false
-	}
-	for _, seg := range segs[1:] {
-		if !subSegmentRe.MatchString(seg) {
+	for _, seg := range segs {
+		if !IsValidSegment(seg) {
 			return false
 		}
 	}
-	return true
+	return !IsReservedTop(name)
 }
 
 // CategorySegments 返回分类路径的各段；非法输入返回 nil。
@@ -390,9 +439,14 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 				}
 				continue
 			}
-			if !IsValidIdentifier(seg) {
+			if !IsValidSegment(seg) {
 				state.skipped = append(state.skipped,
-					childRel+"：目录名不合法（需字母开头，仅字母/数字/下划线，每段 ≤64 字符）")
+					childRel+"：目录名不合法（不能为空、不能以 . 开头、不能含斜杠或 ? # % 与控制字符，≤128 字节）")
+				continue
+			}
+			if depth == 0 && IsReservedTop(childRel) {
+				state.skipped = append(state.skipped,
+					childRel+"：与内置接口路径冲突（保留名 pic/json/admin/img/docs/healthz/favicon.ico）")
 				continue
 			}
 			if len(childRel) > maxCategoryLen {

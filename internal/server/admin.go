@@ -189,12 +189,12 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("new_table_name"))
 	label := strings.TrimSpace(r.PostFormValue("new_table_label"))
 	desc := strings.TrimSpace(r.PostFormValue("new_table_desc"))
-	if !store.IsValidCategory(name) {
-		s.adminResult(w, "分类名不合法：首段须以字母开头，每段仅含字母/数字/下划线，最多 3 段（如 anime/2024）")
-		return
-	}
 	if hasReservedTop(name) {
 		s.adminResult(w, "分类名不能以 "+strings.SplitN(name, "/", 2)[0]+" 开头（与内置接口冲突）")
+		return
+	}
+	if !store.IsValidCategory(name) {
+		s.adminResult(w, "分类名不合法：不能为空、不能以 . 开头、不能含 / ? # % 或控制字符；多级用 / 分隔，最多 3 段，每段 ≤128 字节")
 		return
 	}
 	if err := s.admin.CreateCategory(r.Context(), name); err != nil {

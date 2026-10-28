@@ -80,8 +80,8 @@ func TestScanWarningsExplainSkipped(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataDir, "ok", "a.png"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 非法名字：横线 / 数字开头
-	for _, name := range []string{"2024-01", "1abc"} {
+	// 非法名字：隐藏目录（以 . 开头）、含 URL 保留字符
+	for _, name := range []string{".hidden", "bad?name"} {
 		if err := os.MkdirAll(filepath.Join(dataDir, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestScanWarningsExplainSkipped(t *testing.T) {
 		t.Fatalf("分类列表 = %v，期望只有 ok", cats)
 	}
 	joined := strings.Join(ScanWarnings(st), "\n")
-	if !strings.Contains(joined, "2024-01") || !strings.Contains(joined, "不合法") {
+	if !strings.Contains(joined, ".hidden") || !strings.Contains(joined, "不合法") {
 		t.Fatalf("缺少非法名字诊断: %s", joined)
 	}
 	if strings.Contains(joined, "filelink") && !strings.Contains(joined, "不是目录") {

@@ -347,7 +347,7 @@
             <section class="view" id="view-category">
                 <div class="page-head">
                     <h1>分类管理</h1>
-                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录（如 anime/2024 → data/categories/anime/2024）。</p>
+                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录。直接把图片文件夹放进 data/categories/ 也会被自动识别，<b>URL 无需建栏目即可访问</b>（目录即接口）。</p>
                 </div>
                 {{- if .ScanWarnings}}
                 <div class="panel" style="border-color:#f0c36d;background:#fffaf0">
@@ -364,7 +364,7 @@
                         <div class="field">
                             <label for="new_table_name">分类名</label>
                             <input type="text" id="new_table_name" name="new_table_name"
-                                   placeholder="例如：anime 或 anime/2024，每段字母开头，仅字母/数字/下划线，最多 3 段" required>
+                                   placeholder="例如 anime、pixiv/KuroiDa、2024-01、中文目录；最多 3 段" required>
                         </div>
                         <div class="row">
                             <div class="field">
@@ -449,7 +449,7 @@
                             <div class="field">
                                 <label for="binding_path">新栏目路径</label>
                                 <input type="text" id="binding_path" name="binding_path"
-                                       placeholder="访问路径，如 szs 或 anime/2024，每段字母开头，最多 3 段" required>
+                                       placeholder="访问路径，如 szs、pixiv/KuroiDa、2024-01；最多 3 段" required>
                             </div>
                             <div class="field">
                                 <label for="binding_label">栏目名称</label>
@@ -637,9 +637,26 @@
     <div id="toast"></div>
 
     <script>
-        // 分类名 / 栏目路径：首段字母开头，后续段可数字开头（年份），最多 3 段（如 anime/2024）
-        var nameRe = /^[a-zA-Z][a-zA-Z0-9_]*(?:\/[a-zA-Z0-9_]+){0,2}$/;
-        function validName(v) { return v.length <= 128 && nameRe.test(v); }
+        // 分类名 / 栏目路径：规则与后端 store.IsValidSegment 保持一致——
+        // 允许中文、空格、横线、点、数字开头；禁止以 . 开头、含 / ? # % 或控制字符。
+        var reservedTop = ['pic', 'json', 'admin', 'img', 'docs', 'healthz', 'favicon.ico'];
+        function validName(v) {
+            if (!v || v.length > 256) { return false; }
+            var segs = v.split('/');
+            if (segs.length > 3) { return false; }
+            for (var i = 0; i < segs.length; i++) {
+                var s = segs[i];
+                if (!s || s.length > 128) { return false; }
+                if (s[0] === '.') { return false; }
+                if (s !== s.trim()) { return false; }
+                if (/[?#%]/.test(s)) { return false; }
+                if (/[\u0000-\u001f]/.test(s)) { return false; }
+            }
+            return true;
+        }
+        function validCategoryName(v) {
+            return validName(v) && reservedTop.indexOf(v.split('/')[0]) < 0;
+        }
         var currentPage = 1;
         function currentCategory() { return document.getElementById('tableSelect').value; }
         function isVideo(name) { return /\.(mp4|webm)$/i.test(name); }
@@ -720,8 +737,8 @@
 
         function checkTableName() {
             var tableName = document.getElementById('new_table_name').value.trim();
-            if (!validName(tableName)) {
-                alert('分类名不合法！\n1. 每段必须以字母开头\n2. 仅含字母、数字、下划线\n3. 支持用 / 分级，最多 3 段（如 anime/2024）');
+            if (!validCategoryName(tableName)) {
+                alert('分类名不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字（如 2024-01、pixiv.1、中文目录）\n3. 多级用 / 分隔，最多 3 段（如 pixiv/KuroiDa）\n4. 首段不能是 pic/json/admin/img/docs/healthz/favicon.ico');
                 return false;
             }
             return confirm('确认创建分类：' + tableName + ' 吗？');
@@ -754,10 +771,10 @@
         function checkBinding() {
             var path = document.getElementById('binding_path').value.trim();
             if (!validName(path)) {
-                alert('栏目路径不合法！\n1. 每段必须以字母开头\n2. 仅含字母、数字、下划线\n3. 支持用 / 分级，最多 3 段（如 anime/2024）');
+                alert('栏目路径不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字\n3. 多级用 / 分隔，最多 3 段');
                 return false;
             }
-            return confirm('确认创建双端栏目 /' + path + ' 吗？');
+            return confirm('确认创建栏目 /' + path + ' 吗？');
         }
 
         function checkLog() {
