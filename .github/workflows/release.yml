@@ -109,6 +109,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          # 只取二进制产物：docker/build-push-action 会在同一次运行里产生
+          # *.dockerbuild 内部 artifact，无差别下载会失败。
+          pattern: ecyapi-linux-*
           path: dist
           merge-multiple: true
 
