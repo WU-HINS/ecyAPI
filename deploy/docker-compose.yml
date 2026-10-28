@@ -21,6 +21,8 @@ services:
       ECY_GALLERY_CONCURRENCY: ${ECY_GALLERY_CONCURRENCY:-2}
       ECY_GALLERY_WAIT: ${ECY_GALLERY_WAIT:-5}
       ECY_PREVIEW_MP: ${ECY_PREVIEW_MP:-16}
+      ECY_SCAN_INTERVAL: ${ECY_SCAN_INTERVAL:-3}
+      ECY_VERIFY_LINKS: ${ECY_VERIFY_LINKS:-}
       # Go 运行时软内存上限（字节），容器内存紧张时调小
       ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
       # 访问日志：设为 off 关闭（高 QPS 场景可省掉全部格式化开销）

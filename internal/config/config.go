@@ -5,9 +5,19 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 
 	"ecyapi/internal/store"
 )
+
+// isOff 解析 off/0/false/no 这类关闭开关（空值视为开启）。
+func isOff(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "off", "0", "false", "no":
+		return true
+	}
+	return false
+}
 
 // clampInt 把数值夹到 [lo, hi]。
 func clampInt(n, lo, hi int) int {
@@ -50,6 +60,13 @@ type Config struct {
 	GalleryConcurrency int
 	// GalleryWaitSeconds 图库排队等待上限（ECY_GALLERY_WAIT，默认 5 秒），超时返回 503。
 	GalleryWaitSeconds int
+	// ScanIntervalSeconds 后台增量刷新间隔（ECY_SCAN_INTERVAL，默认 3 秒）。
+	// 扫描已移出请求路径，文件增删在这个间隔内生效。
+	ScanIntervalSeconds int
+	// DisableLinkVerify 关闭 302 前的目标文件校验（ECY_VERIFY_LINKS=off）。
+	// 默认开启：多一次热缓存 stat（约 1~5µs），换来「绝不 302 到已删除文件」。
+	// 用「关闭」语义是为了让零值结构体默认就是安全行为。
+	DisableLinkVerify bool
 	// PreviewMP 缩略图压缩的总像素预算（ECY_PREVIEW_MP，默认 16 百万像素）。
 	// 按「解码后位图大小」加权限制并发压缩数：4K 图约 8MP，预算 64 表示最多同时 8 张。
 	PreviewMP int
@@ -100,9 +117,11 @@ func Load() Config {
 		// 分类层级：默认 3 段（a/b/c），上限 8 段，超出按上限处理。
 		MaxDepth: clampDepth(envInt("ECY_MAX_DEPTH", store.DefaultMaxDepth)),
 		// 图库默认展示全部（0）；>0 时随机抽样，作为超大分类的兜底。
-		GalleryMax:         clampInt(envInt("ECY_GALLERY_MAX", 0), 0, 5000),
-		GalleryConcurrency: clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
-		GalleryWaitSeconds: clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
+		GalleryMax:          clampInt(envInt("ECY_GALLERY_MAX", 0), 0, 5000),
+		GalleryConcurrency:  clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
+		GalleryWaitSeconds:  clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
+		ScanIntervalSeconds: clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
+		DisableLinkVerify:   isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：默认 32 百万像素（≈128MB RGBA），范围 8~512。
 		// 4K 图约 8MP，即最多 4 张同时解码，其余回退原图，避免小内存容器 OOM。
 		PreviewMP: clampInt(envInt("ECY_PREVIEW_MP", 16), 8, 512),

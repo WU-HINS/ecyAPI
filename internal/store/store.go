@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand/v2"
 	"mime/multipart"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -184,6 +184,9 @@ type Store interface {
 	ByIndexWith(ctx context.Context, category string, index int, want Orientation) (Row, error)
 	// LinksPage 分页返回图片列表，避免大分类一次性复制全部记录。
 	LinksPage(ctx context.Context, category string, offset, limit int) (rows []Row, total int, err error)
+	// Verify 校验文件是否仍在磁盘上；不存在时从内存索引里摘掉并返回 false，
+	// 供 302 前做一次「目标是否还活着」的确认。
+	Verify(ctx context.Context, category, name string) bool
 }
 
 // Admin 后台管理写操作接口。
@@ -273,9 +276,10 @@ type fileStore struct {
 	dir      string
 	maxDepth int // 分类层级上限（ECY_MAX_DEPTH）
 
-	// 惰性重载节流：lastScan 用 atomic 读，热路径无锁。
+	// reloadMu 串行化扫描（后台刷新与写路径 reload 共用）。
 	reloadMu sync.Mutex
-	lastScan atomic.Int64 // UnixNano
+	// refreshInterval 后台刷新间隔（0 表示不启动后台刷新，仅供测试）。
+	refreshInterval time.Duration
 
 	mu    sync.RWMutex
 	cache map[string]*categorySet // category -> 图片集合
@@ -301,21 +305,40 @@ func NewFileStore(dir string) (Store, error) {
 	return NewFileStoreDepth(dir, DefaultMaxDepth)
 }
 
+// Options 存储初始化参数。
+type Options struct {
+	// MaxDepth 分类层级上限（ECY_MAX_DEPTH），0 取默认值。
+	MaxDepth int
+	// ScanInterval 后台刷新间隔（ECY_SCAN_INTERVAL），0 取默认 3 秒。
+	// 扫描不再发生在请求路径上：请求只读快照，后台按此间隔增量刷新。
+	ScanInterval time.Duration
+}
+
 // NewFileStoreDepth 指定分类层级上限创建存储（ECY_MAX_DEPTH）。
-// maxDepth 会被夹在 [1, MaxDepthLimit] 之间。
 func NewFileStoreDepth(dir string, maxDepth int) (Store, error) {
+	return NewFileStoreWithOptions(dir, Options{MaxDepth: maxDepth})
+}
+
+// NewFileStoreWithOptions 按给定参数创建存储，并启动后台刷新协程。
+func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
+	maxDepth := opt.MaxDepth
 	if maxDepth < 1 {
 		maxDepth = DefaultMaxDepth
 	}
 	if maxDepth > MaxDepthLimit {
 		maxDepth = MaxDepthLimit
 	}
+	interval := opt.ScanInterval
+	if interval <= 0 {
+		interval = defaultScanInterval
+	}
 	fs := &fileStore{
-		dir:      dir,
-		maxDepth: maxDepth,
-		cache:    map[string]*categorySet{},
-		oriMeta:  map[string]map[string]orientMeta{},
-		dirs:     map[string]*dirState{},
+		dir:             dir,
+		maxDepth:        maxDepth,
+		refreshInterval: interval,
+		cache:           map[string]*categorySet{},
+		oriMeta:         map[string]map[string]orientMeta{},
+		dirs:            map[string]*dirState{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
@@ -323,8 +346,31 @@ func NewFileStoreDepth(dir string, maxDepth int) (Store, error) {
 	if err := fs.scan(); err != nil {
 		return nil, err
 	}
-	fs.lastScan.Store(time.Now().UnixNano())
+	go fs.refreshLoop()
 	return fs, nil
+}
+
+// defaultScanInterval 后台刷新默认间隔。
+const defaultScanInterval = 3 * time.Second
+
+// refreshLoop 后台增量刷新：请求路径不再触发扫描，
+// 避免「每 3 秒一次的尾延迟尖峰」（5 万张约 62ms）。
+func (f *fileStore) refreshLoop() {
+	t := time.NewTicker(f.refreshInterval)
+	defer t.Stop()
+	for range t.C {
+		// 数据目录被删掉（测试临时目录回收、误删挂载点）时停止刷新，
+		// 避免日志被无意义的失败刷屏。
+		if _, err := os.Stat(f.dir); err != nil {
+			return
+		}
+		f.reloadMu.Lock()
+		err := f.scan()
+		f.reloadMu.Unlock()
+		if err != nil {
+			log.Printf("后台刷新失败: %v", err)
+		}
+	}
 }
 
 func isImageFile(name string) bool {
@@ -600,30 +646,14 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 	return set
 }
 
-// refreshIfStale 节流惰性重载：最多每 reloadInterval 触发一次磁盘扫描。
-// 并发下用双重检查保证同时只有一个 goroutine 扫描；由于扫描按目录 mtime 增量，
-// 无变化时只做每层目录一次 stat，读路径绝大多数时候只比较一次时间戳，零阻塞。
-func (f *fileStore) refreshIfStale() {
-	if time.Since(time.Unix(0, f.lastScan.Load())) < reloadInterval {
-		return
-	}
-	f.reloadMu.Lock()
-	defer f.reloadMu.Unlock()
-	if time.Since(time.Unix(0, f.lastScan.Load())) < reloadInterval {
-		return
-	}
-	_ = f.scan()
-	f.lastScan.Store(time.Now().UnixNano())
-}
-
-// reload 同步强制重载（写路径使用）：跳过节流并强制完整校验。
+// reload 同步强制重载（写路径使用）：跳过增量复用并强制完整校验。
+// 请求路径不再调用扫描：日常刷新由后台 refreshLoop 负责。
 func (f *fileStore) reload() error {
 	f.reloadMu.Lock()
 	defer f.reloadMu.Unlock()
 	f.forceVerify = true
 	err := f.scan()
 	f.forceVerify = false
-	f.lastScan.Store(time.Now().UnixNano())
 	return err
 }
 
@@ -632,6 +662,43 @@ func (f *fileStore) categorySet(category string) (*categorySet, bool) {
 	set, ok := f.cache[category]
 	f.mu.RUnlock()
 	return set, ok
+}
+
+// Verify 校验文件是否仍在磁盘上；不存在则从缓存中移除，避免继续被抽到。
+// 一次 stat 的成本在热 dentry 上约几微秒，远低于把用户 302 到 404 的代价。
+func (f *fileStore) Verify(ctx context.Context, category, name string) bool {
+	_ = ctx
+	if name == "" || strings.ContainsAny(name, "/\\") || !f.validCategory(category) {
+		return false
+	}
+	path := filepath.Join(f.dir, filepath.FromSlash(category), name)
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	f.removeFile(category, name)
+	return false
+}
+
+// removeFile 从内存索引里摘掉一个文件（copy-on-write，读路径持有旧切片也安全）。
+func (f *fileStore) removeFile(category, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	set, ok := f.cache[category]
+	if !ok {
+		return
+	}
+	filter := func(src []fileEntry) []fileEntry {
+		out := make([]fileEntry, 0, len(src))
+		for _, e := range src {
+			if e.name != name {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	set.all = filter(set.all)
+	set.land = filter(set.land)
+	set.port = filter(set.port)
 }
 
 // validCategory 用本实例的层级上限校验分类路径。
@@ -649,7 +716,6 @@ func (f *fileStore) aggFor(category string) *aggKids {
 
 func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 	_ = ctx
-	f.refreshIfStale() // 节流重载，热更新目录
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	names := make([]string, 0, len(f.cache))
@@ -688,7 +754,6 @@ func (f *fileStore) Random(ctx context.Context, category string, limit int) ([]R
 // 只对前 limit 个位置做 Fisher-Yates 洗牌，分配与开销都是 O(limit)。
 func (f *fileStore) RandomWith(ctx context.Context, category string, limit int, want Orientation) ([]Row, error) {
 	_ = ctx
-	f.refreshIfStale() // 节流重载，热更新目录（含方向索引）
 	set, ok := f.categorySet(category)
 	if !ok {
 		// 父目录：从子分类聚合里取（/pixiv 能出图的关键）。
@@ -752,7 +817,6 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 	if index < 1 {
 		return Row{}, ErrNotFound
 	}
-	f.refreshIfStale()
 	set, ok := f.categorySet(category)
 	if !ok {
 		if agg := f.aggFor(category); agg != nil {
@@ -773,7 +837,6 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 // 大分类的后台预览只要 40 条，不必先复制上万条记录。
 func (f *fileStore) LinksPage(ctx context.Context, category string, offset, limit int) ([]Row, int, error) {
 	_ = ctx
-	f.refreshIfStale()
 	set, ok := f.categorySet(category)
 	if !ok {
 		return nil, 0, ErrNotFound
@@ -798,7 +861,6 @@ func (f *fileStore) LinksPage(ctx context.Context, category string, offset, limi
 
 func (f *fileStore) Links(ctx context.Context, category string) ([]Row, error) {
 	_ = ctx
-	f.refreshIfStale()
 	set, ok := f.categorySet(category)
 	if !ok {
 		if agg := f.aggFor(category); agg != nil {

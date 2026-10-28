@@ -42,13 +42,16 @@ func BenchmarkScanCold(b *testing.B) {
 	_ = fs
 }
 
-// BenchmarkRescanStale 目录未变化时的节流重扫（热更新检查代价）。
+// BenchmarkRescanStale 后台刷新一次的成本（目录未变化时的增量扫描）。
 func BenchmarkRescanStale(b *testing.B) {
 	_, fs := setupBigCategory(b, 2000)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		fs.lastScan.Store(0)
-		fs.refreshIfStale()
+		fs.reloadMu.Lock()
+		if err := fs.scan(); err != nil {
+			b.Fatal(err)
+		}
+		fs.reloadMu.Unlock()
 	}
 }
 

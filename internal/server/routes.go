@@ -127,7 +127,10 @@ var defaultLogs = []string{
 
 // New 创建服务，使用本地文件数据源。
 func New(cfg config.Config) (*Server, error) {
-	st, err := store.NewFileStoreDepth(cfg.DataDir, cfg.MaxDepth)
+	st, err := store.NewFileStoreWithOptions(cfg.DataDir, store.Options{
+		MaxDepth:     cfg.MaxDepth,
+		ScanInterval: time.Duration(cfg.ScanIntervalSeconds) * time.Second,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -895,6 +898,40 @@ func linkOrientation(r *http.Request, ep endpoint) store.Orientation {
 	return store.OrientationAny
 }
 
+// verifyRow 校验一条记录指向的文件是否仍在磁盘上。
+// 注意用 Link 反解出真实分类路径：父目录聚合出的记录，文件在子分类下，
+// 直接拿聚合路径去 stat 会误判为死链。
+func (s *Server) verifyRow(r *http.Request, row store.Row) bool {
+	cat, file, ok := splitPicPath(row.Link)
+	if !ok {
+		return false
+	}
+	return s.st.Verify(r.Context(), cat, file)
+}
+
+// pickVerified 随机取一条并确认文件仍在磁盘上。
+// 后台刷新有最长一个扫描间隔的滞后，刚被删掉的文件可能仍在索引里；
+// 这里发现即从索引摘除并重取，最多试 3 次，避免把用户 302 到 404。
+func (s *Server) pickVerified(r *http.Request, category string, want store.Orientation) (store.Row, bool) {
+	if s.cfg.DisableLinkVerify {
+		rows, err := s.randomRows(r, category, 1, want)
+		if err != nil || len(rows) == 0 {
+			return store.Row{}, false
+		}
+		return rows[0], true
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		rows, err := s.randomRows(r, category, 1, want)
+		if err != nil || len(rows) == 0 {
+			return store.Row{}, false
+		}
+		if s.verifyRow(r, rows[0]) {
+			return rows[0], true
+		}
+	}
+	return store.Row{}, false
+}
+
 // randomRows 按方向取图；该方向没有图时回退全集，保证接口不会因为
 // 「分类里暂时还没有竖图」而 404。
 func (s *Server) randomRows(r *http.Request, category string, limit int, want store.Orientation) ([]store.Row, error) {
@@ -925,6 +962,13 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 			if err != nil && want != store.OrientationAny {
 				row, err = s.st.ByIndexWith(r.Context(), category, n, store.OrientationAny)
 			}
+			if err == nil && !s.cfg.DisableLinkVerify && !s.verifyRow(r, row) {
+				// 该序号对应的文件已删除：索引已变化，退回一条随机可用链接。
+				row, err = store.Row{}, store.ErrNotFound
+				if alt, ok := s.pickVerified(r, category, want); ok {
+					row, err = alt, nil
+				}
+			}
 			if err != nil {
 				plainError(w, "No link found.", http.StatusNotFound)
 				return
@@ -950,12 +994,12 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		return
 	}
 
-	rows, err := s.randomRows(r, category, 1, want)
-	if err != nil || len(rows) == 0 {
+	row, ok := s.pickVerified(r, category, want)
+	if !ok {
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, rows[0].Link+suffix, http.StatusFound)
+	http.Redirect(w, r, row.Link+suffix, http.StatusFound)
 }
 
 // baseFor 返回本次请求的对外基础地址（不含尾部斜杠）。
