@@ -19,6 +19,7 @@ services:
       ECY_BASE_URL: ${ECY_BASE_URL:-}
       ECY_MAX_LINKS: ${ECY_MAX_LINKS:-50}
       ECY_MAX_UPLOAD_MB: ${ECY_MAX_UPLOAD_MB:-512}
+      ECY_MAX_DEPTH: ${ECY_MAX_DEPTH:-3}
       ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
@@ -39,6 +40,7 @@ services:
     environment:
       ECY_BASE_URL: ${ECY_BASE_URL:-}
       ECY_MAX_LINKS: ${ECY_MAX_LINKS:-50}
+      ECY_MAX_DEPTH: ${ECY_MAX_DEPTH:-3}
       ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
       # 副本不提供后台：随机接口只需要读权限
       ECY_ADMIN_PASSWORD: ${ECY_ADMIN_PASSWORD:?请在 .env 中设置 ECY_ADMIN_PASSWORD}

@@ -347,7 +347,7 @@
             <section class="view" id="view-category">
                 <div class="page-head">
                     <h1>分类管理</h1>
-                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录。直接把图片文件夹放进 data/categories/ 也会被自动识别，<b>URL 无需建栏目即可访问</b>（目录即接口）。</p>
+                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录（当前上限 <b>{{.MaxDepth}}</b> 段，由 <code>ECY_MAX_DEPTH</code> 控制）。直接把图片文件夹放进 data/categories/ 也会被自动识别，<b>URL 无需建栏目即可访问</b>（目录即接口）。</p>
                 </div>
                 {{- if .ScanWarnings}}
                 <div class="panel" style="border-color:#f0c36d;background:#fffaf0">
@@ -738,7 +738,7 @@
         function checkTableName() {
             var tableName = document.getElementById('new_table_name').value.trim();
             if (!validCategoryName(tableName)) {
-                alert('分类名不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字（如 2024-01、pixiv.1、中文目录）\n3. 多级用 / 分隔，最多 3 段（如 pixiv/KuroiDa）\n4. 首段不能是 pic/json/admin/img/docs/healthz/favicon.ico');
+                alert('分类名不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字（如 2024-01、pixiv.1、中文目录）\n3. 多级用 / 分隔（层级上限由 ECY_MAX_DEPTH 控制，默认 3 段）\n4. 首段不能是 pic/json/admin/img/docs/healthz/favicon.ico');
                 return false;
             }
             return confirm('确认创建分类：' + tableName + ' 吗？');
@@ -771,7 +771,7 @@
         function checkBinding() {
             var path = document.getElementById('binding_path').value.trim();
             if (!validName(path)) {
-                alert('栏目路径不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字\n3. 多级用 / 分隔，最多 3 段');
+                alert('栏目路径不合法！\n1. 不能以 . 开头，不能含 / ? # % 或控制字符\n2. 可以用中文、空格、横线、点、数字\n3. 多级用 / 分隔（层级上限由 ECY_MAX_DEPTH 控制）');
                 return false;
             }
             return confirm('确认创建栏目 /' + path + ' 吗？');

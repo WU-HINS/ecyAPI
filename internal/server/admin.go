@@ -87,6 +87,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Tables":       catList,
 		"Endpoints":    epList,
 		"ScanWarnings": store.ScanWarnings(s.st),
+		"MaxDepth":     s.cfg.MaxDepth,
 		"BaseURL":      baseURL,
 		"Slogan":       slogan,
 		"Share":        share,
@@ -125,7 +126,7 @@ func (s *Server) handleAdminUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	category := strings.TrimSpace(r.FormValue("category"))
-	if !storeIsValid(category) {
+	if !s.storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
 		return
 	}
@@ -155,7 +156,7 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	category := strings.TrimSpace(r.FormValue("category"))
-	if !storeIsValid(category) {
+	if !s.storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
 		return
 	}
@@ -193,7 +194,7 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 		s.adminResult(w, "分类名不能以 "+strings.SplitN(name, "/", 2)[0]+" 开头（与内置接口冲突）")
 		return
 	}
-	if !store.IsValidCategory(name) {
+	if !s.validCategory(name) {
 		s.adminResult(w, "分类名不合法：不能为空、不能以 . 开头、不能含 / ? # % 或控制字符；多级用 / 分隔，最多 3 段，每段 ≤128 字节")
 		return
 	}
@@ -362,7 +363,7 @@ func (s *Server) handleAdminGalleryVisibility(w http.ResponseWriter, r *http.Req
 		return
 	}
 	category := strings.TrimSpace(r.PostFormValue("category"))
-	if !storeIsValid(category) {
+	if !s.storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
 		return
 	}
@@ -395,7 +396,7 @@ func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	category := strings.TrimSpace(r.PostFormValue("category"))
-	if !storeIsValid(category) {
+	if !s.storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
 		return
 	}
@@ -460,7 +461,7 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	table := r.URL.Query().Get("table")
-	if !storeIsValid(table) {
+	if !s.storeIsValid(table) {
 		http.Error(w, "Invalid table name.", http.StatusBadRequest)
 		return
 	}
@@ -500,9 +501,8 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 }
 
 // storeIsValid 校验分类路径：后台表单与 store 层共用同一套规则
-// （每段字母开头，仅字母/数字/下划线，最多 3 段，如 a/b），
-// 避免后台放过、store 层再报 invalid category name 的口径不一致。
-func storeIsValid(name string) bool { return store.IsValidCategory(name) }
+// （含 ECY_MAX_DEPTH 层级上限），避免两边口径不一致。
+func (s *Server) storeIsValid(name string) bool { return s.validCategory(name) }
 
 func (s *Server) adminResult(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -124,7 +124,7 @@ var defaultLogs = []string{
 
 // New 创建服务，使用本地文件数据源。
 func New(cfg config.Config) (*Server, error) {
-	st, err := store.NewFileStore(cfg.DataDir)
+	st, err := store.NewFileStoreDepth(cfg.DataDir, cfg.MaxDepth)
 	if err != nil {
 		return nil, err
 	}
@@ -219,8 +219,8 @@ func (s *Server) loadEndpoints() error {
 		} else {
 			for _, c := range customs {
 				// mobile 允许为空（单端栏目），非空才校验。
-				if store.IsValidCategory(c.Path) && store.IsValidCategory(c.Desk) &&
-					(c.Mobile == "" || store.IsValidCategory(c.Mobile)) {
+				if s.validCategory(c.Path) && s.validCategory(c.Desk) &&
+					(c.Mobile == "" || s.validCategory(c.Mobile)) {
 					kind := c.Kind
 					if kind != "video" {
 						kind = "image"
@@ -655,7 +655,7 @@ func (s *Server) setBaseURL(v string) error {
 
 // addBinding 新增双端自适应绑定栏目（必须同时绑定 PC 与移动端分类）。
 func (s *Server) addBinding(path, desk, mobile, label, desc string) error {
-	if !store.IsValidCategory(mobile) {
+	if !s.validCategory(mobile) {
 		return fmt.Errorf("移动端分类路径不合法（首段字母开头，每段仅字母/数字/下划线，最多 3 段）")
 	}
 	return s.addEndpoint(path, desk, mobile, label, desc)
@@ -678,13 +678,13 @@ func (s *Server) addEndpoint(path, desk, mobile, label, desc string) error {
 
 // addEndpointSpec 校验并持久化一个栏目。
 func (s *Server) addEndpointSpec(ep endpoint) error {
-	if !store.IsValidCategory(ep.path) {
-		return fmt.Errorf("栏目路径不合法（不能以 . 开头、不能含 ? # %% 或控制字符；最多 3 段、每段 ≤128 字节）")
+	if !s.validCategory(ep.path) {
+		return fmt.Errorf("栏目路径不合法（不能以 . 开头、不能含 ? # %% 或控制字符；最多 %d 段、每段 ≤128 字节）", s.cfg.MaxDepth)
 	}
 	if hasReservedTop(ep.path) {
 		return fmt.Errorf("栏目路径不能以 %s 开头（与内置接口冲突）", strings.SplitN(ep.path, "/", 2)[0])
 	}
-	if !store.IsValidCategory(ep.desk) {
+	if !s.validCategory(ep.desk) {
 		return fmt.Errorf("分类路径不合法")
 	}
 	if ep.kind == "video" {
@@ -692,7 +692,7 @@ func (s *Server) addEndpointSpec(ep endpoint) error {
 	}
 	if ep.auto {
 		ep.mobile = "" // 自动横竖只用一个分类，忽略移动端绑定
-	} else if ep.mobile != "" && !store.IsValidCategory(ep.mobile) {
+	} else if ep.mobile != "" && !s.validCategory(ep.mobile) {
 		return fmt.Errorf("移动端分类路径不合法")
 	}
 	if ep.label == "" {
@@ -762,6 +762,11 @@ func splitPicPath(p string) (category, file string, ok bool) {
 	return rel[:i], rel[i+1:], true
 }
 
+// validCategory 用当前配置的层级上限（ECY_MAX_DEPTH）校验分类/栏目路径。
+func (s *Server) validCategory(name string) bool {
+	return store.IsValidCategoryDepth(name, s.cfg.MaxDepth)
+}
+
 // hasReservedTop 判断分类路径/栏目路径的首段是否与内置路由冲突。
 // 规则与 store 扫描共用一份（store.IsReservedTop），避免两边不一致。
 func hasReservedTop(name string) bool { return store.IsReservedTop(name) }
@@ -770,7 +775,7 @@ func hasReservedTop(name string) bool { return store.IsReservedTop(name) }
 // 分类路径支持多级子目录，如 /pic/a/b/f.png 对应分类 a/b 下的 f.png。
 func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 	category, file, ok := splitPicPath(r.URL.Path)
-	if !ok || !store.IsValidCategory(category) || strings.ContainsAny(file, "/\\") {
+	if !ok || !s.validCategory(category) || strings.ContainsAny(file, "/\\") {
 		http.NotFound(w, r)
 		return
 	}
@@ -846,7 +851,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	// 磁盘目录即接口：没有在后台建过栏目的分类，URL 也能直接用。
 	// 方向按设备自动判定（桌面横图 / 移动竖图），可用 ?orientation= 覆盖。
-	if store.IsValidCategory(path) {
+	if s.validCategory(path) {
 		if _, err := s.st.CountWith(r.Context(), path, store.OrientationAny); err == nil {
 			s.renderLink(w, r, endpoint{
 				path: path, desk: path, label: path, kind: "image", auto: true,

@@ -46,9 +46,13 @@ func IsVideoFile(name string) bool {
 // 对外即分类路径 "段1/段2"（如 /pic/a/b/f.png 对应分类 a/b）。
 // 层级与总长设上限，防超深目录与超长路径。
 const (
-	maxCategoryDepth = 3
-	maxCategoryLen   = 256
-	maxSegmentLen    = 128 // 单段字节数上限（中文约 42 字）
+	// DefaultMaxDepth 默认分类层级上限，可用环境变量 ECY_MAX_DEPTH 调整。
+	DefaultMaxDepth = 3
+	// MaxDepthLimit 允许配置的层级上限：再深只会增加扫描成本，
+	// 不支持无限层级是刻意的（防止误配把整棵目录树当分类扫）。
+	MaxDepthLimit  = 8
+	maxCategoryLen = 512
+	maxSegmentLen  = 128 // 单段字节数上限（中文约 42 字）
 )
 
 // reservedTop 与内置路由冲突的首段名：这类目录不会被载入为分类，
@@ -110,15 +114,26 @@ func IsValidSegment(name string) bool {
 // IsValidIdentifier 兼容旧名：等价于 IsValidSegment（单段校验）。
 func IsValidIdentifier(name string) bool { return IsValidSegment(name) }
 
-// IsValidCategory 校验分类路径：1~maxCategoryDepth 段，以 "/" 分隔。
+// IsValidCategory 校验分类路径（使用默认层级上限）。
+func IsValidCategory(name string) bool {
+	return IsValidCategoryDepth(name, DefaultMaxDepth)
+}
+
+// IsValidCategoryDepth 校验分类路径：1~maxDepth 段，以 "/" 分隔。
 // 每段走 IsValidSegment；首段不能是内置路由保留名。
 // 空串、空段（a//b）、"."、".."、反斜杠、绝对路径（/a）一律拒绝。
-func IsValidCategory(name string) bool {
+func IsValidCategoryDepth(name string, maxDepth int) bool {
+	if maxDepth < 1 {
+		maxDepth = DefaultMaxDepth
+	}
+	if maxDepth > MaxDepthLimit {
+		maxDepth = MaxDepthLimit
+	}
 	if name == "" || len(name) > maxCategoryLen {
 		return false
 	}
 	segs := strings.Split(name, "/")
-	if len(segs) > maxCategoryDepth {
+	if len(segs) > maxDepth {
 		return false
 	}
 	for _, seg := range segs {
@@ -130,8 +145,8 @@ func IsValidCategory(name string) bool {
 }
 
 // CategorySegments 返回分类路径的各段；非法输入返回 nil。
-func CategorySegments(name string) []string {
-	if !IsValidCategory(name) {
+func CategorySegments(name string, maxDepth int) []string {
+	if !IsValidCategoryDepth(name, maxDepth) {
 		return nil
 	}
 	return strings.Split(name, "/")
@@ -255,7 +270,8 @@ type orientMeta struct {
 }
 
 type fileStore struct {
-	dir string
+	dir      string
+	maxDepth int // 分类层级上限（ECY_MAX_DEPTH）
 
 	// 惰性重载节流：lastScan 用 atomic 读，热路径无锁。
 	reloadMu sync.Mutex
@@ -280,14 +296,26 @@ type fileStore struct {
 	aggs map[string]*aggKids
 }
 
-// NewFileStore 使用 data/categories/<分类名>/ 子目录存放图片文件。
-// 兼容旧版 <分类名>.txt 链接文件：迁移为原始链接仍可访问（若存在）。
+// NewFileStore 使用默认层级上限（DefaultMaxDepth）创建存储。
 func NewFileStore(dir string) (Store, error) {
+	return NewFileStoreDepth(dir, DefaultMaxDepth)
+}
+
+// NewFileStoreDepth 指定分类层级上限创建存储（ECY_MAX_DEPTH）。
+// maxDepth 会被夹在 [1, MaxDepthLimit] 之间。
+func NewFileStoreDepth(dir string, maxDepth int) (Store, error) {
+	if maxDepth < 1 {
+		maxDepth = DefaultMaxDepth
+	}
+	if maxDepth > MaxDepthLimit {
+		maxDepth = MaxDepthLimit
+	}
 	fs := &fileStore{
-		dir:     dir,
-		cache:   map[string]*categorySet{},
-		oriMeta: map[string]map[string]orientMeta{},
-		dirs:    map[string]*dirState{},
+		dir:      dir,
+		maxDepth: maxDepth,
+		cache:    map[string]*categorySet{},
+		oriMeta:  map[string]map[string]orientMeta{},
+		dirs:     map[string]*dirState{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
@@ -434,7 +462,7 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 			sc.sets[rel] = state.set
 		}
 	}
-	if depth < maxCategoryDepth {
+	if depth < f.maxDepth {
 		for _, e := range entries {
 			seg := e.Name()
 			childRel := joinRel(rel, seg)
@@ -604,6 +632,11 @@ func (f *fileStore) categorySet(category string) (*categorySet, bool) {
 	set, ok := f.cache[category]
 	f.mu.RUnlock()
 	return set, ok
+}
+
+// validCategory 用本实例的层级上限校验分类路径。
+func (f *fileStore) validCategory(name string) bool {
+	return IsValidCategoryDepth(name, f.maxDepth)
 }
 
 // aggFor 返回父目录聚合视图（仅当该路径是「只含子目录」的容器时才存在）。
@@ -791,7 +824,7 @@ func NewFileAdmin(s Store) (Admin, error) {
 
 func (f *fileStore) CreateCategory(ctx context.Context, name string) error {
 	_ = ctx
-	if !IsValidCategory(name) {
+	if !f.validCategory(name) {
 		return errors.New("invalid category name")
 	}
 	path := filepath.Join(f.dir, filepath.FromSlash(name))
@@ -819,7 +852,7 @@ func sanitizeFilename(name string) string {
 
 func (f *fileStore) SaveFile(ctx context.Context, category, filename string, r io.Reader) (string, error) {
 	_ = ctx
-	if !IsValidCategory(category) {
+	if !f.validCategory(category) {
 		return "", errors.New("invalid category name")
 	}
 	filename = sanitizeFilename(filename)
@@ -867,7 +900,7 @@ func (f *fileStore) SaveUploaded(ctx context.Context, category string, fh *multi
 
 func (f *fileStore) DeleteFiles(ctx context.Context, category string, names []string) (int, error) {
 	_ = ctx
-	if !IsValidCategory(category) {
+	if !f.validCategory(category) {
 		return 0, errors.New("invalid category name")
 	}
 	dir := filepath.Join(f.dir, filepath.FromSlash(category))
@@ -916,7 +949,7 @@ func Dir(s Store) string {
 // 供后台分类删除功能使用；调用方须做好二次确认。
 func (f *fileStore) DeleteCategory(ctx context.Context, name string) error {
 	_ = ctx
-	if !IsValidCategory(name) {
+	if !f.validCategory(name) {
 		return errors.New("invalid category name")
 	}
 	path := filepath.Join(f.dir, filepath.FromSlash(name))
@@ -933,7 +966,7 @@ func (f *fileStore) DeleteCategory(ctx context.Context, name string) error {
 
 // pruneEmptyParents 自下而上删除空的上级目录，只处理数据根目录内的层级。
 func (f *fileStore) pruneEmptyParents(category string) {
-	segs := CategorySegments(category)
+	segs := CategorySegments(category, f.maxDepth)
 	for i := len(segs) - 1; i >= 1; i-- {
 		parent := filepath.Join(f.dir, filepath.FromSlash(strings.Join(segs[:i], "/")))
 		entries, err := os.ReadDir(parent)

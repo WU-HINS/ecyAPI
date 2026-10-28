@@ -48,7 +48,7 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 				key == "orientation" || key == "orient" || key == "o" {
 				continue
 			}
-			if store.IsValidCategory(key) {
+			if s.validCategory(key) {
 				category = key
 				if len(vals) > 0 && digitsRe.MatchString(vals[0]) {
 					if n, _ := strconv.Atoi(vals[0]); n > 0 {
@@ -65,7 +65,7 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if category == "" || !store.IsValidCategory(category) {
+	if category == "" || !s.validCategory(category) {
 		s.renderHelloWorld(w)
 		return
 	}

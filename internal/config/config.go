@@ -5,7 +5,20 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
+
+	"ecyapi/internal/store"
 )
+
+// clampDepth 把 ECY_MAX_DEPTH 夹到 [1, store.MaxDepthLimit]。
+func clampDepth(n int) int {
+	if n < 1 {
+		return store.DefaultMaxDepth
+	}
+	if n > store.MaxDepthLimit {
+		return store.MaxDepthLimit
+	}
+	return n
+}
 
 // Config 服务全局配置。
 type Config struct {
@@ -16,6 +29,8 @@ type Config struct {
 	BaseURL       string // 对外展示的 API 域名，如 https://api.example.com；留空则按请求推断
 	// MaxUploadBytes 单次上传请求体上限（字节），超出直接拒绝。
 	MaxUploadBytes int64
+	// MaxDepth 分类层级上限（ECY_MAX_DEPTH，默认 3，上限 8）。
+	MaxDepth int
 }
 
 func env(key, def string) string {
@@ -60,5 +75,7 @@ func Load() Config {
 		BaseURL:       env("ECY_BASE_URL", ""),
 		// 默认 512 MB：批量上传够用，又不至于让单个请求吃满磁盘。
 		MaxUploadBytes: envInt64("ECY_MAX_UPLOAD_MB", 512) << 20,
+		// 分类层级：默认 3 段（a/b/c），上限 8 段，超出按上限处理。
+		MaxDepth: clampDepth(envInt("ECY_MAX_DEPTH", store.DefaultMaxDepth)),
 	}
 }
