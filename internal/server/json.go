@@ -111,7 +111,7 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		buf = append(buf, `,"data":`...)
 		buf = appendJSONRow(buf, rows[0].ID, joinURL(base, rows[0].Link, suffix))
 	} else {
-		buf = append(buf, `,"data":`...)
+		buf = append(buf, `,"data":[`...)
 		for i, row := range rows {
 			if i > 0 {
 				buf = append(buf, ',')
