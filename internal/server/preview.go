@@ -54,8 +54,9 @@ const previewQueueLen = 25
 // 防止磁盘被压缩缩略图无限吃掉。每次新写缓存后异步清理一次。
 const previewCacheMaxFiles = 2000
 
-// previewQueue 压缩任务队列：容量即并发上限。
-var previewQueue = make(chan struct{}, previewQueueLen)
+// newPreviewQueue 每个 Server 独立的压缩队列（容量即并发上限）。
+// 独立队列避免多实例/多测试互相挤占，也让 FreeOSMemory 判断只作用于本实例。
+func newPreviewQueue() chan struct{} { return make(chan struct{}, previewQueueLen) }
 
 // previewCacheRoot 预览缓存根目录，与数据目录同级：data/preview-cache/<分类>/。
 func (s *Server) previewCacheRoot() string {
@@ -76,26 +77,32 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		s.handlePic(w, r)
 		return
 	}
-	path := filepath.Join(s.dataDir, category, file)
+	// 扩展名白名单：非图片/视频不进入压缩链路。
+	if _, ok := contentTypeFor(file); !ok {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.dataDir, filepath.FromSlash(category), file)
 	_, cachePath := s.previewCachePath(category, file, width)
 
-	// 缓存命中：直接输出（含 CDN 长缓存头）。
-	if data := readCachedPreview(cachePath); data != nil {
-		writePreview(w, data, "image/webp")
+	// 缓存命中：直接输出缓存文件（sendfile + ETag + 304），不整块读进内存。
+	if s.serveCachedPreview(w, r, cachePath) {
+		return
+	}
+
+	// 同一缓存键串行化：并发来的同图请求，只有一个真正压缩，
+	// 其余等它落盘后直接命中缓存，避免重复解码与重复 CPU。
+	unlock := s.previewLocks.lock(cachePath)
+	defer unlock()
+	if s.serveCachedPreview(w, r, cachePath) {
 		return
 	}
 
 	// 队列满则不排队：无缓存可用，回退原图（w 参数已在 handlePic 入口移除）。
 	select {
-	case previewQueue <- struct{}{}:
+	case s.previewQ <- struct{}{}:
 	default:
 		s.handlePic(w, r)
-		return
-	}
-	// 拿到位置后再查一次：排队间隙可能已被并发请求填好缓存。
-	if data := readCachedPreview(cachePath); data != nil {
-		s.releasePreviewSlot()
-		writePreview(w, data, "image/webp")
 		return
 	}
 	data, _, err := compressPreview(path, width)
@@ -106,34 +113,55 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		return
 	}
 
-	// 原子落盘：先写临时文件再 rename，避免并发读到半截文件。
+	// 原子落盘：先写唯一临时文件再 rename，避免并发读到半截文件。
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		tmp := cachePath + ".tmp"
+		tmp := cachePath + "." + strconv.FormatInt(time.Now().UnixNano(), 36) + ".tmp"
 		if os.WriteFile(tmp, data, 0o644) == nil && os.Rename(tmp, cachePath) == nil {
 			// 落盘成功后异步清理超量缓存，不阻塞本次响应。
 			go s.evictPreviewCache()
+		} else {
+			_ = os.Remove(tmp)
 		}
 	}
 
 	writePreview(w, data, "image/webp")
 }
 
+// serveCachedPreview 命中缓存则直接输出并返回 true。
+func (s *Server) serveCachedPreview(w http.ResponseWriter, r *http.Request, cachePath string) bool {
+	f, err := os.Open(cachePath)
+	if err != nil {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() || fi.Size() == 0 {
+		_ = f.Close()
+		return false
+	}
+	defer f.Close()
+	cacheLong(w.Header())
+	serveLocalFile(w, r, f, fi, "image/webp")
+	return true
+}
+
 // previewCachePath 计算缓存文件路径与源图扩展名。
 // 预览统一编码为 WebP，缓存扩展名固定 .webp。
 func (s *Server) previewCachePath(category, file string, width int) (string, string) {
 	ext := strings.ToLower(filepath.Ext(file))
-	cache := filepath.Join(s.previewCacheRoot(), category, file+".w"+strconv.Itoa(width)+".webp")
+	cache := filepath.Join(s.previewCacheRoot(), filepath.FromSlash(category),
+		file+".w"+strconv.Itoa(width)+".webp")
 	return ext, cache
 }
 
-// releasePreviewSlot 释放压缩队列占位。队列从满变为空闲（一批转码刚结束）
-// 时调用 FreeOSMemory：跑一轮 GC 并把空闲堆页归还操作系统，避免批量
-// 压缩的峰值内存长期驻留 RSS。服务空闲期到达的零星请求不触发，开销可忽略。
+// releasePreviewSlot 释放压缩队列占位。先归还槽位再判断队列是否排空：
+// 队列真正空下来（一批转码刚结束）时调用 FreeOSMemory，把空闲堆页还给
+// 操作系统，避免批量压缩的峰值内存长期驻留 RSS。
+// 注意判断必须在释放之后，否则自己持有的那一个槽位会让条件永远为假。
 func (s *Server) releasePreviewSlot() {
-	if len(previewQueue) == 0 {
+	<-s.previewQ
+	if len(s.previewQ) == 0 {
 		debug.FreeOSMemory()
 	}
-	<-previewQueue
 }
 
 // evictPreviewCache 缓存文件数超过上限时删掉最旧的。walk 全目录收集
@@ -176,7 +204,7 @@ func evictPreviewCacheFiles(root string, max int) {
 // 后台删除图片/分类时调用，避免缓存里残留已删除图片的缩略图。
 // file 为空表示清空整个分类的缓存。
 func (s *Server) cleanupPreviewCache(category, file string) {
-	root := filepath.Join(s.previewCacheRoot(), category)
+	root := filepath.Join(s.previewCacheRoot(), filepath.FromSlash(category))
 	if file == "" {
 		_ = os.RemoveAll(root)
 		return
@@ -193,15 +221,6 @@ func (s *Server) cleanupPreviewCache(category, file string) {
 	}
 }
 
-// readCachedPreview 读缓存。
-func readCachedPreview(cachePath string) []byte {
-	data, err := os.ReadFile(cachePath)
-	if err != nil || len(data) == 0 {
-		return nil
-	}
-	return data
-}
-
 // writePreview 输出预览图片（带 CDN 长缓存头）。
 func writePreview(w http.ResponseWriter, data []byte, contentType string) {
 	w.Header().Set("Content-Type", contentType)
@@ -209,6 +228,13 @@ func writePreview(w http.ResponseWriter, data []byte, contentType string) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
+
+// maxDecodePixels 解码前的像素上限（4000 万像素）。
+// 超限直接拒绝，避免「几百 KB 的 PNG 解出几 GB 位图」的解压炸弹：
+// SetMemoryLimit 是软限，只能提高 GC 频率，不能阻止分配失败。
+const maxDecodePixels = 40_000_000
+
+var errImageTooLarge = errors.New("preview: image too large")
 
 // compressPreview 解码源图 → 等比缩放 → 重编码为 WebP。
 // GIF 取第一帧；视频与 SVG 不支持，返回错误由调用方回退原图。
@@ -218,6 +244,18 @@ func compressPreview(path string, width int) ([]byte, string, error) {
 		return nil, "", err
 	}
 	defer f.Close()
+
+	// 先读文件头拿尺寸：只读几十字节，挡掉异常大的图。
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil, "", err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxDecodePixels {
+		return nil, "", errImageTooLarge
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return nil, "", err
+	}
 
 	ext := strings.ToLower(filepath.Ext(path))
 	img, err := decodeImage(f, ext)

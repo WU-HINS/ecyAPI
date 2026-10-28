@@ -2,8 +2,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -32,7 +36,22 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	if err := httpServer.ListenAndServe(); err != nil {
+	// 优雅关闭：收到 SIGTERM/SIGINT 后停止接收新连接，等处理中的请求收尾。
+	// 容器滚动发布时避免正在上传的图片被硬切断。
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-stop
+		log.Printf("收到 %s，开始优雅关闭…", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("优雅关闭超时，强制退出: %v", err)
+		}
+	}()
+
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("服务退出: %v", err)
 	}
+	log.Print("服务已停止")
 }

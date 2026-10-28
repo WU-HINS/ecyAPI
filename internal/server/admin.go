@@ -21,12 +21,22 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case r.Method == http.MethodPost && r.PostFormValue("login_password") != "":
+		ip := clientIP(r)
+		if blocked, wait := s.login.blocked(ip); blocked {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, "登录尝试过于频繁，请 %d 分钟后再试。", int(wait.Minutes())+1)
+			return
+		}
 		input := strings.TrimSpace(r.PostFormValue("login_password"))
 		if subtle.ConstantTimeCompare([]byte(input), []byte(s.cfg.AdminPassword)) == 1 {
-			s.sessionStart(w)
+			s.login.reset(ip)
+			s.sessionStart(w, r)
 			http.Redirect(w, r, "/admin", http.StatusFound)
 			return
 		}
+		s.login.fail(ip)
 		s.renderAdmin(w, map[string]any{"Authed": false, "LoginError": true})
 		return
 
@@ -48,21 +58,21 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		catList = append(catList, cat{Name: t, Count: counts[t], Hide: hidden[t]})
 	}
 
-	type binding struct {
-		Path, Label, Desk, Mobile string
-	}
+	// 栏目表格：Mode 取值 单端 / 双端 / 自动横竖。
 	type epItem struct {
-		Path, Label string
-		Adaptive    bool
+		Path, Label, Desk, Mobile, Mode string
 	}
 	s.mu.RLock()
-	bindings := make([]binding, 0, len(s.endpoints))
 	epList := make([]epItem, 0, len(s.endpoints))
 	for _, ep := range s.endpoints {
-		epList = append(epList, epItem{ep.path, ep.label, ep.mobile != ""})
-		if ep.mobile != "" {
-			bindings = append(bindings, binding{ep.path, ep.label, ep.desk, ep.mobile})
+		mode := "单端"
+		switch {
+		case ep.auto:
+			mode = "自动横竖"
+		case ep.mobile != "":
+			mode = "双端"
 		}
+		epList = append(epList, epItem{ep.path, ep.label, ep.desk, ep.mobile, mode})
 	}
 	s.mu.RUnlock()
 
@@ -75,7 +85,6 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	s.renderAdmin(w, map[string]any{
 		"Authed":    true,
 		"Tables":    catList,
-		"Bindings":  bindings,
 		"Endpoints": epList,
 		"BaseURL":   baseURL,
 		"Slogan":    slogan,
@@ -106,13 +115,17 @@ func (s *Server) handleAdminUpload(w http.ResponseWriter, r *http.Request) {
 	// 这里按请求放宽读超时；ReadHeaderTimeout 仍在连接层防慢连接攻击。
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
+	// 请求体总量上限：超时放开后必须靠这个兜底，防止单个请求吃满磁盘。
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes)
+	// 先解析再取字段：请求体被 MaxBytesReader 拦下时，FormValue 会拿到空值，
+	// 那样用户只会看到「分类名不合法」，掩盖真正的原因（请求体过大）。
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		s.adminResult(w, "解析上传失败: "+err.Error())
+		return
+	}
 	category := strings.TrimSpace(r.FormValue("category"))
 	if !storeIsValid(category) {
 		s.adminResult(w, "分类名不合法")
-		return
-	}
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
-		s.adminResult(w, "解析上传失败: "+err.Error())
 		return
 	}
 	files := r.MultipartForm.File["files"]
@@ -175,6 +188,14 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("new_table_name"))
 	label := strings.TrimSpace(r.PostFormValue("new_table_label"))
 	desc := strings.TrimSpace(r.PostFormValue("new_table_desc"))
+	if !store.IsValidCategory(name) {
+		s.adminResult(w, "分类名不合法：首段须以字母开头，每段仅含字母/数字/下划线，最多 3 段（如 anime/2024）")
+		return
+	}
+	if hasReservedTop(name) {
+		s.adminResult(w, "分类名不能以 "+strings.SplitN(name, "/", 2)[0]+" 开头（与内置接口冲突）")
+		return
+	}
 	if err := s.admin.CreateCategory(r.Context(), name); err != nil {
 		// 目录已存在时继续补齐首页栏目，兼容此前只建了目录的旧数据。
 		if !strings.Contains(err.Error(), "已存在") {
@@ -182,13 +203,26 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.addEndpoint(name, name, "", label, desc); err != nil {
-		if !strings.Contains(err.Error(), "已存在") {
-			s.adminResult(w, "分类创建成功，但首页栏目添加失败: "+err.Error())
+	// 默认按设备自动分横竖：桌面端取横图、移动端取竖图，无需第二个分类。
+	// 表单里「关闭自动横竖」勾选后提交 new_table_auto=0，才退回单端全量。
+	auto := r.PostFormValue("new_table_auto") != "0"
+	var addErr error
+	if auto {
+		addErr = s.addAdaptive(name, name, label, desc)
+	} else {
+		addErr = s.addEndpoint(name, name, "", label, desc)
+	}
+	if addErr != nil {
+		if !strings.Contains(addErr.Error(), "已存在") {
+			s.adminResult(w, "分类创建成功，但首页栏目添加失败: "+addErr.Error())
 			return
 		}
 	}
-	s.adminResult(w, "分类 "+name+" 创建成功，首页栏目 /"+name+" 已同步上线！")
+	if auto {
+		s.adminResult(w, "分类 "+name+" 创建成功，栏目 /"+name+" 已上线（按设备自动分横竖：桌面出横图、移动端出竖图）。")
+		return
+	}
+	s.adminResult(w, "分类 "+name+" 创建成功，首页栏目 /"+name+" 已同步上线（不区分设备）！")
 }
 
 // handleAdminBinding 新增双端自适应绑定栏目。
@@ -202,6 +236,16 @@ func (s *Server) handleAdminBinding(w http.ResponseWriter, r *http.Request) {
 	mobile := strings.TrimSpace(r.PostFormValue("binding_mobile"))
 	label := strings.TrimSpace(r.PostFormValue("binding_label"))
 	desc := strings.TrimSpace(r.PostFormValue("binding_desc"))
+	// 自动横竖：只用一个分类，桌面端出横图、移动端出竖图，无需绑定第二个分类。
+	// 表单默认开启；勾选「关闭自动横竖」时提交 binding_auto=0，改用移动端分类。
+	if r.PostFormValue("binding_auto") != "0" {
+		if err := s.addAdaptive(path, desk, label, desc); err != nil {
+			s.adminResult(w, "创建失败: "+err.Error())
+			return
+		}
+		s.adminResult(w, "自动横竖栏目 /"+path+" 创建成功：桌面端取横图，移动端取竖图（同一分类 "+desk+"）。")
+		return
+	}
 	if err := s.addBinding(path, desk, mobile, label, desc); err != nil {
 		s.adminResult(w, "创建失败: "+err.Error())
 		return
@@ -419,12 +463,12 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid table name.", http.StatusBadRequest)
 		return
 	}
-	rows, err := s.st.Links(r.Context(), table)
+	// 先取总数（同时判断分类是否存在），再只取当前页，避免大分类整表复制。
+	total, err := s.st.CountWith(r.Context(), table, store.OrientationAny)
 	if err != nil {
 		http.Error(w, "Table not found.", http.StatusNotFound)
 		return
 	}
-	total := len(rows)
 	totalPages := (total + adminDataPageSize - 1) / adminDataPageSize
 	page, err := strconv.Atoi(r.URL.Query().Get("page"))
 	if err != nil || page < 1 {
@@ -433,15 +477,11 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 	if totalPages > 0 && page > totalPages {
 		page = totalPages
 	}
-	start := (page - 1) * adminDataPageSize
-	end := start + adminDataPageSize
-	if start > total {
-		start = total
+	items, _, err := s.st.LinksPage(r.Context(), table, (page-1)*adminDataPageSize, adminDataPageSize)
+	if err != nil {
+		http.Error(w, "Table not found.", http.StatusNotFound)
+		return
 	}
-	if end > total {
-		end = total
-	}
-	items := rows[start:end]
 	if items == nil {
 		items = []store.Row{}
 	}
@@ -458,19 +498,10 @@ func (s *Server) handleAdminData(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func storeIsValid(name string) bool {
-	const maxLen = 64
-	if len(name) < 1 || len(name) > maxLen {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
-			return false
-		}
-	}
-	return true
-}
+// storeIsValid 校验分类路径：后台表单与 store 层共用同一套规则
+// （每段字母开头，仅字母/数字/下划线，最多 3 段，如 a/b），
+// 避免后台放过、store 层再报 invalid category name 的口径不一致。
+func storeIsValid(name string) bool { return store.IsValidCategory(name) }
 
 func (s *Server) adminResult(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

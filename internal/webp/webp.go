@@ -1,17 +1,21 @@
-// Package webp 提供 WebP 有损编码，基于静态编译的 libwebp（CGO）。
+//go:build cgo
+
+// Package webp 提供 WebP 有损编码，基于 libwebp（CGO）。
 //
 // 背景：?w= 压缩预览需要 webp 输出，此前用的 gen2brain/webp 在
 // CGO_ENABLED=0 纯静态构建下回退 wasm2go 后端，每次编码都持有
 // 数百 MB 不归还的 wasm 堆，批量压缩会打爆内存。这里直接静态链接
-// libwebp（musl 交叉编译），内存与耗时都回到正常水平。
+// libwebp，内存与耗时都回到正常水平。
 //
-// 构建约束：需要 CGO_ENABLED=1。Dockerfile 已配置；本地裸 go build
-// 在无交叉工具链时构建失败属预期，CI/镜像构建不受影响。
+// 链接方式由构建标签选择：
+//   - 默认（linux/amd64）：链接仓库内置的 lib/linux_amd64/libwebp.a，开箱即用；
+//   - "-tags webp_system"：链接系统安装的 libwebp（-lwebp），用于 linux/arm64
+//     以及 Docker/CI 内由 apk/apt 安装 libwebp-dev 的场景；
+//   - CGO_ENABLED=0：退化为空实现，?w= 压缩预览回退原图（见 webp_nocgo.go）。
 package webp
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/include
-#cgo linux,amd64 LDFLAGS: ${SRCDIR}/lib/linux_amd64/libwebp.a -lm
 #include "bridge.h"
 #include <stdlib.h>
 */

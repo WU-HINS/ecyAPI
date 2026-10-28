@@ -105,13 +105,18 @@
                 <tbody>
                     <tr>
                         <td><strong>分类名</strong></td>
-                        <td>{{range .Categories}}<code>{{.}}</code> {{end}}</td>
-                        <td><code>?pc</code></td>
+                        <td>多级分类用 <code>/</code> 连接，如 <code>anime/2024</code>。当前可用：{{range .Categories}}<code>{{.}}</code> {{end}}</td>
+                        <td><code>?pc</code> / <code>?anime/2024</code></td>
                     </tr>
                     <tr>
                         <td><strong>数量</strong></td>
                         <td>给分类参数赋数字值，表示返回几条。不填写时默认返回 1 条。</td>
                         <td><code>?pc=3</code></td>
+                    </tr>
+                    <tr>
+                        <td><strong>方向</strong></td>
+                        <td><code>landscape</code>（横）/ <code>portrait</code>（竖）/ <code>auto</code>（按 User-Agent 自动）。留空为不限方向；该方向没有图片时自动回退全部，不会 404。</td>
+                        <td><code>?pc&orientation=portrait</code></td>
                     </tr>
                 </tbody>
             </table>

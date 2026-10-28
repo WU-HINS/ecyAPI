@@ -1,23 +1,25 @@
 package server
 
 import (
-	"ecyapi/internal/store"
-	"encoding/json"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+
+	"ecyapi/internal/store"
 )
 
 var digitsRe = regexp.MustCompile(`^\d+$`)
 
 // handleJSON 动态 JSON 接口：/json?pc 返回单条，/json?pc=3 返回多条。
 // 兼容 ?table=xxx / ?type=xxx / ?category=xxx 与 ?num=?count=?limit=?n= 数量参数。
+// ?orientation=landscape|portrait|auto 按方向筛选（auto 跟随 UA）。
 func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
 	category := ""
 	limit := 1
+	want := store.OrientationAny
 
 	// 第一优先：table/type/category
 	for _, key := range []string{"table", "type", "category"} {
@@ -42,10 +44,11 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		for key, vals := range q {
 			if key == "table" || key == "type" || key == "category" ||
 				key == "num" || key == "count" || key == "limit" || key == "n" ||
-				key == "w" || key == "quantity" {
+				key == "w" || key == "quantity" ||
+				key == "orientation" || key == "orient" || key == "o" {
 				continue
 			}
-			if store.IsValidIdentifierName(key) {
+			if store.IsValidCategory(key) {
 				category = key
 				if len(vals) > 0 && digitsRe.MatchString(vals[0]) {
 					if n, _ := strconv.Atoi(vals[0]); n > 0 {
@@ -62,7 +65,7 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if category == "" || !store.IsValidIdentifierName(category) {
+	if category == "" || !store.IsValidCategory(category) {
 		s.renderHelloWorld(w)
 		return
 	}
@@ -74,7 +77,19 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		limit = 1
 	}
 
-	rows, err := s.st.Random(r.Context(), category, limit)
+	// 方向参数：显式值优先，auto 时跟随 UA（移动端竖图、桌面端横图）。
+	for _, key := range []string{"orientation", "orient", "o"} {
+		v := q.Get(key)
+		if v == "" {
+			continue
+		}
+		if o, ok := resolveOrientation(v, r); ok {
+			want = o
+		}
+		break
+	}
+
+	rows, err := s.randomRows(r, category, limit, want)
 	if err != nil || len(rows) == 0 {
 		s.renderHelloWorld(w)
 		return
@@ -86,35 +101,37 @@ func (s *Server) handleJSON(w http.ResponseWriter, r *http.Request) {
 		suffix = "?w=" + url.QueryEscape(v)
 	}
 
-	type rowJSON struct {
-		ID   string `json:"id,omitempty"`
-		Link string `json:"link"`
-	}
-	dataRows := make([]rowJSON, len(rows))
-	links := make([]string, 0, len(rows))
-	for i, row := range rows {
-		abs := s.absoluteURL(r, row.Link) + suffix
-		dataRows[i] = rowJSON{ID: row.ID, Link: abs}
-		links = append(links, abs)
-	}
-
-	payload := map[string]any{
-		"code":     200,
-		"category": category,
-		"count":    len(rows),
-	}
+	base := s.baseFor(r)
+	buf := make([]byte, 0, 128+len(rows)*96)
+	buf = append(buf, `{"code":200,"category":`...)
+	buf = appendJSONString(buf, category)
+	buf = append(buf, `,"count":`...)
+	buf = appendJSONInt(buf, len(rows))
 	if limit == 1 {
-		payload["data"] = dataRows[0]
+		buf = append(buf, `,"data":`...)
+		buf = appendJSONRow(buf, rows[0].ID, joinURL(base, rows[0].Link, suffix))
 	} else {
-		payload["data"] = dataRows
-		payload["links"] = links
+		buf = append(buf, `,"data":`...)
+		for i, row := range rows {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = appendJSONRow(buf, row.ID, joinURL(base, row.Link, suffix))
+		}
+		buf = append(buf, `],"links":[`...)
+		for i, row := range rows {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = appendJSONString(buf, joinURL(base, row.Link, suffix))
+		}
+		buf = append(buf, ']')
 	}
+	buf = append(buf, '}', '\n')
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(payload)
+	_, _ = w.Write(buf)
 }
 
 // renderHelloWorld 与原版一致：非法参数返回你好世界页。

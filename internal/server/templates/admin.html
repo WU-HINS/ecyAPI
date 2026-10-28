@@ -347,7 +347,7 @@
             <section class="view" id="view-category">
                 <div class="page-head">
                     <h1>分类管理</h1>
-                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口。</p>
+                    <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录（如 anime/2024 → data/categories/anime/2024）。</p>
                 </div>
                 <div class="panel">
                     <h3>创建新分类</h3>
@@ -355,7 +355,7 @@
                         <div class="field">
                             <label for="new_table_name">分类名</label>
                             <input type="text" id="new_table_name" name="new_table_name"
-                                   placeholder="例如：link_work，以字母开头，仅含字母/数字/下划线" required>
+                                   placeholder="例如：anime 或 anime/2024，每段字母开头，仅字母/数字/下划线，最多 3 段" required>
                         </div>
                         <div class="row">
                             <div class="field">
@@ -369,10 +369,17 @@
                                        placeholder="首页卡片上的一句话描述">
                             </div>
                         </div>
+                        <div class="field">
+                            <label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;cursor:pointer;line-height:1.7">
+                                <input type="checkbox" id="new_table_auto_off" name="new_table_auto" value="0"
+                                       style="width:auto;margin-top:3px">
+                                <span>关闭「按设备自动分横竖」。<span style="color:var(--ink-2)">默认开启：桌面端出横图、移动端出竖图，同一个分类即可；勾选后所有设备都从该分类随机。</span></span>
+                            </label>
+                        </div>
                         <div class="form-actions">
                             <button type="submit" class="btn">创建分类</button>
                         </div>
-                        <p class="field-desc" style="margin-top:10px">创建后自动在首页展示卡片，并开通 /分类名 随机跳转接口；上传图片后即可访问。</p>
+                        <p class="field-desc" style="margin-top:10px">创建后自动在首页展示卡片，并开通 /分类名 随机跳转接口；上传图片后即可访问。竖向图放进来即自动服务移动端，无需另建分类。</p>
                     </form>
                 </div>
 
@@ -403,14 +410,21 @@
             <section class="view" id="view-endpoints">
                 <div class="page-head">
                     <h1>栏目与排序</h1>
-                    <p>双端自适应栏目会按访问设备自动切换分类；拖动 ⋮⋮ 调整首页卡片与文档页的展示顺序。</p>
+                    <p>栏目有三种模式：<b>单端</b>（一个分类）、<b>双端</b>（PC / 移动端各绑一个分类）、<b>自动横竖</b>（只用一个分类，按设备自动取横图或竖图）。拖动 ⋮⋮ 调整首页卡片与文档页的展示顺序。</p>
                 </div>
                 <div class="panel">
-                    <h3>新增双端自适应栏目</h3>
+                    <h3>新增自适应栏目</h3>
                     <form action="/admin/binding" method="post" onsubmit="return checkBinding()">
+                        <div class="field" style="margin-bottom:12px">
+                            <label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;cursor:pointer;line-height:1.7">
+                                <input type="checkbox" id="binding_auto_off" name="binding_auto" value="0"
+                                       style="width:auto;margin-top:3px" onchange="toggleAutoBinding()">
+                                <span>关闭「按设备自动分横竖」。<span style="color:var(--ink-2)">默认开启：只用一个分类，桌面端出横图、移动端出竖图；勾选后改为 PC / 移动端两个分类的经典双端绑定。</span></span>
+                            </label>
+                        </div>
                         <div class="row">
                             <div class="field">
-                                <label for="binding_desk">PC 端分类</label>
+                                <label for="binding_desk">PC 端分类<span id="autoDeskHint" style="display:none;color:var(--ink-2);font-weight:400">（自动横竖时即唯一数据源）</span></label>
                                 <select id="binding_desk" name="binding_desk">
                                     {{- range .Tables}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
                                 </select>
@@ -426,7 +440,7 @@
                             <div class="field">
                                 <label for="binding_path">新栏目路径</label>
                                 <input type="text" id="binding_path" name="binding_path"
-                                       placeholder="访问路径，如 szs，以字母开头，仅含字母/数字/下划线" required>
+                                       placeholder="访问路径，如 szs 或 anime/2024，每段字母开头，最多 3 段" required>
                             </div>
                             <div class="field">
                                 <label for="binding_label">栏目名称</label>
@@ -439,27 +453,16 @@
                             <input type="text" id="binding_desc" name="binding_desc" placeholder="一句话描述该栏目">
                         </div>
                         <div class="form-actions">
-                            <button type="submit" class="btn">创建双端栏目</button>
+                            <button type="submit" class="btn">创建栏目</button>
                         </div>
                     </form>
-                    {{- if .Bindings}}
-                    <h3 style="margin-top:22px">已有双端栏目</h3>
-                    <table class="tbl">
-                        <thead><tr><th>路径</th><th>名称</th><th>PC 分类</th><th>移动端分类</th></tr></thead>
-                        <tbody>
-                        {{- range .Bindings}}
-                            <tr><td><code>/{{.Path}}</code></td><td>{{.Label}}</td><td>{{.Desk}}</td><td>{{.Mobile}}</td></tr>
-                        {{- end}}
-                        </tbody>
-                    </table>
-                    {{- end}}
                 </div>
 
                 <div class="panel">
                     <h3>前端分类栏排序<span id="sortStatus"></span></h3>
                     <p class="field-desc" style="margin:-8px 0 10px">按住 <b>⋮⋮</b> 拖动行即可调整顺序，松开后自动保存（控制首页卡片与文档页展示顺序）。</p>
                     <table class="tbl">
-                        <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>类型</th></tr></thead>
+                        <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>分类</th><th>类型</th></tr></thead>
                         <tbody id="epsBody">
                         {{- range $i, $ep := .Endpoints}}
                             <tr draggable="true" data-path="{{$ep.Path}}">
@@ -467,7 +470,8 @@
                                 <td class="idx">{{$i}}</td>
                                 <td><code>/{{$ep.Path}}</code></td>
                                 <td>{{$ep.Label}}</td>
-                                <td>{{if $ep.Adaptive}}<span class="badge tag">自适应</span>{{else}}单端{{end}}</td>
+                                <td><code>{{$ep.Desk}}</code>{{if $ep.Mobile}} → <code>{{$ep.Mobile}}</code>{{end}}</td>
+                                <td>{{if eq $ep.Mode "自动横竖"}}<span class="badge tag">自动横竖</span>{{else if eq $ep.Mode "双端"}}<span class="badge tag">双端</span>{{else}}单端{{end}}</td>
                             </tr>
                         {{- end}}
                         </tbody>
@@ -624,7 +628,9 @@
     <div id="toast"></div>
 
     <script>
-        var nameRe = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+        // 分类名 / 栏目路径：首段字母开头，后续段可数字开头（年份），最多 3 段（如 anime/2024）
+        var nameRe = /^[a-zA-Z][a-zA-Z0-9_]*(?:\/[a-zA-Z0-9_]+){0,2}$/;
+        function validName(v) { return v.length <= 128 && nameRe.test(v); }
         var currentPage = 1;
         function currentCategory() { return document.getElementById('tableSelect').value; }
         function isVideo(name) { return /\.(mp4|webm)$/i.test(name); }
@@ -705,8 +711,8 @@
 
         function checkTableName() {
             var tableName = document.getElementById('new_table_name').value.trim();
-            if (!nameRe.test(tableName)) {
-                alert('分类名不合法！\n1. 必须以字母开头\n2. 仅含字母、数字、下划线\n3. 长度1-64字符');
+            if (!validName(tableName)) {
+                alert('分类名不合法！\n1. 每段必须以字母开头\n2. 仅含字母、数字、下划线\n3. 支持用 / 分级，最多 3 段（如 anime/2024）');
                 return false;
             }
             return confirm('确认创建分类：' + tableName + ' 吗？');
@@ -726,10 +732,20 @@
             return confirm('确认删除分类「' + select.value + '」吗？\n该分类下的全部图片将被永久删除，不可恢复！');
         }
 
+        // 默认自动横竖（单分类）；勾选「关闭自动」后才启用移动端分类下拉。
+        function toggleAutoBinding() {
+            var off = document.getElementById('binding_auto_off').checked;
+            var mobile = document.getElementById('binding_mobile');
+            var hint = document.getElementById('autoDeskHint');
+            if (mobile) { mobile.disabled = !off; }
+            if (hint) { hint.style.display = off ? 'none' : 'inline'; }
+        }
+        document.addEventListener('DOMContentLoaded', toggleAutoBinding);
+
         function checkBinding() {
             var path = document.getElementById('binding_path').value.trim();
-            if (!nameRe.test(path)) {
-                alert('栏目路径不合法！\n1. 必须以字母开头\n2. 仅含字母、数字、下划线\n3. 长度1-64字符');
+            if (!validName(path)) {
+                alert('栏目路径不合法！\n1. 每段必须以字母开头\n2. 仅含字母、数字、下划线\n3. 支持用 / 分级，最多 3 段（如 anime/2024）');
                 return false;
             }
             return confirm('确认创建双端栏目 /' + path + ' 吗？');

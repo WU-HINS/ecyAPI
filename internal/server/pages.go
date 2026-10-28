@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"ecyapi/internal/store"
@@ -175,7 +176,7 @@ func (s *Server) sessionValid(r *http.Request) bool {
 	return true
 }
 
-func (s *Server) sessionStart(w http.ResponseWriter) {
+func (s *Server) sessionStart(w http.ResponseWriter, r *http.Request) {
 	token := newSessionToken()
 	s.sessions.Store(token, time.Now().Add(24*time.Hour))
 	http.SetCookie(w, &http.Cookie{
@@ -183,8 +184,38 @@ func (s *Server) sessionStart(w http.ResponseWriter) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
+	})
+}
+
+// requestIsHTTPS 判断外层是否为 HTTPS（直连 TLS 或反代声明），
+// 只有确定是 HTTPS 时才给会话 Cookie 加 Secure，避免纯 HTTP 部署下登录失效。
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// sweepSessionsLoop 定期清理过期会话，避免 sync.Map 只增不减。
+func (s *Server) sweepSessionsLoop() {
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for range t.C {
+		s.sweepSessions()
+	}
+}
+
+// sweepSessions 删除已过期的会话令牌。
+func (s *Server) sweepSessions() {
+	now := time.Now()
+	s.sessions.Range(func(k, v any) bool {
+		if exp, ok := v.(time.Time); ok && now.After(exp) {
+			s.sessions.Delete(k)
+		}
+		return true
 	})
 }
 

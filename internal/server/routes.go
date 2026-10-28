@@ -37,6 +37,9 @@ type endpoint struct {
 	label  string
 	desc   string
 	kind   string // image / video
+	// auto 自动横竖：不做双端分类绑定，而是从 desk 这一个分类里
+	// 按访问设备自动挑图——桌面端出横版、移动端出竖版。
+	auto bool
 }
 
 // endpointsFile 双端自适应绑定配置，存于数据目录外。
@@ -79,6 +82,16 @@ type Server struct {
 	icp    string
 	icpURL string
 	logs   []string
+
+	// access 异步访问日志（/pic 大流量请求不记录）。
+	access *accessLog
+
+	// 预览压缩：每实例独立队列 + 按缓存键的串行锁。
+	previewQ     chan struct{}
+	previewLocks *keyedLocks
+
+	// login 后台登录失败限流（按来源 IP）。
+	login *loginLimiter
 }
 
 // 首页文案默认值：settings.json 未配置或留空时回退到这些值。
@@ -116,7 +129,13 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	admin, _ := store.NewFileAdmin(st)
-	s := &Server{cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st)}
+	s := &Server{
+		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
+		access:       newAccessLog(),
+		previewQ:     newPreviewQueue(),
+		previewLocks: newKeyedLocks(),
+		login:        newLoginLimiter(),
+	}
 	if err := s.loadEndpoints(); err != nil {
 		return nil, err
 	}
@@ -137,6 +156,8 @@ func New(cfg config.Config) (*Server, error) {
 		// RichText 允许首页文案使用白名单内的少量 HTML 标签（如 <br> 换行）。
 		"RichText": renderRichText,
 	}
+	go s.sweepSessionsLoop()
+
 	tpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -147,6 +168,9 @@ func New(cfg config.Config) (*Server, error) {
 
 // ---------------------------------------------------------------- 双端绑定持久化
 
+// endpointJSON endpoints.json 的单条栏目定义（读入）。
+// Auto 用指针区分「文件里没写这个字段」与「显式写了 false」：
+// 前者按默认规则推断（单端图片栏目默认开启自动横竖），后者严格按 false 处理。
 type endpointJSON struct {
 	Path   string `json:"path"`
 	Desk   string `json:"desk"`
@@ -154,6 +178,19 @@ type endpointJSON struct {
 	Label  string `json:"label"`
 	Desc   string `json:"desc"`
 	Kind   string `json:"kind"`
+	Auto   *bool  `json:"auto,omitempty"`
+}
+
+// endpointOut 写回 endpoints.json 的形态：auto 始终显式写出（包括 false），
+// 否则下次加载时会因为「字段缺失」被当成默认值 true。
+type endpointOut struct {
+	Path   string `json:"path"`
+	Desk   string `json:"desk"`
+	Mobile string `json:"mobile"`
+	Label  string `json:"label"`
+	Desc   string `json:"desc"`
+	Kind   string `json:"kind"`
+	Auto   bool   `json:"auto"`
 }
 
 func (s *Server) loadEndpoints() error {
@@ -169,13 +206,34 @@ func (s *Server) loadEndpoints() error {
 		} else {
 			for _, c := range customs {
 				// mobile 允许为空（单端栏目），非空才校验。
-				if store.IsValidIdentifier(c.Path) && store.IsValidIdentifier(c.Desk) &&
-					(c.Mobile == "" || store.IsValidIdentifier(c.Mobile)) {
+				if store.IsValidCategory(c.Path) && store.IsValidCategory(c.Desk) &&
+					(c.Mobile == "" || store.IsValidCategory(c.Mobile)) {
 					kind := c.Kind
 					if kind != "video" {
 						kind = "image"
 					}
-					s.endpoints = append(s.endpoints, endpoint{c.Path, c.Desk, c.Mobile, c.Label, c.Desc, kind})
+					// 自动横竖的默认规则：
+					//   1) 视频没有方向 → 恒为 false；
+					//   2) 文件里显式写了 auto → 以文件为准；
+					//   3) 没写 auto 的单端图片栏目（旧版默认形态）→ 默认开启。
+					//   双端绑定（mobile 非空）保持原语义不变。
+					auto := false
+					switch {
+					case kind == "video":
+						auto = false
+					case c.Auto != nil:
+						auto = *c.Auto
+					case c.Mobile == "":
+						auto = true
+					}
+					mobile := c.Mobile
+					if auto {
+						mobile = "" // 自动横竖只用一个分类
+					}
+					s.endpoints = append(s.endpoints, endpoint{
+						path: c.Path, desk: c.Desk, mobile: mobile,
+						label: c.Label, desc: c.Desc, kind: kind, auto: auto,
+					})
 				}
 			}
 			if len(order) > 0 {
@@ -304,12 +362,15 @@ func (s *Server) saveEndpoints() error {
 // 调用方必须已持有 s.mu（读锁或写锁）。
 func marshalEndpointsLocked(eps []endpoint) ([]byte, error) {
 	payload := struct {
-		Order []string       `json:"order,omitempty"`
-		Items []endpointJSON `json:"items"`
+		Order []string      `json:"order,omitempty"`
+		Items []endpointOut `json:"items"`
 	}{}
 	for _, ep := range eps {
 		payload.Order = append(payload.Order, ep.path)
-		payload.Items = append(payload.Items, endpointJSON{ep.path, ep.desk, ep.mobile, ep.label, ep.desc, ep.kind})
+		payload.Items = append(payload.Items, endpointOut{
+			Path: ep.path, Desk: ep.desk, Mobile: ep.mobile,
+			Label: ep.label, Desc: ep.desc, Kind: ep.kind, Auto: ep.auto,
+		})
 	}
 	return json.MarshalIndent(payload, "", "  ")
 }
@@ -581,34 +642,60 @@ func (s *Server) setBaseURL(v string) error {
 
 // addBinding 新增双端自适应绑定栏目（必须同时绑定 PC 与移动端分类）。
 func (s *Server) addBinding(path, desk, mobile, label, desc string) error {
-	if !store.IsValidIdentifier(mobile) {
-		return fmt.Errorf("移动端分类名不合法")
+	if !store.IsValidCategory(mobile) {
+		return fmt.Errorf("移动端分类路径不合法（首段字母开头，每段仅字母/数字/下划线，最多 3 段）")
 	}
 	return s.addEndpoint(path, desk, mobile, label, desc)
 }
 
+// addAdaptive 新增「自动横竖」栏目：只绑定一个分类，同一个分类里
+// 桌面端取横图、移动端取竖图，不再需要人工准备两个分类。
+func (s *Server) addAdaptive(path, desk, label, desc string) error {
+	return s.addEndpointSpec(endpoint{
+		path: path, desk: desk, label: label, desc: desc, kind: "image", auto: true,
+	})
+}
+
 // addEndpoint 新增栏目：path 为访问路径，desk/mobile 为数据源分类（mobile 为空表示单端）。
 func (s *Server) addEndpoint(path, desk, mobile, label, desc string) error {
-	if !store.IsValidIdentifier(path) {
-		return fmt.Errorf("栏目路径不合法")
+	return s.addEndpointSpec(endpoint{
+		path: path, desk: desk, mobile: mobile, label: label, desc: desc, kind: "image",
+	})
+}
+
+// addEndpointSpec 校验并持久化一个栏目。
+func (s *Server) addEndpointSpec(ep endpoint) error {
+	if !store.IsValidCategory(ep.path) {
+		return fmt.Errorf("栏目路径不合法（首段字母开头，每段仅字母/数字/下划线，最多 3 段，如 anime/2024）")
 	}
-	if !store.IsValidIdentifier(desk) {
-		return fmt.Errorf("分类名不合法")
+	if hasReservedTop(ep.path) {
+		return fmt.Errorf("栏目路径不能以 %s 开头（与内置接口冲突）", strings.SplitN(ep.path, "/", 2)[0])
 	}
-	if mobile != "" && !store.IsValidIdentifier(mobile) {
-		return fmt.Errorf("移动端分类名不合法")
+	if !store.IsValidCategory(ep.desk) {
+		return fmt.Errorf("分类路径不合法")
 	}
-	if label == "" {
-		label = path
+	if ep.kind == "video" {
+		ep.auto = false // 视频没有横竖之分
+	}
+	if ep.auto {
+		ep.mobile = "" // 自动横竖只用一个分类，忽略移动端绑定
+	} else if ep.mobile != "" && !store.IsValidCategory(ep.mobile) {
+		return fmt.Errorf("移动端分类路径不合法")
+	}
+	if ep.label == "" {
+		ep.label = ep.path
+	}
+	if ep.kind == "" {
+		ep.kind = "image"
 	}
 	s.mu.Lock()
-	for _, ep := range s.endpoints {
-		if ep.path == path {
+	for _, e := range s.endpoints {
+		if e.path == ep.path {
 			s.mu.Unlock()
-			return fmt.Errorf("栏目 %s 已存在", path)
+			return fmt.Errorf("栏目 %s 已存在", ep.path)
 		}
 	}
-	s.endpoints = append(s.endpoints, endpoint{path, desk, mobile, label, desc, "image"})
+	s.endpoints = append(s.endpoints, ep)
 	s.epIndex = endpointIndex(s.endpoints)
 	s.mu.Unlock()
 	return s.saveEndpoints()
@@ -622,7 +709,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs", s.handleDocs)
 	mux.HandleFunc("GET /img", s.handleGallery)
 	mux.HandleFunc("GET /json", s.handleJSON)
-	mux.HandleFunc("GET /pic/{category}/{file}", s.handlePic)
+	mux.HandleFunc("GET /pic/", s.handlePic)
 	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 	mux.HandleFunc("GET /admin", s.handleAdmin)
 	mux.HandleFunc("POST /admin", s.handleAdmin)
@@ -644,14 +731,44 @@ func (s *Server) Handler() http.Handler {
 		fmt.Fprint(w, "ok")
 	})
 
-	return logMiddleware(corsMiddleware(mux))
+	return s.logMiddleware(corsMiddleware(mux))
 }
 
-// handlePic 提供本地图片访问：/pic/{分类}/{文件名}
+// splitPicPath 把 /pic/a/b/f.png 拆成分类 "a/b" 与文件名 "f.png"。
+// 最后一段固定是文件名，其余段是分类路径；段数不足或为空时返回 false。
+func splitPicPath(p string) (category, file string, ok bool) {
+	rel := strings.TrimPrefix(p, "/pic/")
+	rel = strings.Trim(rel, "/")
+	if rel == "" {
+		return "", "", false
+	}
+	i := strings.LastIndexByte(rel, '/')
+	if i <= 0 || i == len(rel)-1 {
+		return "", "", false
+	}
+	return rel[:i], rel[i+1:], true
+}
+
+// reservedTop 与固定路由冲突的首段名：创建分类/栏目时拒绝，避免 /pic、/img 等被遮蔽。
+var reservedTop = map[string]bool{
+	"pic": true, "json": true, "admin": true,
+	"img": true, "docs": true, "healthz": true, "favicon.ico": true,
+}
+
+// hasReservedTop 判断分类路径/栏目路径的首段是否与内置路由冲突。
+func hasReservedTop(name string) bool {
+	top := name
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		top = name[:i]
+	}
+	return reservedTop[top]
+}
+
+// handlePic 提供本地图片访问：/pic/{分类路径}/{文件名}。
+// 分类路径支持多级子目录，如 /pic/a/b/f.png 对应分类 a/b 下的 f.png。
 func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
-	category := r.PathValue("category")
-	file := r.PathValue("file")
-	if !store.IsValidIdentifier(category) || file == "" || strings.ContainsAny(file, "/\\") {
+	category, file, ok := splitPicPath(r.URL.Path)
+	if !ok || !store.IsValidCategory(category) || strings.ContainsAny(file, "/\\") {
 		http.NotFound(w, r)
 		return
 	}
@@ -664,7 +781,13 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		s.handlePreview(w, r, category, file, widthParam)
 		return
 	}
-	path := filepath.Join(s.dataDir, category, file)
+	// 扩展名白名单：分类目录里的非图片文件不对外输出。
+	ct, ok := contentTypeFor(file)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.dataDir, filepath.FromSlash(category), file)
 	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -677,20 +800,21 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 图片内容稳定：公开缓存 7 天，配合 CDN 可把源站压力降到接近零。
-	w.Header().Set("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")
-	http.ServeContent(w, r, file, fi.ModTime(), f)
+	cacheLong(w.Header())
+	serveLocalFile(w, r, f, fi, ct)
 }
 
-func logMiddleware(next http.Handler) http.Handler {
+// logMiddleware 记录访问日志。图片等大流量静态请求直接跳过；
+// 其余请求投递给异步 writer，热路径上不加锁、不格式化。
+func (s *Server) logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 图片等大流量静态请求跳过日志，避免标准库 log 互斥锁成为热点。
 		if strings.HasPrefix(r.URL.Path, "/pic/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Microsecond))
+		s.access.add(r.Method, r.URL.Path, time.Since(start))
 	})
 }
 
@@ -721,11 +845,51 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// resolveOrientation 解析方向参数；auto 表示跟随 UA（移动端竖图、桌面横图）。
+func resolveOrientation(v string, r *http.Request) (store.Orientation, bool) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "auto") {
+		if mobileRe.MatchString(r.UserAgent()) {
+			return store.OrientationPortrait, true
+		}
+		return store.OrientationLandscape, true
+	}
+	return store.ParseOrientation(v)
+}
+
+// linkOrientation 决定本次请求取横图还是竖图。
+// 优先级：?orientation= 显式指定 > 栏目「自动横竖」（按 UA）> 不限方向。
+func linkOrientation(r *http.Request, ep endpoint) store.Orientation {
+	if v := r.URL.Query().Get("orientation"); v != "" {
+		if o, ok := resolveOrientation(v, r); ok {
+			return o
+		}
+	}
+	if ep.auto {
+		if mobileRe.MatchString(r.UserAgent()) {
+			return store.OrientationPortrait
+		}
+		return store.OrientationLandscape
+	}
+	return store.OrientationAny
+}
+
+// randomRows 按方向取图；该方向没有图时回退全集，保证接口不会因为
+// 「分类里暂时还没有竖图」而 404。
+func (s *Server) randomRows(r *http.Request, category string, limit int, want store.Orientation) ([]store.Row, error) {
+	rows, err := s.st.RandomWith(r.Context(), category, limit, want)
+	if (err != nil || len(rows) == 0) && want != store.OrientationAny {
+		return s.st.RandomWith(r.Context(), category, limit, store.OrientationAny)
+	}
+	return rows, err
+}
+
 func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint) {
 	category := ep.desk
 	if ep.mobile != "" && mobileRe.MatchString(r.UserAgent()) {
 		category = ep.mobile
 	}
+	want := linkOrientation(r, ep)
 	// ?w=NNN 压缩宽度：透传到输出链接（302 Location / 纯文本链接），
 	// 宽度校验由 /pic 预览侧完成，非法值等于不压缩。
 	suffix := ""
@@ -736,7 +900,10 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 	// ?json=NN 按序号返回纯文本链接
 	if v := r.URL.Query().Get("json"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			row, err := s.st.ByIndex(r.Context(), category, n)
+			row, err := s.st.ByIndexWith(r.Context(), category, n, want)
+			if err != nil && want != store.OrientationAny {
+				row, err = s.st.ByIndexWith(r.Context(), category, n, store.OrientationAny)
+			}
 			if err != nil {
 				plainError(w, "No link found.", http.StatusNotFound)
 				return
@@ -749,7 +916,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 	// ?json 多条随机（纯文本）
 	if _, ok := r.URL.Query()["json"]; ok {
 		limit := positiveParam(r, "quantity", 1, s.cfg.MaxLinks)
-		rows, err := s.st.Random(r.Context(), category, limit)
+		rows, err := s.randomRows(r, category, limit, want)
 		if err != nil {
 			plainError(w, "No links found.", http.StatusNotFound)
 			return
@@ -762,7 +929,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		return
 	}
 
-	rows, err := s.st.Random(r.Context(), category, 1)
+	rows, err := s.randomRows(r, category, 1, want)
 	if err != nil || len(rows) == 0 {
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
@@ -770,17 +937,15 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 	http.Redirect(w, r, rows[0].Link+suffix, http.StatusFound)
 }
 
-// absoluteURL 把站内相对路径拼成完整 URL（供纯文本 / JSON 输出）。
-// 优先使用管理员在后台配置的对外域名，其次环境变量，最后按请求推断。
-func (s *Server) absoluteURL(r *http.Request, link string) string {
-	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
-		return link
-	}
+// baseFor 返回本次请求的对外基础地址（不含尾部斜杠）。
+// 优先使用管理员配置的域名（含环境变量），其次按请求推断。
+// 同一请求内多个链接请复用它 + joinURL，避免每行都取一次锁。
+func (s *Server) baseFor(r *http.Request) string {
 	s.mu.RLock()
 	base := s.baseURL
 	s.mu.RUnlock()
 	if base != "" {
-		return base + link
+		return base
 	}
 	scheme := "https"
 	if r.TLS == nil {
@@ -790,7 +955,23 @@ func (s *Server) absoluteURL(r *http.Request, link string) string {
 			scheme = "http"
 		}
 	}
-	return scheme + "://" + r.Host + link
+	return scheme + "://" + r.Host
+}
+
+// joinURL 拼接对外链接；已是绝对地址时只补后缀。
+func joinURL(base, link, suffix string) string {
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		return link + suffix
+	}
+	return base + link + suffix
+}
+
+// absoluteURL 单次拼接（保留给纯文本等零散调用）。
+func (s *Server) absoluteURL(r *http.Request, link string) string {
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		return link
+	}
+	return s.baseFor(r) + link
 }
 
 func positiveParam(r *http.Request, name string, def, max int) int {

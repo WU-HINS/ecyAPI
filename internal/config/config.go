@@ -14,6 +14,8 @@ type Config struct {
 	AdminPassword string
 	MaxLinks      int
 	BaseURL       string // 对外展示的 API 域名，如 https://api.example.com；留空则按请求推断
+	// MaxUploadBytes 单次上传请求体上限（字节），超出直接拒绝。
+	MaxUploadBytes int64
 }
 
 func env(key, def string) string {
@@ -56,5 +58,7 @@ func Load() Config {
 		AdminPassword: env("ECY_ADMIN_PASSWORD", "ecy-admin"),
 		MaxLinks:      envInt("ECY_MAX_LINKS", 50),
 		BaseURL:       env("ECY_BASE_URL", ""),
+		// 默认 512 MB：批量上传够用，又不至于让单个请求吃满磁盘。
+		MaxUploadBytes: envInt64("ECY_MAX_UPLOAD_MB", 512) << 20,
 	}
 }
