@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,17 +97,26 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	if !contains(cats, current) {
 		current = cats[0]
 	}
-	// 图库是唯一「与图片数成正比」的页面：必须抽样，不能把整个分类搬进内存。
-	// 大分类（5 万张）全量渲染单请求就要 ~10MB，几十并发直接 OOM。
+	// 图库按「展示全部」设计：单次渲染开销随图片数增长，靠并发闸门把内存钉死。
+	// 同时渲染数受 ECY_GALLERY_CONCURRENCY 限制，排队超过 ECY_GALLERY_WAIT 返回 503。
+	if !s.galleryGate.acquire(r.Context()) {
+		w.Header().Set("Retry-After", strconv.Itoa(s.cfg.GalleryWaitSeconds))
+		http.Error(w, "图库正在渲染大分类，请稍后重试", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.galleryGate.release()
+
 	total, err := s.st.CountWith(r.Context(), current, store.OrientationAny)
 	if err != nil {
 		total = 0
 	}
-	limit := s.cfg.GalleryMax
-	if limit > total {
-		limit = total
+	var rows []store.Row
+	if s.cfg.GalleryMax > 0 && total > s.cfg.GalleryMax {
+		// 兜底：显式配置了上限才抽样，默认展示全部。
+		rows, err = s.st.RandomWith(r.Context(), current, s.cfg.GalleryMax, store.OrientationAny)
+	} else {
+		rows, err = s.st.Links(r.Context(), current)
 	}
-	rows, err := s.st.RandomWith(r.Context(), current, limit, store.OrientationAny)
 	if err != nil {
 		rows = nil
 	}

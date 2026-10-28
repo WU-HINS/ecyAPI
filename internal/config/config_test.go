@@ -31,12 +31,12 @@ func TestMemoryLimits(t *testing.T) {
 		env              string
 		gallery, preview int
 	}{
-		{"", 300, 16},
+		{"", 0, 16}, // 0 = 展示全部
 		{"1", 1, 8},
 		{"32", 32, 32},
 		{"100000", 5000, 512},
-		{"-5", 300, 16},  // 非正数回退默认
-		{"abc", 300, 16}, // 非法值回退默认
+		{"-5", 0, 16},  // 非正数回退默认
+		{"abc", 0, 16}, // 非法值回退默认
 	}
 	for _, c := range cases {
 		t.Setenv("ECY_GALLERY_MAX", c.env)
@@ -46,5 +46,16 @@ func TestMemoryLimits(t *testing.T) {
 			t.Errorf("env=%q → gallery=%d preview=%d，期望 %d/%d",
 				c.env, cfg.GalleryMax, cfg.PreviewMP, c.gallery, c.preview)
 		}
+	}
+
+	// 图库并发与排队超时
+	t.Setenv("ECY_GALLERY_CONCURRENCY", "99")
+	t.Setenv("ECY_GALLERY_WAIT", "0")
+	cfg := Load()
+	if cfg.GalleryConcurrency != 16 {
+		t.Errorf("并发上限应夹到 16，得到 %d", cfg.GalleryConcurrency)
+	}
+	if cfg.GalleryWaitSeconds != 5 {
+		t.Errorf("0 应回退默认 5 秒，得到 %d", cfg.GalleryWaitSeconds)
 	}
 }

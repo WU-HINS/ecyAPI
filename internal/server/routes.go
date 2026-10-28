@@ -90,6 +90,9 @@ type Server struct {
 	previewGate  *previewGate
 	previewLocks *keyedLocks
 
+	// 图库渲染闸门：限制同时渲染「全部图片」的请求数。
+	galleryGate *galleryGate
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -133,6 +136,7 @@ func New(cfg config.Config) (*Server, error) {
 		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
 		access:       newAccessLog(),
 		previewGate:  newPreviewGate(cfg.PreviewMP),
+		galleryGate:  newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),
 	}

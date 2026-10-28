@@ -42,9 +42,14 @@ type Config struct {
 	MaxUploadBytes int64
 	// MaxDepth 分类层级上限（ECY_MAX_DEPTH，默认 3，上限 8）。
 	MaxDepth int
-	// GalleryMax 图库单个分类最多随机展示多少张（ECY_GALLERY_MAX，默认 300）。
-	// 图库是唯一 O(图片数) 的页面，不设上限时大分类并发访问会直接吃光内存。
+	// GalleryMax 图库单次最多展示多少张（ECY_GALLERY_MAX，默认 0=全部）。
+	// 设为 >0 时退化为「随机抽样 N 张」，用于极端大分类的兜底。
 	GalleryMax int
+	// GalleryConcurrency 图库页同时渲染的并发上限（ECY_GALLERY_CONCURRENCY，默认 2）。
+	// 图库要展示全部图片，单次渲染开销随图片数增长，靠并发闸门把内存钉死。
+	GalleryConcurrency int
+	// GalleryWaitSeconds 图库排队等待上限（ECY_GALLERY_WAIT，默认 5 秒），超时返回 503。
+	GalleryWaitSeconds int
 	// PreviewMP 缩略图压缩的总像素预算（ECY_PREVIEW_MP，默认 16 百万像素）。
 	// 按「解码后位图大小」加权限制并发压缩数：4K 图约 8MP，预算 64 表示最多同时 8 张。
 	PreviewMP int
@@ -94,8 +99,10 @@ func Load() Config {
 		MaxUploadBytes: envInt64("ECY_MAX_UPLOAD_MB", 512) << 20,
 		// 分类层级：默认 3 段（a/b/c），上限 8 段，超出按上限处理。
 		MaxDepth: clampDepth(envInt("ECY_MAX_DEPTH", store.DefaultMaxDepth)),
-		// 图库默认每页随机 300 张；0/负数回退默认，超过 5000 按 5000。
-		GalleryMax: clampInt(envInt("ECY_GALLERY_MAX", 300), 1, 5000),
+		// 图库默认展示全部（0）；>0 时随机抽样，作为超大分类的兜底。
+		GalleryMax:         clampInt(envInt("ECY_GALLERY_MAX", 0), 0, 5000),
+		GalleryConcurrency: clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
+		GalleryWaitSeconds: clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		// 预览压缩预算：默认 32 百万像素（≈128MB RGBA），范围 8~512。
 		// 4K 图约 8MP，即最多 4 张同时解码，其余回退原图，避免小内存容器 OOM。
 		PreviewMP: clampInt(envInt("ECY_PREVIEW_MP", 16), 8, 512),
