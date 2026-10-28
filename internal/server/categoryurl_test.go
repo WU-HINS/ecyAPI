@@ -95,6 +95,11 @@ func TestCategoryURLWithoutEndpoint(t *testing.T) {
 	if rec := get("/pic"+escapedPath("中文 目录")+"/b.png", ""); rec.Code != http.StatusOK {
 		t.Fatalf("中文目录图片 = %d", rec.Code)
 	}
+	// 6.5) 父目录（自身无图、只有子目录）聚合子分类出图
+	rec = get(escapedPath("pixiv"), uaDesktop)
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "/pic/pixiv/KuroiDa/") {
+		t.Fatalf("父目录聚合跳转 = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 	// 7) 不存在的路径仍然是 404
 	if rec := get("/no-such-thing", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("不存在路径 = %d", rec.Code)

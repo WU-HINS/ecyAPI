@@ -275,6 +275,9 @@ type fileStore struct {
 	// skipped 最近一次扫描中被跳过的目录与原因，供启动日志排查
 	// 「为什么某个子文件夹没有出现在分类里」。
 	skipped []string
+	// aggs 父目录聚合：rel -> 子分类集合的加权视图，只用于 URL/JSON 取图，
+	// 不进入分区列表（避免图库与后台重复计数）。与 cache 同锁保护。
+	aggs map[string]*aggKids
 }
 
 // NewFileStore 使用 data/categories/<分类名>/ 子目录存放图片文件。
@@ -319,6 +322,7 @@ const fullVerifyInterval = 60 * time.Second
 type scanCtx struct {
 	next    map[string]*dirState
 	sets    map[string]*categorySet
+	aggs    map[string]*aggKids
 	seen    map[string]bool // 已扫描过的真实目录路径，用于符号链接回环/重复检测
 	skipped []string        // 被跳过的目录与原因，供启动日志诊断
 }
@@ -338,6 +342,7 @@ func (f *fileStore) scan() error {
 	sc := &scanCtx{
 		next: make(map[string]*dirState, len(f.dirs)),
 		sets: make(map[string]*categorySet, len(f.cache)),
+		aggs: make(map[string]*aggKids, len(f.aggs)),
 		seen: map[string]bool{filepath.Clean(f.dir): true},
 	}
 	if err := f.scanDir("", 0, sc, true); err != nil {
@@ -364,6 +369,7 @@ func (f *fileStore) scan() error {
 	}
 	f.mu.Lock()
 	f.cache = sc.sets
+	f.aggs = sc.aggs
 	f.skipped = warns
 	f.mu.Unlock()
 	f.dirs = sc.next
@@ -413,6 +419,7 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 				return err
 			}
 		}
+		f.buildAgg(rel, old.subdirs, sc)
 		return nil
 	}
 
@@ -478,7 +485,26 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 			return err
 		}
 	}
+	f.buildAgg(rel, state.subdirs, sc)
 	return nil
+}
+
+// buildAgg 为「只有子目录、自身没有图片」的父目录建立聚合视图，
+// 让 /pixiv 这类父路径也能随机出图。根目录不参与。
+func (f *fileStore) buildAgg(rel string, subdirs []string, sc *scanCtx) {
+	if rel == "" || len(subdirs) == 0 {
+		return
+	}
+	if _, isCategory := sc.sets[rel]; isCategory {
+		return // 自己有图片，就是普通分类
+	}
+	kids := make([]string, 0, len(subdirs))
+	for _, sub := range subdirs {
+		kids = append(kids, joinRel(rel, sub))
+	}
+	if agg := newAggKids(kids, sc.sets, sc.aggs); agg != nil {
+		sc.aggs[rel] = agg
+	}
 }
 
 // sameEntryNames 比较上次记录的条目名与本次 ReadDir 结果（两者均按名字排序）。
@@ -580,6 +606,14 @@ func (f *fileStore) categorySet(category string) (*categorySet, bool) {
 	return set, ok
 }
 
+// aggFor 返回父目录聚合视图（仅当该路径是「只含子目录」的容器时才存在）。
+func (f *fileStore) aggFor(category string) *aggKids {
+	f.mu.RLock()
+	agg := f.aggs[category]
+	f.mu.RUnlock()
+	return agg
+}
+
 func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 	_ = ctx
 	f.refreshIfStale() // 节流重载，热更新目录
@@ -603,6 +637,9 @@ func (f *fileStore) CountWith(ctx context.Context, category string, want Orienta
 	_ = ctx
 	set, ok := f.categorySet(category)
 	if !ok {
+		if agg := f.aggFor(category); agg != nil {
+			return agg.bucket(want).total, nil
+		}
 		return 0, ErrNotFound
 	}
 	return len(set.pick(want)), nil
@@ -621,6 +658,14 @@ func (f *fileStore) RandomWith(ctx context.Context, category string, limit int, 
 	f.refreshIfStale() // 节流重载，热更新目录（含方向索引）
 	set, ok := f.categorySet(category)
 	if !ok {
+		// 父目录：从子分类聚合里取（/pixiv 能出图的关键）。
+		if agg := f.aggFor(category); agg != nil {
+			rows := agg.bucket(want).randomRows(limit)
+			if len(rows) == 0 {
+				return nil, ErrNotFound
+			}
+			return rows, nil
+		}
 		return nil, ErrNotFound
 	}
 	entries := set.pick(want)
@@ -677,6 +722,11 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 	f.refreshIfStale()
 	set, ok := f.categorySet(category)
 	if !ok {
+		if agg := f.aggFor(category); agg != nil {
+			if row, ok := agg.bucket(want).rowAt(index - 1); ok {
+				return row, nil
+			}
+		}
 		return Row{}, ErrNotFound
 	}
 	entries := set.pick(want)
@@ -718,6 +768,9 @@ func (f *fileStore) Links(ctx context.Context, category string) ([]Row, error) {
 	f.refreshIfStale()
 	set, ok := f.categorySet(category)
 	if !ok {
+		if agg := f.aggFor(category); agg != nil {
+			return agg.bucket(OrientationAny).allRows(), nil
+		}
 		return nil, ErrNotFound
 	}
 	rows := make([]Row, 0, len(set.all))
