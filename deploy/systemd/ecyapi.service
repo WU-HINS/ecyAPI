@@ -1,0 +1,33 @@
+[Unit]
+Description=ecyAPI 随机图片 API
+Documentation=https://github.com/WU-HINS/ecyAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ecy
+Group=ecy
+WorkingDirectory=/opt/ecyapi
+# 敏感配置写在 /etc/ecyapi.env（600），例如：
+#   ECY_ADMIN_PASSWORD=xxx
+#   ECY_BASE_URL=https://api.example.com
+EnvironmentFile=-/etc/ecyapi.env
+Environment=ECY_ADDR=:8080
+Environment=ECY_DATA_DIR=/var/lib/ecyapi/categories
+ExecStart=/opt/ecyapi/ecyapi
+Restart=on-failure
+RestartSec=3
+# 优雅关闭依赖 SIGTERM：TimeoutStopSec 要大于服务自身的 15s 收尾窗口
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# 最小权限：只允许写运行数据目录
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ecyapi
+
+[Install]
+WantedBy=multi-user.target

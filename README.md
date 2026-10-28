@@ -295,6 +295,23 @@ docker run -d --name ecyapi -p 8080:8080 \
 
 镜像内以 root 运行，直接挂载宿主目录无需处理属主；`HEALTHCHECK` 探活 `/healthz`。
 
+### 实例编排
+
+`deploy/` 下给了四种开箱即用的编排，细节见 [deploy/README.md](deploy/README.md)：
+
+| 文件 | 形态 |
+| --- | --- |
+| `deploy/docker-compose.yml` + `.env.example` | 单实例（默认推荐），数据全在 `./data` |
+| `deploy/compose.ha.yml` + `Caddyfile` | 1 写入实例 + 2 只读副本 + Caddy，`/admin` 固定打写入实例 |
+| `deploy/k8s/ecyapi.yaml` | K8s：Secret + PVC + Deployment（Recreate，单副本）+ Service + Ingress |
+| `deploy/systemd/ecyapi.service` | 裸机二进制 + systemd 加固单元 |
+
+```bash
+cd deploy && cp .env.example .env && vi .env   # 改 ECY_ADMIN_PASSWORD
+docker compose up -d
+./smoke.sh http://127.0.0.1:8080 <分类名>      # 健康检查 / JSON / 原图 / 缩略图
+```
+
 ## CI 与发版
 
 | 工作流 | 触发 | 行为 |
@@ -324,6 +341,7 @@ gh workflow run release.yml -f version=v1.2.3
 │   ├── server/            # HTTP 路由、处理器、模板与静态资源
 │   ├── store/             # 本地文件数据源（随机取图 / 分类 / 上传 / 删除 / 方向索引）
 │   └── webp/              # libwebp 绑定（CGO；默认内置 amd64 静态库）
+├── deploy/                # 实例编排：compose / HA / k8s / systemd / 冒烟脚本
 ├── tools/orient/          # 离线横竖分拣工具（可选）
 ├── .github/workflows/     # CI / Docker CI / Release
 └── data/                  # 运行数据（图片、绑定、设置，默认不入库）

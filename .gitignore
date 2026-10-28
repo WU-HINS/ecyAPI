@@ -10,5 +10,9 @@
 /data/logs.json
 /data/gallery.json
 
+# 部署编排的本地运行数据与密钥
+/deploy/.env
+/deploy/data/
+
 # 回收站目录
 /.Trash-0/

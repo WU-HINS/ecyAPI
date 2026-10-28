@@ -1,0 +1,111 @@
+# 单实例 Kubernetes 编排（有状态、单写入）。
+# 为什么默认 1 副本：数据源是本地目录，后台写操作只对挂载它的那个 Pod 生效；
+# 扩容读副本需要共享只读存储（RWX）并把 /admin 固定路由到写入 Pod，见 deploy/README.md。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ecyapi-secret
+  namespace: ecyapi
+type: Opaque
+stringData:
+  ECY_ADMIN_PASSWORD: "change-me-please"   # kubectl apply 前务必修改
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ecyapi-data
+  namespace: ecyapi
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecyapi
+  namespace: ecyapi
+  labels: { app: ecyapi }
+spec:
+  replicas: 1
+  strategy:
+    # 数据是单写本地目录，滚动更新会让新旧两个 Pod 同时写同一份数据
+    type: Recreate
+  selector:
+    matchLabels: { app: ecyapi }
+  template:
+    metadata:
+      labels: { app: ecyapi }
+    spec:
+      securityContext:
+        fsGroup: 0            # 容器以 root 运行，挂载卷无需改属主
+      containers:
+        - name: ecyapi
+          image: ghcr.io/wu-hins/ecyapi:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: ECY_ADDR, value: ":8080" }
+            - { name: ECY_DATA_DIR, value: "/app/data/categories" }
+            - { name: ECY_MAX_LINKS, value: "50" }
+            - { name: ECY_MAX_UPLOAD_MB, value: "512" }
+            - { name: ECY_MEMORY_LIMIT, value: "536870912" }
+            - { name: ECY_BASE_URL, value: "https://api.example.com" }   # 改成你的域名
+            - name: ECY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: ecyapi-secret, key: ECY_ADMIN_PASSWORD }
+          volumeMounts:
+            - { name: data, mountPath: /app/data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "2",    memory: "768Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ecyapi-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecyapi
+  namespace: ecyapi
+spec:
+  selector: { app: ecyapi }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ecyapi
+  namespace: ecyapi
+  annotations:
+    # 图片响应已带 7 天强缓存，交给 CDN 更省源站
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.example.com]
+      secretName: ecyapi-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ecyapi
+                port: { name: http }

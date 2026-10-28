@@ -1,0 +1,84 @@
+# 多实例编排：1 个「写入实例」+ 2 个「只读副本」+ Caddy 负载均衡。
+#
+# 为什么要这样分：本服务的数据源是本地目录（图片 + 若干 JSON），没有数据库，
+# 后台的上传/删除/改设置只对「写入实例」生效；读副本以只读方式共享同一份图片，
+# 缩略图缓存各自落盘（写入 /app/data/preview-cache，用独立卷覆盖只读挂载）。
+#
+# 用法：
+#   cp .env.example .env && vi .env
+#   docker compose -f compose.ha.yml up -d
+#   # 后台只走 /admin（Caddy 固定转发到写入实例）
+services:
+  # ---------- 写入实例：唯一可以执行上传/删除/改设置的地方 ----------
+  ecyapi-w:
+    image: ghcr.io/wu-hins/ecyapi:latest
+    container_name: ecyapi-w
+    restart: unless-stopped
+    environment:
+      ECY_ADMIN_PASSWORD: ${ECY_ADMIN_PASSWORD:?请在 .env 中设置 ECY_ADMIN_PASSWORD}
+      ECY_BASE_URL: ${ECY_BASE_URL:-}
+      ECY_MAX_LINKS: ${ECY_MAX_LINKS:-50}
+      ECY_MAX_UPLOAD_MB: ${ECY_MAX_UPLOAD_MB:-512}
+      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  # ---------- 只读副本：图片目录只读，缩略图缓存各自独立 ----------
+  ecyapi-a: &replica
+    image: ghcr.io/wu-hins/ecyapi:latest
+    container_name: ecyapi-a
+    restart: unless-stopped
+    environment:
+      ECY_BASE_URL: ${ECY_BASE_URL:-}
+      ECY_MAX_LINKS: ${ECY_MAX_LINKS:-50}
+      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
+      # 副本不提供后台：随机接口只需要读权限
+      ECY_ADMIN_PASSWORD: ${ECY_ADMIN_PASSWORD:?请在 .env 中设置 ECY_ADMIN_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/app/data:ro
+      - cache-a:/app/data/preview-cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  ecyapi-b:
+    <<: *replica
+    container_name: ecyapi-b
+    volumes:
+      - ./data:/app/data:ro
+      - cache-b:/app/data/preview-cache
+
+  # ---------- 入口：/admin 固定打到写入实例，其余按轮询分发 ----------
+  caddy:
+    image: caddy:2-alpine
+    container_name: ecyapi-caddy
+    restart: unless-stopped
+    depends_on:
+      ecyapi-w: { condition: service_healthy }
+      ecyapi-a: { condition: service_healthy }
+      ecyapi-b: { condition: service_healthy }
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  cache-a:
+  cache-b:
+  caddy-data:
+  caddy-config:

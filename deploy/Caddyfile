@@ -1,0 +1,22 @@
+# 入口反代：/admin 必须固定转发到写入实例，其余读请求负载均衡。
+:80 {
+	# 图片本身已带 7 天强缓存，这里只压缩 HTML/JSON
+	encode gzip
+
+	handle /admin* {
+		reverse_proxy ecyapi-w:8080
+	}
+
+	handle {
+		reverse_proxy ecyapi-a:8080 ecyapi-b:8080 {
+			lb_policy round_robin
+			health_uri /healthz
+			health_interval 10s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
