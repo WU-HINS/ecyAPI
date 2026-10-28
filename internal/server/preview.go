@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,17 +45,9 @@ const (
 	previewMaxWidth = 4096
 )
 
-// previewQueueLen 压缩队列容量。队列满时不排队等待：未命中缓存的请求
-// 直接回退原图输出，保证接口永远有响应，只是偶尔多花点流量。
-const previewQueueLen = 25
-
 // previewCacheMaxFiles 缓存文件数量上限：超过后按修改时间删最旧的，
 // 防止磁盘被压缩缩略图无限吃掉。每次新写缓存后异步清理一次。
 const previewCacheMaxFiles = 2000
-
-// newPreviewQueue 每个 Server 独立的压缩队列（容量即并发上限）。
-// 独立队列避免多实例/多测试互相挤占，也让 FreeOSMemory 判断只作用于本实例。
-func newPreviewQueue() chan struct{} { return make(chan struct{}, previewQueueLen) }
 
 // previewCacheRoot 预览缓存根目录，与数据目录同级：data/preview-cache/<分类>/。
 func (s *Server) previewCacheRoot() string {
@@ -98,15 +89,21 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		return
 	}
 
-	// 队列满则不排队：无缓存可用，回退原图（w 参数已在 handlePic 入口移除）。
-	select {
-	case s.previewQ <- struct{}{}:
-	default:
+	// 按「解码后位图大小」申请预算：4K 图约 8 单位，预算不足直接回退原图。
+	// 这里先只读文件头取尺寸，不解码像素。
+	cfg, err := imageConfig(path)
+	if err != nil {
+		// 不支持的格式（视频/SVG/AVIF/坏图）：回退原图。
+		s.handlePic(w, r)
+		return
+	}
+	units := previewUnits(cfg.Width, cfg.Height)
+	if !s.previewGate.tryAcquire(units) {
 		s.handlePic(w, r)
 		return
 	}
 	data, _, err := compressPreview(path, width)
-	s.releasePreviewSlot()
+	s.previewGate.release(units)
 	if err != nil {
 		// 压缩失败（坏图/视频等不支持格式）不缓存错误，回退原图。
 		s.handlePic(w, r)
@@ -153,15 +150,15 @@ func (s *Server) previewCachePath(category, file string, width int) (string, str
 	return ext, cache
 }
 
-// releasePreviewSlot 释放压缩队列占位。先归还槽位再判断队列是否排空：
-// 队列真正空下来（一批转码刚结束）时调用 FreeOSMemory，把空闲堆页还给
-// 操作系统，避免批量压缩的峰值内存长期驻留 RSS。
-// 注意判断必须在释放之后，否则自己持有的那一个槽位会让条件永远为假。
-func (s *Server) releasePreviewSlot() {
-	<-s.previewQ
-	if len(s.previewQ) == 0 {
-		debug.FreeOSMemory()
+// imageConfig 只读文件头拿宽高，失败表示该格式不支持压缩预览。
+func imageConfig(path string) (image.Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return image.Config{}, err
 	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	return cfg, err
 }
 
 // evictPreviewCache 缓存文件数超过上限时删掉最旧的。walk 全目录收集

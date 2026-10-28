@@ -118,3 +118,16 @@ go build -o /tmp/ecyapi ./cmd/server
 ECY_ADDR=127.0.0.1:8080 ECY_DATA_DIR=/path/to/categories ECY_ACCESS_LOG=off /tmp/ecyapi &
 go run ./tools/loadgen 'http://127.0.0.1:8080/json?pc' 100 20000
 ```
+## 内存保护：OOM 复现与修复
+
+高并发读曾经会打爆内存，根因是两条「随规模增长」的路径：
+
+| 场景 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `/img` 单分类 5 万张，50 并发 | RSS 42MB → **388MB**，QPS 5，p99 10s（全部超时） | RSS 稳定 **43MB**，QPS 426，p99 0.46s |
+| 4K 图冷缓存风暴（24 个不同 图×宽度） | 25 并发 × 33MB 解码 ≈ 800MB 峰值 | 像素预算 16MP：峰值 **79MB**；32MP：215MB；结束后回落 17MB |
+
+- 图库改为**随机抽样**（`ECY_GALLERY_MAX`，默认 300）+ 展示「共 N 张」；
+- 缩略图压缩改为**按像素预算的闸门**（`ECY_PREVIEW_MP`，默认 16 百万像素），
+  预算不足时直接回退原图，不排队、不重试；
+- 空闲时（预算归零）节流触发 `FreeOSMemory`，把堆页还给操作系统。

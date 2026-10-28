@@ -24,3 +24,27 @@ func TestMaxDepth(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryLimits 图库上限与预览预算的解析与夹取。
+func TestMemoryLimits(t *testing.T) {
+	cases := []struct {
+		env              string
+		gallery, preview int
+	}{
+		{"", 300, 16},
+		{"1", 1, 8},
+		{"32", 32, 32},
+		{"100000", 5000, 512},
+		{"-5", 300, 16},  // 非正数回退默认
+		{"abc", 300, 16}, // 非法值回退默认
+	}
+	for _, c := range cases {
+		t.Setenv("ECY_GALLERY_MAX", c.env)
+		t.Setenv("ECY_PREVIEW_MP", c.env)
+		cfg := Load()
+		if cfg.GalleryMax != c.gallery || cfg.PreviewMP != c.preview {
+			t.Errorf("env=%q → gallery=%d preview=%d，期望 %d/%d",
+				c.env, cfg.GalleryMax, cfg.PreviewMP, c.gallery, c.preview)
+		}
+	}
+}

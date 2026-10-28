@@ -86,8 +86,8 @@ type Server struct {
 	// access 异步访问日志（/pic 大流量请求不记录）。
 	access *accessLog
 
-	// 预览压缩：每实例独立队列 + 按缓存键的串行锁。
-	previewQ     chan struct{}
+	// 预览压缩：按像素预算的闸门 + 按缓存键的串行锁。
+	previewGate  *previewGate
 	previewLocks *keyedLocks
 
 	// login 后台登录失败限流（按来源 IP）。
@@ -132,7 +132,7 @@ func New(cfg config.Config) (*Server, error) {
 	s := &Server{
 		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
 		access:       newAccessLog(),
-		previewQ:     newPreviewQueue(),
+		previewGate:  newPreviewGate(cfg.PreviewMP),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),
 	}

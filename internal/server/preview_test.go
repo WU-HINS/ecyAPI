@@ -151,15 +151,9 @@ func TestPreviewQueueFullFallsBackToOriginal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(catDir, "big.jpg"), big, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 占满该实例的压缩队列（容量 25）。
-	for i := 0; i < previewQueueLen; i++ {
-		srv.previewQ <- struct{}{}
-	}
-	t.Cleanup(func() {
-		for i := 0; i < previewQueueLen; i++ {
-			<-srv.previewQ
-		}
-	})
+	// 占满该实例的像素预算，模拟「压缩额度已用尽」。
+	srv.previewGate.tryAcquire(srv.previewGate.cap)
+	t.Cleanup(func() { srv.previewGate.release(srv.previewGate.cap) })
 	// 未命中缓存：应回退原图字节，而非 404 或挂起。
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})

@@ -52,6 +52,8 @@ spec:
             - { name: ECY_MAX_LINKS, value: "50" }
             - { name: ECY_MAX_UPLOAD_MB, value: "512" }
             - { name: ECY_MAX_DEPTH, value: "3" }
+            - { name: ECY_GALLERY_MAX, value: "300" }
+            - { name: ECY_PREVIEW_MP, value: "16" }
             - { name: ECY_MEMORY_LIMIT, value: "536870912" }
             - { name: ECY_BASE_URL, value: "https://api.example.com" }   # 改成你的域名
             - name: ECY_ADMIN_PASSWORD

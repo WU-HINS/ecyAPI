@@ -96,16 +96,19 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	if !contains(cats, current) {
 		current = cats[0]
 	}
-	rows, err := s.st.Links(r.Context(), current)
+	// 图库是唯一「与图片数成正比」的页面：必须抽样，不能把整个分类搬进内存。
+	// 大分类（5 万张）全量渲染单请求就要 ~10MB，几十并发直接 OOM。
+	total, err := s.st.CountWith(r.Context(), current, store.OrientationAny)
+	if err != nil {
+		total = 0
+	}
+	limit := s.cfg.GalleryMax
+	if limit > total {
+		limit = total
+	}
+	rows, err := s.st.RandomWith(r.Context(), current, limit, store.OrientationAny)
 	if err != nil {
 		rows = nil
-	}
-	// 打乱顺序
-	if len(rows) > 1 {
-		for i := len(rows) - 1; i > 0; i-- {
-			j := int(time.Now().UnixNano()) % (i + 1)
-			rows[i], rows[j] = rows[j], rows[i]
-		}
 	}
 	images := make([]galleryImage, 0, len(rows))
 	for _, row := range rows {
@@ -114,6 +117,9 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Current":   current,
 		"Images":    images,
+		"Total":     total,
+		"Shown":     len(images),
+		"Sampled":   total > len(images),
 		"LoadError": false,
 	}
 	type cat struct {

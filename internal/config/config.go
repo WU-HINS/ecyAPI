@@ -9,6 +9,17 @@ import (
 	"ecyapi/internal/store"
 )
 
+// clampInt 把数值夹到 [lo, hi]。
+func clampInt(n, lo, hi int) int {
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
+}
+
 // clampDepth 把 ECY_MAX_DEPTH 夹到 [1, store.MaxDepthLimit]。
 func clampDepth(n int) int {
 	if n < 1 {
@@ -31,6 +42,12 @@ type Config struct {
 	MaxUploadBytes int64
 	// MaxDepth 分类层级上限（ECY_MAX_DEPTH，默认 3，上限 8）。
 	MaxDepth int
+	// GalleryMax 图库单个分类最多随机展示多少张（ECY_GALLERY_MAX，默认 300）。
+	// 图库是唯一 O(图片数) 的页面，不设上限时大分类并发访问会直接吃光内存。
+	GalleryMax int
+	// PreviewMP 缩略图压缩的总像素预算（ECY_PREVIEW_MP，默认 16 百万像素）。
+	// 按「解码后位图大小」加权限制并发压缩数：4K 图约 8MP，预算 64 表示最多同时 8 张。
+	PreviewMP int
 }
 
 func env(key, def string) string {
@@ -77,5 +94,10 @@ func Load() Config {
 		MaxUploadBytes: envInt64("ECY_MAX_UPLOAD_MB", 512) << 20,
 		// 分类层级：默认 3 段（a/b/c），上限 8 段，超出按上限处理。
 		MaxDepth: clampDepth(envInt("ECY_MAX_DEPTH", store.DefaultMaxDepth)),
+		// 图库默认每页随机 300 张；0/负数回退默认，超过 5000 按 5000。
+		GalleryMax: clampInt(envInt("ECY_GALLERY_MAX", 300), 1, 5000),
+		// 预览压缩预算：默认 32 百万像素（≈128MB RGBA），范围 8~512。
+		// 4K 图约 8MP，即最多 4 张同时解码，其余回退原图，避免小内存容器 OOM。
+		PreviewMP: clampInt(envInt("ECY_PREVIEW_MP", 16), 8, 512),
 	}
 }

@@ -171,7 +171,7 @@
         </div>
 
         <div class="card-style gallery-container">
-            <h2 class="gallery-title">{{.Current}} 图片集</h2>
+            <h2 class="gallery-title">{{.Current}} 图片集{{if .Sampled}} <small style="font-size:0.55em;color:var(--text-light);font-weight:400">共 {{.Total}} 张，随机展示 {{.Shown}} 张</small>{{end}}</h2>
             <div class="image-gallery" id="imageGallery">
                 {{- if .LoadError}}
                 <div class="error-message">
