@@ -1,10 +1,10 @@
 //go:build cgo && webp_system
 
-// 系统 libwebp 构建：链接顺序由 CGO_LDFLAGS / pkg-config 提供。
-// CI 与 Dockerfile 都先安装 libwebp-dev（含头文件与静态库）再使用本标签。
+// 系统 libwebp 构建：CI 与 Dockerfile 都先安装 libwebp-dev + libsharpyuv-dev
+// （libwebp ≥ 1.3 把 sharpyuv 拆成独立静态库，静态链接时必须一并带上）。
 package webp
 
 /*
-#cgo LDFLAGS: -lwebp -lm
+#cgo LDFLAGS: -lwebp -lsharpyuv -lm
 */
 import "C"

@@ -249,8 +249,9 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 # 1) 默认：linux/amd64 直接链接仓库内置的 internal/webp/lib/linux_amd64/libwebp.a
 CGO_ENABLED=1 go build -o ecyapi ./cmd/server
 
-# 2) 系统 libwebp（linux/arm64、macOS Homebrew、Docker 内 apk/apt 安装的场景）
-sudo apt-get install -y libwebp-dev          # 或其他平台的对应包
+# 2) 系统 libwebp（linux/arm64、macOS Homebrew、Docker 内 apt 安装的场景）
+#    libwebp ≥ 1.3 把 sharpyuv 拆成独立库，静态链接时要一并安装
+sudo apt-get install -y libwebp-dev libsharpyuv-dev
 CGO_ENABLED=1 go build -tags webp_system \
   -ldflags "-s -w -extldflags '-static'" -o ecyapi ./cmd/server
 
