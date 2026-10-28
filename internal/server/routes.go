@@ -139,6 +139,19 @@ func New(cfg config.Config) (*Server, error) {
 	if err := s.loadEndpoints(); err != nil {
 		return nil, err
 	}
+	// 启动时把「被跳过的目录」打出来：最常见的困惑是子文件夹名字不合法
+	// 或是符号链接失效，导致分类数量比磁盘上的文件夹少。
+	if warns := store.ScanWarnings(st); len(warns) > 0 {
+		log.Printf("扫描提示：%d 个子目录未作为分类载入（最多显示 %d 条）", len(warns), len(warns))
+		for i, w := range warns {
+			if i >= 10 {
+				log.Printf("  … 其余 %d 条已省略（后台「分类管理」页可查看完整列表）", len(warns)-10)
+				break
+			}
+			log.Printf("  - %s", w)
+		}
+	}
+
 	s.baseURL = cfg.BaseURL
 	s.slogan, s.share, s.icp = defaultSlogan, defaultShare, defaultICP
 	s.icpURL = defaultICPURL

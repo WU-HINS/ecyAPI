@@ -83,15 +83,16 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	s.renderAdmin(w, map[string]any{
-		"Authed":    true,
-		"Tables":    catList,
-		"Endpoints": epList,
-		"BaseURL":   baseURL,
-		"Slogan":    slogan,
-		"Share":     share,
-		"ICP":       icp,
-		"ICPURL":    icpURL,
-		"Logs":      logs,
+		"Authed":       true,
+		"Tables":       catList,
+		"Endpoints":    epList,
+		"ScanWarnings": store.ScanWarnings(s.st),
+		"BaseURL":      baseURL,
+		"Slogan":       slogan,
+		"Share":        share,
+		"ICP":          icp,
+		"ICPURL":       icpURL,
+		"Logs":         logs,
 	})
 }
 

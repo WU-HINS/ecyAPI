@@ -223,6 +223,9 @@ type fileStore struct {
 	// forceVerify 下一次 scan 强制完整校验（写路径的 reload 使用），
 	// 保证上传/删除后即使条目名未变也能立即反映文件内容变化。
 	forceVerify bool
+	// skipped 最近一次扫描中被跳过的目录与原因，供启动日志排查
+	// 「为什么某个子文件夹没有出现在分类里」。
+	skipped []string
 }
 
 // NewFileStore 使用 data/categories/<分类名>/ 子目录存放图片文件。
@@ -256,11 +259,23 @@ type dirState struct {
 	subdirs  []string     // 已校验的子目录名
 	set      *categorySet // 该目录作为分类时的文件集合；纯承载目录为 nil
 	verified int64        // 上次完整校验时间（UnixNano）
+	skipped  []string     // 本目录下被跳过的子目录与原因
 }
 
 // fullVerifyInterval 目录条目未变化时，两次完整 stat+方向校验的最大间隔。
 // 只影响「同名文件被原地覆盖」这一种情况的生效延迟，正常增删改立即生效。
 const fullVerifyInterval = 60 * time.Second
+
+// scanCtx 一次扫描的上下文（避免 scanDir 参数越传越长）。
+type scanCtx struct {
+	next    map[string]*dirState
+	sets    map[string]*categorySet
+	seen    map[string]bool // 已扫描过的真实目录路径，用于符号链接回环/重复检测
+	skipped []string        // 被跳过的目录与原因，供启动日志诊断
+}
+
+// maxScanWarnings 启动日志里最多展示多少条「跳过原因」。
+const maxScanWarnings = 50
 
 // scan 扫描数据目录并整体替换缓存。
 //
@@ -271,27 +286,60 @@ const fullVerifyInterval = 60 * time.Second
 // 因此未发生变更时的重扫代价是「每层目录一次 getdents + 名字比较」，
 // 与图片数量弱相关（不产生每文件 syscall），3000 张图约 0.2ms。
 func (f *fileStore) scan() error {
-	next := make(map[string]*dirState, len(f.dirs))
-	sets := make(map[string]*categorySet, len(f.cache))
-	if err := f.scanDir("", 0, next, sets, true); err != nil {
+	sc := &scanCtx{
+		next: make(map[string]*dirState, len(f.dirs)),
+		sets: make(map[string]*categorySet, len(f.cache)),
+		seen: map[string]bool{filepath.Clean(f.dir): true},
+	}
+	if err := f.scanDir("", 0, sc, true); err != nil {
 		return err
 	}
 	// 清理已消失目录的方向缓存，避免长期运行后 map 只增不减。
 	for rel := range f.oriMeta {
-		if _, ok := next[rel]; !ok {
+		if _, ok := sc.next[rel]; !ok {
 			delete(f.oriMeta, rel)
 		}
 	}
+	// 跳过项去重并限长：同名原因只报一次，避免启动日志被刷屏。
+	seenMsg := make(map[string]bool, len(sc.skipped))
+	warns := make([]string, 0, min(len(sc.skipped), maxScanWarnings))
+	for _, w := range sc.skipped {
+		if seenMsg[w] {
+			continue
+		}
+		seenMsg[w] = true
+		warns = append(warns, w)
+		if len(warns) >= maxScanWarnings {
+			break
+		}
+	}
 	f.mu.Lock()
-	f.cache = sets
+	f.cache = sc.sets
+	f.skipped = warns
 	f.mu.Unlock()
-	f.dirs = next
+	f.dirs = sc.next
 	return nil
+}
+
+// dirEntryKind 判断条目是否为目录，并区分是否通过符号链接。
+// 符号链接指向目录时视为目录：把外部图库 ln -s 进来的用法很常见。
+func dirEntryKind(dirPath string, e os.DirEntry) (isDir, isLink bool) {
+	if e.IsDir() {
+		return true, false
+	}
+	if e.Type()&os.ModeSymlink == 0 {
+		return false, false
+	}
+	fi, err := os.Stat(filepath.Join(dirPath, e.Name()))
+	if err != nil || !fi.IsDir() {
+		return false, true
+	}
+	return true, true
 }
 
 // scanDir 扫描目录 rel（"" 表示数据根目录）。
 // depth 为 rel 的段数（根为 0）；isRoot 为真时读目录失败向上返回错误。
-func (f *fileStore) scanDir(rel string, depth int, next map[string]*dirState, sets map[string]*categorySet, isRoot bool) error {
+func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) error {
 	dirPath := f.dir
 	if rel != "" {
 		dirPath = filepath.Join(f.dir, filepath.FromSlash(rel))
@@ -306,12 +354,13 @@ func (f *fileStore) scanDir(rel string, depth int, next map[string]*dirState, se
 	now := time.Now().UnixNano()
 	old := f.dirs[rel]
 	if old != nil && !f.forceVerify && now-old.verified < int64(fullVerifyInterval) && sameEntryNames(old.names, entries) {
-		next[rel] = old
+		sc.next[rel] = old
 		if old.set != nil {
-			sets[rel] = old.set
+			sc.sets[rel] = old.set
 		}
+		sc.skipped = append(sc.skipped, old.skipped...)
 		for _, sub := range old.subdirs {
-			if err := f.scanDir(joinRel(rel, sub), depth+1, next, sets, false); err != nil {
+			if err := f.scanDir(joinRel(rel, sub), depth+1, sc, false); err != nil {
 				return err
 			}
 		}
@@ -326,27 +375,52 @@ func (f *fileStore) scanDir(rel string, depth int, next map[string]*dirState, se
 	if !isRoot {
 		state.set = f.buildSet(rel, dirPath, entries)
 		if state.set != nil {
-			sets[rel] = state.set
+			sc.sets[rel] = state.set
 		}
 	}
 	if depth < maxCategoryDepth {
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
 			seg := e.Name()
-			if !IsValidIdentifier(seg) {
+			childRel := joinRel(rel, seg)
+			isDir, isLink := dirEntryKind(dirPath, e)
+			if !isDir {
+				if isLink {
+					state.skipped = append(state.skipped,
+						childRel+"：符号链接指向的不是目录（或已失效）")
+				}
 				continue
 			}
-			if len(joinRel(rel, seg)) > maxCategoryLen {
+			if !IsValidIdentifier(seg) {
+				state.skipped = append(state.skipped,
+					childRel+"：目录名不合法（需字母开头，仅字母/数字/下划线，每段 ≤64 字符）")
 				continue
+			}
+			if len(childRel) > maxCategoryLen {
+				state.skipped = append(state.skipped, childRel+"：路径过长")
+				continue
+			}
+			abs := filepath.Join(f.dir, filepath.FromSlash(childRel))
+			if isLink {
+				resolved, rerr := filepath.EvalSymlinks(abs)
+				if rerr != nil {
+					state.skipped = append(state.skipped, childRel+"：符号链接无法解析")
+					continue
+				}
+				if sc.seen[resolved] {
+					state.skipped = append(state.skipped, childRel+"：符号链接回环或重复指向")
+					continue
+				}
+				sc.seen[resolved] = true
+			} else {
+				sc.seen[filepath.Clean(abs)] = true
 			}
 			state.subdirs = append(state.subdirs, seg)
 		}
 	}
-	next[rel] = state
+	sc.skipped = append(sc.skipped, state.skipped...)
+	sc.next[rel] = state
 	for _, sub := range state.subdirs {
-		if err := f.scanDir(joinRel(rel, sub), depth+1, next, sets, false); err != nil {
+		if err := f.scanDir(joinRel(rel, sub), depth+1, sc, false); err != nil {
 			return err
 		}
 	}
@@ -382,7 +456,7 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 	set := &categorySet{}
 	childDirs := 0
 	for _, e := range entries {
-		if e.IsDir() {
+		if isDir, _ := dirEntryKind(dirPath, e); isDir {
 			if IsValidIdentifier(e.Name()) {
 				childDirs++
 			}
@@ -707,6 +781,20 @@ func (f *fileStore) DeleteFiles(ctx context.Context, category string, names []st
 		return deleted, err
 	}
 	return deleted, nil
+}
+
+// ScanWarnings 返回最近一次扫描中被跳过的目录及原因。
+// 典型场景：目录名含 -/. / 空格、以数字开头、符号链接失效或回环。
+func ScanWarnings(s Store) []string {
+	fs, ok := s.(*fileStore)
+	if !ok {
+		return nil
+	}
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	out := make([]string, len(fs.skipped))
+	copy(out, fs.skipped)
+	return out
 }
 
 // Dir 返回数据根目录（用于静态文件服务）。

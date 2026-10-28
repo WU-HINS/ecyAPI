@@ -349,6 +349,15 @@
                     <h1>分类管理</h1>
                     <p>分类即本地子目录，新建分类会同步在首页开通卡片与 /分类名 随机跳转接口；用 / 分级即建多级子目录（如 anime/2024 → data/categories/anime/2024）。</p>
                 </div>
+                {{- if .ScanWarnings}}
+                <div class="panel" style="border-color:#f0c36d;background:#fffaf0">
+                    <h3 style="color:#8a5a00">有 {{len .ScanWarnings}} 个子目录未载入为分类</h3>
+                    <p class="field-desc" style="margin-top:2px">目录名需符合「字母开头，仅字母/数字/下划线，每段 ≤64 字符」；符号链接必须指向目录且不能回环。修正后约 3 秒自动生效，或重启服务。</p>
+                    <ul style="margin:8px 0 0 18px;line-height:1.9;font-size:13px;color:var(--ink-2)">
+                        {{- range .ScanWarnings}}<li><code>{{.}}</code></li>{{end}}
+                    </ul>
+                </div>
+                {{- end}}
                 <div class="panel">
                     <h3>创建新分类</h3>
                     <form action="/admin/create" method="post" onsubmit="return checkTableName()">
