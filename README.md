@@ -329,6 +329,35 @@ gh workflow run release.yml -f version=v1.2.3
 └── data/                  # 运行数据（图片、绑定、设置，默认不入库）
 ```
 
+## 上游与来源
+
+本仓库是 [pupu/ecyAPI](https://cnb.cool/pupu/ecyAPI)（「栗次元」随机图片 API）的衍生版本，上游 Git 历史完整保留。
+
+| 项 | 值 |
+| --- | --- |
+| 上游仓库 | `https://cnb.cool/pupu/ecyAPI`（远端名 `cnb`） |
+| 本仓库 | `https://github.com/WU-HINS/ecyAPI`（远端名 `origin`） |
+| 分叉基线 | `3de2f7a`（上游 main，2026-10-22，合并请求 #72） |
+| 上游历史 | 99 个提交，全部保留 |
+| 本仓库增量 | 在上游基线之上叠加的提交，见 `git log 3de2f7a..main` |
+
+相对上游的主要改动：多级分类（`a/b`）、扫描期方向判定与「按设备自动分横竖」默认开启、目录级增量扫描、异步访问日志与手写 JSON 序列化、ETag/304、缩略图单飞、登录限流与 SVG 沙箱等安全加固、CGO 三种链接方式（含 linux/arm64）、GitHub CI/Docker CI/Release 三条流水线。Go 模块名、目录结构与接口契约保持兼容，已有部署可直接替换二进制升级。
+
+### 同步上游
+
+```bash
+git fetch cnb
+git log --oneline main..cnb/main     # 上游是否有新提交
+git merge cnb/main                   # 冲突大概率集中在本次改动涉及的 server/store
+```
+
+上游的 cnb.cool 流水线配置（`.cnb.yml`）原样保留，不影响 GitHub Actions。
+
+### 许可证状态
+
+上游 README 声明「License 无（如需使用请遵循仓库约定）」，即**未附开源许可证**；本仓库公开托管不等于授权范围扩大。
+如需商用或再分发，请先与上游作者确认，或由本仓库维护者补一份明确的 LICENSE（届时同步更新本节）。
+
 ## License
 
 无（如需使用请遵循仓库约定）。
