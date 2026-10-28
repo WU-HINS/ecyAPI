@@ -35,14 +35,14 @@ jobs:
           fi
 
       - name: go vet
-        run: go vet -tags webp_system ./...
+        run: go vet -tags "webp_system webp_sharpyuv" ./...
 
       - name: go test（含 race）
-        run: CGO_ENABLED=1 go test -tags webp_system -race ./...
+        run: CGO_ENABLED=1 go test -tags "webp_system webp_sharpyuv" -race ./...
 
       - name: 静态编译冒烟（linux/amd64）
         run: |
-          CGO_ENABLED=1 go build -tags webp_system -trimpath \
+          CGO_ENABLED=1 go build -tags "webp_system webp_sharpyuv" -trimpath \
             -ldflags="-s -w -extldflags '-static'" -o /tmp/ecyapi ./cmd/server
           file /tmp/ecyapi | grep -q "statically linked"
 

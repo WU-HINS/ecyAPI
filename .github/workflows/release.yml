@@ -70,7 +70,7 @@ jobs:
         run: |
           mkdir -p dist
           name="ecyapi-${{ needs.validate.outputs.version }}-linux-${{ matrix.arch }}"
-          CGO_ENABLED=1 go build -tags webp_system -trimpath \
+          CGO_ENABLED=1 go build -tags "webp_system webp_sharpyuv" -trimpath \
             -ldflags="-s -w -extldflags '-static'" -o "dist/$name" ./cmd/server
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 

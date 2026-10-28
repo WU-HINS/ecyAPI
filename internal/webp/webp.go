@@ -10,7 +10,9 @@
 // 链接方式由构建标签选择：
 //   - 默认（linux/amd64）：链接仓库内置的 lib/linux_amd64/libwebp.a，开箱即用；
 //   - "-tags webp_system"：链接系统安装的 libwebp（-lwebp），用于 linux/arm64
-//     以及 Docker/CI 内由 apk/apt 安装 libwebp-dev 的场景；
+//     以及 Docker/CI 内由 apt 安装 libwebp-dev 的场景；
+//   - 再加 "webp_sharpyuv"：libwebp ≥ 1.3 把 sharpyuv 拆成独立静态库时需要
+//     （Ubuntu 24.04 / Debian 13）。
 //   - CGO_ENABLED=0：退化为空实现，?w= 压缩预览回退原图（见 webp_nocgo.go）。
 package webp
 

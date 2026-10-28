@@ -1,10 +1,10 @@
-//go:build cgo && webp_system
+//go:build cgo && webp_system && !webp_sharpyuv
 
-// 系统 libwebp 构建：CI 与 Dockerfile 都先安装 libwebp-dev + libsharpyuv-dev
-// （libwebp ≥ 1.3 把 sharpyuv 拆成独立静态库，静态链接时必须一并带上）。
+// 系统 libwebp（自包含）：libwebp.a 内部已编译进 sharpyuv，
+// 典型如 Debian 12 / Ubuntu 22.04 / 仓库内置的预编译库。
 package webp
 
 /*
-#cgo LDFLAGS: -lwebp -lsharpyuv -lm
+#cgo LDFLAGS: -lwebp -lm
 */
 import "C"

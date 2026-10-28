@@ -2,11 +2,11 @@
 # ---------- 构建阶段 ----------
 # 原生架构构建：CI 在 amd64 / arm64 原生 runner 上各自编译（buildx --platform
 # 与 runner 架构一致），不做 QEMU 跨架构模拟，产物与本机 go build 一致。
-# libwebp 使用发行版静态库（libwebp-dev + libsharpyuv-dev），因此同一份
-# Dockerfile 可同时产出 amd64 / arm64 的完全静态二进制。
+# libwebp 使用发行版静态库（bookworm 的 libwebp.a 已自带 sharpyuv），
+# 因此同一份 Dockerfile 可同时产出 amd64 / arm64 的完全静态二进制。
 FROM golang:1.27-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libwebp-dev libsharpyuv-dev \
+      libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
