@@ -1,7 +1,7 @@
 # ecyAPI — 栗次元随机图片 API（Go 版）
 
-[![CI](https://github.com/WUHINS/ecyAPI/actions/workflows/ci.yml/badge.svg)](https://github.com/WUHINS/ecyAPI/actions/workflows/ci.yml)
-[![Docker CI](https://github.com/WUHINS/ecyAPI/actions/workflows/docker-ci.yml/badge.svg)](https://github.com/WUHINS/ecyAPI/actions/workflows/docker-ci.yml)
+[![CI](https://github.com/WU-HINS/ecyAPI/actions/workflows/ci.yml/badge.svg)](https://github.com/WU-HINS/ecyAPI/actions/workflows/ci.yml)
+[![Docker CI](https://github.com/WU-HINS/ecyAPI/actions/workflows/docker-ci.yml/badge.svg)](https://github.com/WU-HINS/ecyAPI/actions/workflows/docker-ci.yml)
 
 无外部服务依赖、单二进制部署的随机图片服务。图片数据源为项目本地目录，无需 MySQL，开箱即用。
 
@@ -278,10 +278,10 @@ go test -run XXX -bench . ./internal/...              # 基准测试
 ## Docker
 
 ```bash
-# 多架构镜像：ghcr.io/wuhins/ecyapi（linux/amd64 + linux/arm64 原生构建）
+# 多架构镜像：ghcr.io/wu-hins/ecyapi（linux/amd64 + linux/arm64 原生构建）
 docker run -d --name ecyapi -p 8080:8080 \
   -v /srv/ecy/data:/app/data \
-  ghcr.io/wuhins/ecyapi:latest
+  ghcr.io/wu-hins/ecyapi:latest
 ```
 
 标签策略：
