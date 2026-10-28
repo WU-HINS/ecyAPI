@@ -127,10 +127,10 @@ jobs:
 
           校验：sha256sum -c SHA256SUMS.txt"
           if [ "${{ inputs.prerelease }}" = "true" ]; then
-            gh release create "$V" dist/* --target "${{ github.sha }}" \
+            gh release create "$V" dist/* --repo "${{ github.repository }}" --target "${{ github.sha }}" \
               --title "$V" --notes "$NOTES" --prerelease
           else
-            gh release create "$V" dist/* --target "${{ github.sha }}" \
+            gh release create "$V" dist/* --repo "${{ github.repository }}" --target "${{ github.sha }}" \
               --title "$V" --notes "$NOTES"
           fi
 
