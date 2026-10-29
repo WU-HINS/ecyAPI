@@ -118,3 +118,77 @@ func TestSnapshotThenDiskChanged(t *testing.T) {
 		t.Fatalf("刷新后应为 3 张，实际 %d", n)
 	}
 }
+
+// TestSnapshotNewCategoryAfterRestart 停机期间新增的分类，重启后第一次刷新就会补上。
+func TestSnapshotNewCategoryAfterRestart(t *testing.T) {
+	dir := makeTree(t, 3, 2)
+	st, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
+	fs := st.(*fileStore)
+	if err := fs.saveSnapshot(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 停机期间：新建一个分类，并在已有分类里加一张
+	if err := os.MkdirAll(filepath.Join(dir, "c999"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePNG(t, filepath.Join(dir, "c999", "x.png"), 4, 2)
+	writePNG(t, filepath.Join(dir, "c000", "zzz.png"), 4, 2)
+
+	st2, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
+	fs2 := st2.(*fileStore)
+	ctx := context.Background()
+	cats, _ := st2.Categories(ctx)
+	if len(cats) != 3 {
+		t.Fatalf("快照恢复时应只有 3 个分类，实际 %d：%v", len(cats), cats)
+	}
+
+	// 一次后台刷新（模拟 3 秒后的那一轮）
+	fs2.reloadMu.Lock()
+	if err := fs2.scan(); err != nil {
+		fs2.reloadMu.Unlock()
+		t.Fatal(err)
+	}
+	fs2.reloadMu.Unlock()
+
+	cats, _ = st2.Categories(ctx)
+	if len(cats) != 4 {
+		t.Fatalf("刷新后应有 4 个分类（含新分类），实际 %d：%v", len(cats), cats)
+	}
+	if n, _ := st2.Count(ctx, "c999"); n != 1 {
+		t.Fatalf("新分类里应有 1 张图，实际 %d", n)
+	}
+	if n, _ := st2.Count(ctx, "c000"); n != 3 {
+		t.Fatalf("已有分类应变为 3 张，实际 %d", n)
+	}
+}
+
+// TestSnapshotDeletedCategoryAfterRestart 停机期间删掉的分类，刷新后应消失。
+func TestSnapshotDeletedCategoryAfterRestart(t *testing.T) {
+	dir := makeTree(t, 3, 2)
+	st, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
+	fs := st.(*fileStore)
+	if err := fs.saveSnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "c002")); err != nil {
+		t.Fatal(err)
+	}
+
+	st2, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
+	fs2 := st2.(*fileStore)
+	ctx := context.Background()
+	if cats, _ := st2.Categories(ctx); len(cats) != 3 {
+		t.Fatalf("快照里仍是 3 个分类，实际 %d", len(cats))
+	}
+	fs2.reloadMu.Lock()
+	if err := fs2.scan(); err != nil {
+		fs2.reloadMu.Unlock()
+		t.Fatal(err)
+	}
+	fs2.reloadMu.Unlock()
+	cats, _ := st2.Categories(ctx)
+	if len(cats) != 2 {
+		t.Fatalf("删除后应剩 2 个分类，实际 %d：%v", len(cats), cats)
+	}
+}
