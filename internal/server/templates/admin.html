@@ -225,8 +225,14 @@
                 <span class="brand-mark"><svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4L12 2z"/></svg></span>
                 <b style="font-size:18px;font-weight:800;letter-spacing:-.02em">后台管理</b>
             </div>
-            <p style="font-size:12.5px;color:var(--ink-3);margin-bottom:20px">请输入密码访问页面</p>
+            <p style="font-size:12.5px;color:var(--ink-3);margin-bottom:20px">
+                {{- if .SSOOnly}}本实例已开启「仅使用 SSO」，请通过身份提供方登录
+                {{- else}}请输入密码访问页面，或使用 SSO 登录{{end}}
+            </p>
             {{- if .LoginError}}<p style="color:var(--danger);font-size:13px;margin-bottom:14px">密码错误，请重试。</p>{{end}}
+            {{- if .SSOOnly}}
+            <a class="btn" href="/admin/sso/login" style="display:block;text-align:center;text-decoration:none">使用 SSO 登录</a>
+            {{- else}}
             <form method="post">
                 <div class="field">
                     <label for="login_password">密码</label>
@@ -235,6 +241,11 @@
                 </div>
                 <button type="submit" class="btn" style="width:100%;margin-top:8px">登 录</button>
             </form>
+            {{- if .SSO.Enabled}}
+            <a class="btn" href="/admin/sso/login"
+               style="display:block;text-align:center;text-decoration:none;margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)">使用 SSO 登录</a>
+            {{- end}}
+            {{- end}}
         </div>
     </div>
 {{- else}}
@@ -287,6 +298,10 @@
                 <button class="nav-item" data-view="logs">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 2h10a1 1 0 0 1 1 1v17l-3-2-3 2-3-2-3 2V3a1 1 0 0 1 1-1zm2 5h6v1.8H9V7zm0 4h6v1.8H9V11z"/></svg>
                     改动日志
+                </button>
+                <button class="nav-item" data-view="sso">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 12c4.4 0 8 2.2 8 5v3H4v-3c0-2.8 3.6-5 8-5z"/></svg>
+                    登录与 SSO
                 </button>
             </nav>
 
@@ -690,6 +705,104 @@
                 </div>
             </section>
 
+
+            <!-- 登录与 SSO -->
+            <section class="view" id="view-sso">
+                <div class="page-head">
+                    <h1>登录与 SSO</h1>
+                    <p>支持 OAuth 2.0 与 OpenID Connect。填写发现端点后点「发现」会自动填充授权、token、JWKS、userinfo 端点；模式默认自动判定（有 id_token 走 OIDC 并校验 JWT，否则走 OAuth2 用 userinfo）。</p>
+                </div>
+
+                <div class="panel">
+                    <h3>身份提供方</h3>
+                    <form action="/admin/sso/config" method="post">
+                        <div class="field">
+                            <label for="sso_discovery">发现端点 / Issuer</label>
+                            <div style="display:flex;gap:8px">
+                                <input type="text" id="sso_discovery" placeholder="https://id.example.com 或 https://id.example.com/.well-known/openid-configuration">
+                                <button type="button" class="btn" onclick="ssoDiscover()">发现</button>
+                            </div>
+                            <span id="ssoDiscoverMsg" class="field-desc"></span>
+                        </div>
+                        <div class="row">
+                            <div class="field"><label for="sso_issuer">Issuer</label>
+                                <input type="text" id="sso_issuer" name="issuer" value="{{.SSO.Issuer}}"></div>
+                            <div class="field"><label for="sso_client_id">Client ID</label>
+                                <input type="text" id="sso_client_id" name="client_id" value="{{.SSO.ClientID}}"></div>
+                        </div>
+                        <div class="field"><label for="sso_auth">授权端点（Authorization Endpoint）</label>
+                            <input type="text" id="sso_auth" name="authorization_endpoint" value="{{.SSO.AuthorizationEndpoint}}"></div>
+                        <div class="field"><label for="sso_token">Token 端点</label>
+                            <input type="text" id="sso_token" name="token_endpoint" value="{{.SSO.TokenEndpoint}}"></div>
+                        <div class="row">
+                            <div class="field"><label for="sso_jwks">JWKS URI（OIDC 校验签名）</label>
+                                <input type="text" id="sso_jwks" name="jwks_uri" value="{{.SSO.JWKSUri}}"></div>
+                            <div class="field"><label for="sso_userinfo">UserInfo 端点（OAuth 取身份）</label>
+                                <input type="text" id="sso_userinfo" name="userinfo_endpoint" value="{{.SSO.UserinfoEndpoint}}"></div>
+                        </div>
+                        <div class="row">
+                            <div class="field"><label for="sso_secret">Client Secret</label>
+                                <input type="password" id="sso_secret" name="client_secret" placeholder="{{if .SSO.ClientSecret}}已保存，留空不修改{{else}}公共客户端可留空{{end}}"></div>
+                            <div class="field"><label for="sso_scopes">Scopes</label>
+                                <input type="text" id="sso_scopes" name="scopes" value="{{.SSO.Scopes}}"></div>
+                        </div>
+                        <div class="row">
+                            <div class="field"><label for="sso_redirect">回调地址（留空按请求推断）</label>
+                                <input type="text" id="sso_redirect" name="redirect_url" value="{{.SSO.RedirectURL}}"></div>
+                            <div class="field"><label for="sso_mode">模式</label>
+                                <select id="sso_mode" name="mode">
+                                    <option value="auto" {{if eq .SSO.Mode "auto"}}selected{{end}}>自动判定（推荐）</option>
+                                    <option value="oidc" {{if eq .SSO.Mode "oidc"}}selected{{end}}>强制 OIDC</option>
+                                    <option value="oauth" {{if eq .SSO.Mode "oauth"}}selected{{end}}>强制 OAuth2</option>
+                                </select></div>
+                        </div>
+                        <div class="field" style="line-height:2">
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:400">
+                                <input type="checkbox" name="enabled" value="1" {{if .SSO.Enabled}}checked{{end}} style="width:auto">
+                                启用 SSO 登录（登录页显示「使用 SSO 登录」）
+                            </label>
+                            <label style="display:flex;align-items:center;gap:8px;font-weight:400">
+                                <input type="checkbox" name="sso_only" value="1" {{if .SSO.SSOOnly}}checked{{end}} style="width:auto">
+                                仅使用 SSO（拒绝密码登录，未登录访问后台自动跳转）——需至少绑定一个账号
+                            </label>
+                        </div>
+                        <div class="form-actions"><button class="btn" type="submit">保存配置</button></div>
+                    </form>
+                    {{if .SSO.DetectedMode}}<p class="field-desc">最近一次登录自动判定为：<b>{{.SSO.DetectedMode}}</b></p>{{end}}
+                </div>
+
+                <div class="panel">
+                    <h3>已绑定账号</h3>
+                    <p class="field-desc">只有这里列出的身份才能登录后台，未绑定的一律拒绝。</p>
+                    <table class="tbl">
+                        <thead><tr><th>标签</th><th>Issuer</th><th>Sub</th><th>绑定时间</th><th style="text-align:right">操作</th></tr></thead>
+                        <tbody>
+                        {{range .SSO.Bindings}}
+                            <tr>
+                                <td>{{.Label}}</td>
+                                <td><code>{{.Issuer}}</code></td>
+                                <td><code>{{.Sub}}</code></td>
+                                <td>{{.BoundAt}}</td>
+                                <td style="text-align:right">
+                                    <form action="/admin/sso/unbind" method="post" onsubmit="return confirm('解除该绑定？')" style="display:inline">
+                                        <input type="hidden" name="issuer" value="{{.Issuer}}">
+                                        <input type="hidden" name="sub" value="{{.Sub}}">
+                                        <button type="submit" class="btn danger">解绑</button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {{else}}
+                            <tr><td colspan="5">还没有绑定任何账号</td></tr>
+                        {{end}}
+                        </tbody>
+                    </table>
+                    <div class="form-actions" style="margin-top:12px">
+                        <a class="btn" href="/admin/sso/login?bind=1" target="_blank" style="text-decoration:none">绑定当前 SSO 账号</a>
+                    </div>
+                    <p class="field-desc">点击后跳到身份提供方登录，成功后把该身份写入上面的列表（绑定要求当前已有后台会话）。</p>
+                </div>
+            </section>
+
         </main>
     </div>
 
@@ -731,6 +844,34 @@
             });
             if (name === 'cache') { refreshCache(); cacheTimer = setInterval(refreshCache, 2000); }
             else if (cacheTimer) { clearInterval(cacheTimer); cacheTimer = null; }
+        }
+
+        /* 登录与 SSO：发现端点自动填充 */
+        function ssoDiscover() {
+            var u = document.getElementById('sso_discovery').value.trim();
+            var msg = document.getElementById('ssoDiscoverMsg');
+            if (!u) { msg.textContent = '请填写发现端点或 issuer'; return; }
+            msg.textContent = '正在拉取发现文档…';
+            fetch('/admin/sso/discover', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'discovery=' + encodeURIComponent(u)
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (!d.ok) { msg.textContent = '失败：' + d.error; return; }
+                document.getElementById('sso_issuer').value = d.issuer || '';
+                document.getElementById('sso_auth').value = d.authorization_endpoint || '';
+                document.getElementById('sso_token').value = d.token_endpoint || '';
+                document.getElementById('sso_jwks').value = d.jwks_uri || '';
+                document.getElementById('sso_userinfo').value = d.userinfo_endpoint || '';
+                if (!document.getElementById('sso_scopes').value && d.scopes) {
+                    document.getElementById('sso_scopes').value = d.scopes;
+                }
+                var extra = [];
+                if (d.algs && d.algs.length) { extra.push('签名算法 ' + d.algs.join('/')); }
+                if (d.auth_methods && d.auth_methods.length) { extra.push('认证方式 ' + d.auth_methods.join('/')); }
+                msg.textContent = '已自动填充，判定为 ' + (d.mode === 'oidc' ? 'OIDC' : 'OAuth2')
+                    + (extra.length ? '（' + extra.join('，') + '）' : '');
+            }).catch(function () { msg.textContent = '请求失败'; });
         }
 
         /* 缓存与预热 */

@@ -21,6 +21,10 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case r.Method == http.MethodPost && r.PostFormValue("login_password") != "":
+		if s.ssoConfig().SSOOnly {
+			s.renderAdmin(w, map[string]any{"Authed": false, "LoginError": false, "SSOOnly": true})
+			return
+		}
 		ip := clientIP(r)
 		if blocked, wait := s.login.blocked(ip); blocked {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -41,6 +45,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case !s.sessionValid(r):
+		// 「仅使用 SSO」：未登录的访问直接跳到身份提供方，不再显示密码表单。
+		if cfg := s.ssoConfig(); cfg.SSOOnly && cfg.Enabled {
+			http.Redirect(w, r, "/admin/sso/login", http.StatusFound)
+			return
+		}
 		s.renderAdmin(w, map[string]any{"Authed": false})
 		return
 	}
@@ -88,6 +97,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Endpoints":    epList,
 		"ScanWarnings": store.ScanWarnings(s.st),
 		"MaxDepth":     s.cfg.MaxDepth,
+		"SSO":          s.ssoConfig(),
 		"BaseURL":      baseURL,
 		"Slogan":       slogan,
 		"Share":        share,
@@ -103,6 +113,9 @@ func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {
 	}
 	if _, ok := data["Authed"]; !ok {
 		data["Authed"] = false
+	}
+	if _, ok := data["SSO"]; !ok {
+		data["SSO"] = s.ssoConfig()
 	}
 	s.render(w, http.StatusOK, "admin.html", data)
 }

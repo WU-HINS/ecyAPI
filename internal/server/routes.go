@@ -103,6 +103,9 @@ type Server struct {
 	// prewarm 后台预热任务状态（图库页 + 可选缩略图）。
 	prewarm *prewarmState
 
+	// sso OAuth2 / OIDC 登录状态（配置、进行中的授权流程、JWKS 缓存）。
+	sso *ssoState
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -159,6 +162,7 @@ func New(cfg config.Config) (*Server, error) {
 		galleryGate: newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
 		previewJobs: make(chan previewJob, 512),
 		prewarm:     &prewarmState{},
+		sso:         newSSOState(),
 		mem: memguard.New(memguard.Options{
 			LimitBytes: cfg.MemoryLimit,
 			SoftPct:    float64(cfg.MemSoftPct) / 100,
@@ -197,6 +201,9 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	if err := s.loadGalleryHidden(); err != nil {
+		return nil, err
+	}
+	if err := s.loadSSO(); err != nil {
 		return nil, err
 	}
 	funcMap := template.FuncMap{
@@ -780,6 +787,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/cache/prewarm", s.handleAdminCachePrewarm)
 	mux.HandleFunc("GET /admin/cache/status", s.handleAdminCacheStatus)
 	mux.HandleFunc("POST /admin/cache/cancel", s.handleAdminCacheCancel)
+
+	// 管理登录的 OAuth2 / OIDC
+	mux.HandleFunc("GET /admin/sso/login", s.handleSSOLogin)
+	mux.HandleFunc("GET /admin/sso/callback", s.handleSSOCallback)
+	mux.HandleFunc("POST /admin/sso/config", s.handleSSOConfig)
+	mux.HandleFunc("POST /admin/sso/discover", s.handleSSODiscover)
+	mux.HandleFunc("POST /admin/sso/unbind", s.handleSSOUnbind)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
