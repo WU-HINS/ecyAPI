@@ -268,6 +268,10 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm8 1.5V8h4.5L14 3.5zM8 12h8v1.6H8V12zm0 4h8v1.6H8V16z"/></svg>
                     图库展示
                 </button>
+                <button class="nav-item" data-view="cache">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 4a6 6 0 1 1-6 6 6 6 0 0 1 6-6zm0 3a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/></svg>
+                    缓存与预热
+                </button>
             </nav>
 
             <div class="nav-label">站点设置</div>
@@ -518,6 +522,57 @@
                 </div>
             </section>
 
+            <!-- 缓存与预热 -->
+            <section class="view" id="view-cache">
+                <div class="page-head">
+                    <h1>缓存与预热</h1>
+                    <p>图库页（HTML + 预生成 gzip）与缩略图（<code>?w=</code>）都会落盘缓存。清理后首次访问会重新生成；预热可在低峰期提前做好，避免高峰期现场渲染。</p>
+                </div>
+
+                <div class="panel">
+                    <h3>当前占用 <span id="cacheState" style="font-size:12px;font-weight:400;color:var(--ink-2)"></span></h3>
+                    <table class="tbl">
+                        <tbody>
+                            <tr><td style="width:180px">图库页缓存</td><td id="cacheGallery">读取中…</td></tr>
+                            <tr><td>缩略图缓存</td><td id="cacheThumb">读取中…</td></tr>
+                        </tbody>
+                    </table>
+                    <form action="/admin/cache/clear" method="post" style="margin-top:14px"
+                          onsubmit="return confirm('确认清理全部缓存？清理后首次访问会重新生成（大分类约 1~3 秒）。')">
+                        <button type="submit" class="btn danger">清理缓存</button>
+                    </form>
+                </div>
+
+                <div class="panel">
+                    <h3>预热</h3>
+                    <form action="/admin/cache/prewarm" method="post">
+                        <div class="row">
+                            <div class="field">
+                                <label for="prewarm_category">分类</label>
+                                <select id="prewarm_category" name="category">
+                                    <option value="">全部分类（不含图库隐藏分类）</option>
+                                    {{- range .Tables}}<option value="{{.Name}}">{{.Name}}（{{.Count}} 张）</option>{{end}}
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="prewarm_width">缩略图宽度</label>
+                                <input type="number" id="prewarm_width" name="width" value="0" min="0" max="4096">
+                                <span class="field-desc">0 = 只渲染图库页；填 480 会同时生成图库用的缩略图（大分类会很慢）</span>
+                            </div>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">开始预热</button>
+                        </div>
+                    </form>
+                    <div id="prewarmBox" style="display:none;margin-top:14px">
+                        <div style="height:8px;border-radius:6px;background:#eceef2;overflow:hidden">
+                            <div id="prewarmBar" style="height:100%;width:0;background:var(--accent,#0f8b8d);transition:width .3s"></div>
+                        </div>
+                        <p id="prewarmText" class="field-desc" style="margin-top:8px"></p>
+                    </div>
+                </div>
+            </section>
+
             <!-- 站点设置 -->
             <section class="view" id="view-settings">
                 <div class="page-head">
@@ -670,6 +725,44 @@
             document.querySelectorAll('.nav-item[data-view]').forEach(function (b) {
                 b.classList.toggle('active', b.dataset.view === name);
             });
+            if (name === 'cache') { refreshCache(); cacheTimer = setInterval(refreshCache, 2000); }
+            else if (cacheTimer) { clearInterval(cacheTimer); cacheTimer = null; }
+        }
+
+        /* 缓存与预热 */
+        var cacheTimer = null;
+        function fmtBytes(n) {
+            if (n >= 1048576) { return (n / 1048576).toFixed(1) + ' MB'; }
+            if (n >= 1024) { return (n / 1024).toFixed(1) + ' KB'; }
+            return (n || 0) + ' B';
+        }
+        function refreshCache() {
+            fetch('/admin/cache/status')
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    var c = d.cache || {}, p = d.prewarm || {};
+                    document.getElementById('cacheGallery').textContent =
+                        (c.GalleryFiles || 0) + ' 个文件 / ' + fmtBytes(c.GalleryBytes || 0);
+                    document.getElementById('cacheThumb').textContent =
+                        (c.ThumbFiles || 0) + ' 个文件 / ' + fmtBytes(c.ThumbBytes || 0);
+                    document.getElementById('cacheState').textContent =
+                        p.Running ? '（预热进行中）' : '（实时）';
+                    var box = document.getElementById('prewarmBox');
+                    var bar = document.getElementById('prewarmBar');
+                    var txt = document.getElementById('prewarmText');
+                    if (p.Running) {
+                        box.style.display = 'block';
+                        var pct = p.Total ? Math.round(p.Done * 100 / p.Total) : 0;
+                        bar.style.width = pct + '%';
+                        txt.textContent = '预热中：' + p.Done + '/' + p.Total + ' 个分类'
+                            + (p.Current ? '（当前 ' + p.Current + '）' : '')
+                            + '，失败 ' + (p.Errors || 0) + ' 项';
+                    } else {
+                        box.style.display = 'none';
+                        if (p.Message) { document.getElementById('cacheState').textContent = '（' + p.Message + '）'; }
+                    }
+                })
+                .catch(function () {});
         }
         document.querySelectorAll('.nav-item[data-view]').forEach(function (b) {
             b.addEventListener('click', function () { showView(b.dataset.view); });

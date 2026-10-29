@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -141,22 +143,38 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) 真正渲染。
-	counts := s.categoryCountMap(r.Context())
-	total, err := s.st.CountWith(r.Context(), current, store.OrientationAny)
+	// 3) 真正渲染（与后台预热共用同一段逻辑）。
+	body, err := s.buildGalleryPage(r.Context(), current, cats)
+	if err != nil {
+		if errors.Is(err, errGalleryBusy) {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// buildGalleryPage 渲染并落盘指定分类的图库页（供请求路径与后台预热共用）。
+func (s *Server) buildGalleryPage(ctx context.Context, current string, cats []string) ([]byte, error) {
+	counts := s.categoryCountMap(ctx)
+	total, err := s.st.CountWith(ctx, current, store.OrientationAny)
 	if err != nil {
 		total = 0
 	}
 	if !s.mem.Allow(int64(total) * 400) {
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
-		return
+		return nil, errGalleryBusy
 	}
 	var rows []store.Row
 	if s.cfg.GalleryMax > 0 && total > s.cfg.GalleryMax {
-		rows, err = s.st.RandomWith(r.Context(), current, s.cfg.GalleryMax, store.OrientationAny)
+		rows, err = s.st.RandomWith(ctx, current, s.cfg.GalleryMax, store.OrientationAny)
 	} else {
-		rows, err = s.st.Links(r.Context(), current)
+		rows, err = s.st.Links(ctx, current)
 	}
 	if err != nil {
 		rows = nil
@@ -184,14 +202,11 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.renderGalleryHTML(data)
 	if err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	s.writeGalleryCache(cachePath, body)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=60")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	dir, name := s.galleryCacheKey(current, s.st.Generation())
+	s.writeGalleryCache(filepath.Join(s.galleryCacheRoot(), dir, name), body)
+	return body, nil
 }
 
 // galleryHiddenList 返回隐藏分类的稳定副本（用于缓存键）。

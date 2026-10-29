@@ -100,6 +100,9 @@ type Server struct {
 	// mem 内存调节器：软目标 75%、红线 90%，按压力降档并通知上层降级。
 	mem *memguard.Governor
 
+	// prewarm 后台预热任务状态（图库页 + 可选缩略图）。
+	prewarm *prewarmState
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -155,6 +158,7 @@ func New(cfg config.Config) (*Server, error) {
 		previewGate: newPreviewGate(cfg.PreviewMP),
 		galleryGate: newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
 		previewJobs: make(chan previewJob, 512),
+		prewarm:     &prewarmState{},
 		mem: memguard.New(memguard.Options{
 			LimitBytes: cfg.MemoryLimit,
 			SoftPct:    float64(cfg.MemSoftPct) / 100,
@@ -772,6 +776,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/logs/delete", s.handleAdminLogDelete)
 	mux.HandleFunc("POST /admin/endpoints/reorder", s.handleAdminEndpointsReorder)
 	mux.HandleFunc("GET /admin/data", s.handleAdminData)
+	mux.HandleFunc("POST /admin/cache/clear", s.handleAdminCacheClear)
+	mux.HandleFunc("POST /admin/cache/prewarm", s.handleAdminCachePrewarm)
+	mux.HandleFunc("GET /admin/cache/status", s.handleAdminCacheStatus)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
