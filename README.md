@@ -223,7 +223,9 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 | `ECY_GALLERY_WAIT` | `5` | 图库排队等待秒数（1~60），超时返回 `503` + `Retry-After` |
 | `ECY_PREVIEW_MP` | 自适应 | `?w=` 压缩的**总像素预算**（百万像素，8~512）。未设置时按 `GOMEMLIMIT/12` 推导（512MB 容器≈32MP，192MB≈15MP）；4K 图约 8MP，预算 15 表示同时压 1 张，其余请求回退原图并由后台补缓存 |
 | `ECY_PREVIEW_CACHE_FILES` | `20000` | 缩略图缓存文件数上限（100~1000000）。太小会在浏览大图库时反复重压同一批图 |
-| `ECY_MEMORY_LIMIT` | 自动推导 | Go 软内存上限。**未设置时取容器 cgroup 限制的 75%**，避免「GOMEMLIMIT=512MB 而容器 limit 也是 512MB」导致的贴边 OOM |
+| `ECY_MEMORY_LIMIT` | 自动探测 | **内存预算**（字节）。留空时取容器 cgroup 限制；运行时由调节器按预算动态设置 `GOMEMLIMIT`（55%~70%），让 RSS 稳定在预算的 ~75% |
+| `ECY_MEM_SOFT_PCT` | `75` | 软目标百分比（40~90）：超过后进入 warn 档，缩小 GOMEMLIMIT、压低 GOGC、缩略图只排后台补缓存 |
+| `ECY_MEM_HARD_PCT` | `90` | 红线百分比（60~99）：越线前主动降档；图库/缩略图在动手前用「事件级」检查拒绝超出预算的分配 |
 | `ECY_SCAN_INTERVAL` | `3` | 后台增量刷新间隔（秒，1~3600）。扫描已移出请求路径，文件增删在这个间隔内生效 |
 | `ECY_VERIFY_LINKS` | 空（开启） | 设为 `off` 关闭 302 前的目标文件校验。开启时每次跳转多一次 stat（约 1~5µs），换来绝不把用户 302 到已删除文件 |
 | `ECY_ACCESS_LOG` | 空（开启） | 设为 `off` 关闭访问日志；日志为异步写入，队列满即丢弃，不阻塞请求 |
@@ -255,6 +257,9 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 - **静态文件零拷贝**：`/pic` 走 `ServeContent` + `SectionReader.WriteTo`，真实连接上落到 sendfile
 - **缩略图单飞**：同一图同宽度的并发请求只压缩一次，其余等缓存落盘后直接命中
 - **解压炸弹防护**：解码前用 `image.DecodeConfig` 预检，超过 4000 万像素直接拒绝
+- **内存调节器（memguard）**：每秒读一次 RSS/堆（`/proc/self/statm` + `runtime/metrics`，不停世界），
+  按预算的 75% / 90% 两档调节 `GOMEMLIMIT`（70% → 65% → 55%）与 GOGC（50 → 40 → 20），
+  并对图库渲染、缩略图解码做**事件级**预算检查；空闲 30 秒且有堆占用时，**每分钟最多归还一次**内存给 OS
 - **内存硬上限（防 OOM）**：`GOMEMLIMIT` 自动取容器 cgroup 限制的 75%（不再默认 512MB 贴边）；
   图库保留「展示全部」，靠**并发闸门**（默认 2）把渲染内存钉死（5 万张 50 并发 RSS 388MB → 49MB，超限排队 5s 后 503）；
   缩略图按自适应像素预算限流，预算不足时**立刻回退原图 + 后台排队补缓存**，既不阻塞请求也不会永远填不满缓存

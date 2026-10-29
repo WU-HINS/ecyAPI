@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
 )
 
@@ -97,6 +98,13 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	if !contains(cats, current) {
 		current = cats[0]
 	}
+	// 内存逼近红线时直接快速失败：图库是最大的单次分配方，不能硬顶。
+	if s.mem.Level() == memguard.Critical {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
+		return
+	}
+
 	// 图库按「展示全部」设计：单次渲染开销随图片数增长，靠并发闸门把内存钉死。
 	// 同时渲染数受 ECY_GALLERY_CONCURRENCY 限制，排队超过 ECY_GALLERY_WAIT 返回 503。
 	if !s.galleryGate.acquire(r.Context()) {
@@ -109,6 +117,13 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	total, err := s.st.CountWith(r.Context(), current, store.OrientationAny)
 	if err != nil {
 		total = 0
+	}
+	// 事件级红线保护：按「每张约 400 字节（行结构 + HTML）」估算本次渲染开销，
+	// 越线直接快速失败，避免在 Tick 之间把内存顶穿。
+	if !s.mem.Allow(int64(total) * 400) {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
+		return
 	}
 	var rows []store.Row
 	if s.cfg.GalleryMax > 0 && total > s.cfg.GalleryMax {

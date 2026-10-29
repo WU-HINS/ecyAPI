@@ -34,6 +34,7 @@ import (
 	"golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
 
+	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
 	"ecyapi/internal/webp"
 )
@@ -97,6 +98,26 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		return
 	}
 	units := previewUnits(cfg.Width, cfg.Height)
+
+	// 事件级红线保护：解码后位图约 w*h*4，再叠加缩放后的目标位图。
+	est := int64(cfg.Width)*int64(cfg.Height)*4 + int64(width)*int64(cfg.Height)*4
+	if !s.mem.Allow(est) {
+		s.handlePic(w, r)
+		return
+	}
+
+	// 内存压力降级：Warn 时不再内联压缩（只排后台补缓存），
+	// Critical 时完全停止压缩，保证请求路径零解码开销。
+	if lvl := s.mem.Level(); lvl >= memguard.Warn {
+		if lvl == memguard.Warn {
+			s.enqueuePreviewJob(previewJob{
+				path: path, cachePath: cachePath, width: width, units: units,
+			})
+		}
+		s.handlePic(w, r)
+		return
+	}
+
 	if !s.previewGate.tryAcquire(units) {
 		// 预算已满：先回退原图保证响应，同时把「补缓存」排进后台，
 		// 避免持续预览时缓存永远填不满、每次都在重复解码。

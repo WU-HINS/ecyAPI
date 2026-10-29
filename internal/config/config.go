@@ -73,8 +73,13 @@ type Config struct {
 	// PreviewCacheFiles 缩略图缓存文件数上限（ECY_PREVIEW_CACHE_FILES，默认 20000）。
 	// 太小会导致「浏览图库时反复重压同一批图」，是持续预览下 CPU/内存抖动的来源。
 	PreviewCacheFiles int
-	// MemoryLimit 实际生效的 Go 软内存上限（字节），用于启动日志与排障。
+	// MemoryLimit 内存预算（字节）：容器 cgroup 限制，或显式 ECY_MEMORY_LIMIT。
+	// 运行时由 memguard 按「软目标 75% / 红线 90%」动态调节 GOMEMLIMIT。
 	MemoryLimit int64
+	// MemSoftPct 软目标百分比（ECY_MEM_SOFT_PCT，默认 75）。
+	MemSoftPct int
+	// MemHardPct 红线百分比（ECY_MEM_HARD_PCT，默认 90）。
+	MemHardPct int
 }
 
 func env(key, def string) string {
@@ -108,12 +113,12 @@ func Load() Config {
 	// 不急于还给 OS），批量图片压缩后 RSS 常驻峰值不下落，容器监控里
 	// 看起来像"内存泄漏"。GC 更早触发 + 软内存上限双管齐下，配合压缩
 	// 队列排空时主动归还（见 preview.go），让 RSS 跟着实际用量回落。
-	// 软内存上限优先取环境变量；未设置时按容器 cgroup 限制的 75% 自动推导。
-	// 这一步很关键：GOMEMLIMIT 是「GC 目标」，若默认 512MB 而容器 limit 也是
-	// 512MB，Go 会一路吃到 512MB 再发力 GC，RSS 长期紧贴容器上限、极易被 OOM kill。
+	// 内存预算优先取环境变量，其次容器 cgroup 限制，最后兜底 512MB。
+	// 初始 GOMEMLIMIT 取预算的 70%：Go 的软限是 GC 目标，设成预算值会让
+	// RSS 紧贴容器上限；之后由 memguard 按压力在 55%~70% 之间动态调节。
 	memLimit := effectiveMemoryLimit()
 	debug.SetGCPercent(50)
-	debug.SetMemoryLimit(memLimit)
+	debug.SetMemoryLimit(memLimit * 70 / 100)
 
 	return Config{
 		Addr:          env("ECY_ADDR", ":8080"),
@@ -137,13 +142,15 @@ func Load() Config {
 		// 缩略图缓存条数：默认 2 万，避免浏览大图库时反复重压同一批图。
 		PreviewCacheFiles: clampInt(envInt("ECY_PREVIEW_CACHE_FILES", 20000), 100, 1000000),
 		MemoryLimit:       memLimit,
+		MemSoftPct:        clampInt(envInt("ECY_MEM_SOFT_PCT", 75), 40, 90),
+		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 90), 60, 99),
 	}
 }
 
 // previewBudgetMP 依据堆上限推算并发的 RGBA 解码预算（百万像素）。
 // 经验值：同时解码的位图总量不超过堆预算的 ~1/3（4 字节/像素，取 1/12 像素比）。
 func previewBudgetMP(memLimit int64) int {
-	mp := int(memLimit / (12 * 1_000_000))
+	mp := int(memLimit / (16 * 1_000_000))
 	if mp < 8 {
 		mp = 8
 	}
@@ -153,9 +160,9 @@ func previewBudgetMP(memLimit int64) int {
 	return mp
 }
 
-// effectiveMemoryLimit 计算 Go 软内存上限：
-//  1. 环境变量 ECY_MEMORY_LIMIT（最高优先，便于精确控制）；
-//  2. cgroup 限制的 75%（容器里通常就是 memory limit）；
+// effectiveMemoryLimit 返回内存预算：
+//  1. 环境变量 ECY_MEMORY_LIMIT（显式指定，最高优先）；
+//  2. 容器 cgroup 限制（v2 memory.max / v1 limit_in_bytes）；
 //  3. 兜底 512MB。
 func effectiveMemoryLimit() int64 {
 	if v := os.Getenv("ECY_MEMORY_LIMIT"); v != "" {
@@ -164,11 +171,7 @@ func effectiveMemoryLimit() int64 {
 		}
 	}
 	if n := cgroupMemoryLimit(); n > 0 {
-		limit := n * 3 / 4
-		if limit < 64<<20 {
-			limit = 64 << 20 // 限制过小时给 Go 留出最低运行空间
-		}
-		return limit
+		return n
 	}
 	return 512 << 20
 }

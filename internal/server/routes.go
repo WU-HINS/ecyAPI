@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ecyapi/internal/config"
+	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
 )
 
@@ -96,6 +97,9 @@ type Server struct {
 	// previewJobs 后台补缓存队列（有界，满则丢弃）。
 	previewJobs chan previewJob
 
+	// mem 内存调节器：软目标 75%、红线 90%，按压力降档并通知上层降级。
+	mem *memguard.Governor
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -140,10 +144,15 @@ func New(cfg config.Config) (*Server, error) {
 	admin, _ := store.NewFileAdmin(st)
 	s := &Server{
 		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
-		access:       newAccessLog(),
-		previewGate:  newPreviewGate(cfg.PreviewMP),
-		galleryGate:  newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
-		previewJobs:  make(chan previewJob, 512),
+		access:      newAccessLog(),
+		previewGate: newPreviewGate(cfg.PreviewMP),
+		galleryGate: newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
+		previewJobs: make(chan previewJob, 512),
+		mem: memguard.New(memguard.Options{
+			LimitBytes: cfg.MemoryLimit,
+			SoftPct:    float64(cfg.MemSoftPct) / 100,
+			HardPct:    float64(cfg.MemHardPct) / 100,
+		}),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),
 	}
@@ -164,8 +173,8 @@ func New(cfg config.Config) (*Server, error) {
 	}
 
 	if cfg.MemoryLimit > 0 {
-		log.Printf("内存：GOMEMLIMIT=%d MB（cgroup 限制的 75%% 或 ECY_MEMORY_LIMIT）",
-			cfg.MemoryLimit/(1<<20))
+		log.Printf("内存预算：%d MB（软目标 %d%%、红线 %d%%；GOMEMLIMIT 由 memguard 动态调节）",
+			cfg.MemoryLimit>>20, cfg.MemSoftPct, cfg.MemHardPct)
 	}
 	s.baseURL = cfg.BaseURL
 	s.slogan, s.share, s.icp = defaultSlogan, defaultShare, defaultICP
@@ -186,6 +195,7 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	go s.sweepSessionsLoop()
 	go s.previewWorker()
+	go s.mem.Run(time.Second)
 
 	tpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
@@ -831,6 +841,8 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 // 其余请求投递给异步 writer，热路径上不加锁、不格式化。
 func (s *Server) logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 记录活跃时间（供内存调节器判断空闲），只做一次原子写。
+		s.mem.NoteRequest()
 		if strings.HasPrefix(r.URL.Path, "/pic/") {
 			next.ServeHTTP(w, r)
 			return
