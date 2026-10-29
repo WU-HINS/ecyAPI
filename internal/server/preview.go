@@ -34,7 +34,6 @@ import (
 	"golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
 
-	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
 	"ecyapi/internal/webp"
 )
@@ -99,17 +98,14 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	}
 	units := previewUnits(cfg.Width, cfg.Height)
 
-	// 事件级红线保护：解码后位图约 w*h*4，再叠加缩放后的目标位图。
+	// 事件级红线保护 + 按压力收紧预算：
+	//   p=0 → 用满 ECY_PREVIEW_MP；p 越大可用预算越小；p≥1 → 完全停止压缩。
+	// 单张解码后的位图约 w*h*4，再叠加缩放后的目标位图。
 	est := int64(cfg.Width)*int64(cfg.Height)*4 + int64(width)*int64(cfg.Height)*4
-	if !s.mem.Allow(est) {
-		s.handlePic(w, r)
-		return
-	}
-
-	// 内存压力降级：Warn 时不再内联压缩（只排后台补缓存），
-	// Critical 时完全停止压缩，保证请求路径零解码开销。
-	if lvl := s.mem.Level(); lvl >= memguard.Warn {
-		if lvl == memguard.Warn {
+	allowedMP := s.mem.ScaleMP(s.cfg.PreviewMP)
+	if allowedMP == 0 || units > allowedMP || !s.mem.Allow(est) {
+		// 还有余力就排后台补缓存；接近红线则连后台也停。
+		if s.mem.Permits() > 0 {
 			s.enqueuePreviewJob(previewJob{
 				path: path, cachePath: cachePath, width: width, units: units,
 			})

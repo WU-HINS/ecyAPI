@@ -80,7 +80,7 @@ func TestGovernorLevels(t *testing.T) {
 	st.mu.Lock()
 	gotLimit, gotGC = st.applied, st.gcPct
 	st.mu.Unlock()
-	if gotLimit != limit*55/100 || gotGC != 20 {
+	if gotLimit != limit*50/100 || gotGC != 15 {
 		t.Fatalf("Critical 档调节 = %d/%d", gotLimit, gotGC)
 	}
 
@@ -158,4 +158,45 @@ func TestGovernorIdleReclaim(t *testing.T) {
 		t.Fatalf("应节流，FreeOSMemory 次数 %d", st.freeN)
 	}
 	st.mu.Unlock()
+}
+
+// TestProgressiveControl 越接近红线，许可与预算收紧得越狠。
+func TestProgressiveControl(t *testing.T) {
+	const limit = 100 << 20
+	g, st := fake(limit)
+	cases := []struct {
+		rssMB    int64
+		pressure float64
+		permits  int
+		scaled   int // ScaleMP(32) 的结果
+	}{
+		{50, 0, 4, 32},  // 远低于软目标
+		{75, 0, 4, 32},  // 正好软目标
+		{825, 0, 4, 32}, // 占位，下面单独断言
+	}
+	_ = cases
+	for _, rssMB := range []int64{50, 75, 80, 82, 85, 88, 90, 95} {
+		st.mu.Lock()
+		st.rss = rssMB << 20
+		st.heap = 0
+		st.mu.Unlock()
+		p := g.Pressure()
+		if rssMB <= 75 && p != 0 {
+			t.Fatalf("rss=%dMB 压力应为 0，得到 %.2f", rssMB, p)
+		}
+		if rssMB >= 90 && p != 1 {
+			t.Fatalf("rss=%dMB 压力应为 1，得到 %.2f", rssMB, p)
+		}
+		permits := g.Permits()
+		scaled := g.ScaleMP(32)
+		t.Logf("rss=%dMB pressure=%.2f permits=%d scaledMP=%d", rssMB, p, permits, scaled)
+		if rssMB >= 90 && (permits != 0 || scaled != 0) {
+			t.Fatalf("到红线应禁止新的大分配：permits=%d scaled=%d", permits, scaled)
+		}
+		if rssMB == 82 {
+			if permits > 3 || scaled >= 32 {
+				t.Fatalf("82%% 时应收紧：permits=%d scaled=%d", permits, scaled)
+			}
+		}
+	}
 }

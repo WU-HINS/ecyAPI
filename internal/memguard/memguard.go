@@ -2,8 +2,10 @@
 //
 // 目标：
 //   - 高占用时把 RSS 稳定在容器限制的 ~75%；
-//   - 接近 90% 红线前主动降档（缩小 GOMEMLIMIT、压低 GOGC、通知上层降级），
-//     避免 Go 的软限被瞬时分配顶穿导致 OOM kill；
+//   - 从软目标（75%）到红线（90%）之间**按比例收紧**：越接近红线，
+//     允许的并发/预算越小、内存归还越频繁（Pressure 0→1）；
+//   - 达到红线触发紧急回收：进一步压 GOMEMLIMIT、加密 FreeOSMemory、
+//     并让大分配方（图库、缩略图）直接降级，避免 Go 的软限被瞬时分配顶穿；
 //   - 空闲时把页还给 OS，但严格节流，避免频繁 FreeOSMemory 造成的 GC/IO 抖动。
 //
 // 读 RSS 用 /proc/self/statm（一次系统调用），读堆用 runtime/metrics（不停世界）。
@@ -11,6 +13,7 @@ package memguard
 
 import (
 	"log"
+	"math"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -50,9 +53,10 @@ type Governor struct {
 	hardPct float64 // 红线，默认 0.90
 
 	level       atomic.Int32
-	lastReq     atomic.Int64 // 最近一次请求时间（UnixNano），用于判断空闲
-	lastFree    atomic.Int64 // 上次 FreeOSMemory（UnixNano）
-	appliedOnce bool         // 首次 Tick 也要把当前档位的参数落下去
+	ratioBits   atomic.Uint64 // 最近一次占用比例（math.Float64bits）
+	lastReq     atomic.Int64  // 最近一次请求时间（UnixNano），用于判断空闲
+	lastFree    atomic.Int64  // 上次 FreeOSMemory（UnixNano）
+	appliedOnce bool          // 首次 Tick 也要把当前档位的参数落下去
 
 	// 可注入，便于测试
 	readRSS  func() int64
@@ -104,6 +108,51 @@ func (g *Governor) Level() Level { return Level(g.level.Load()) }
 // NoteRequest 记录一次请求（由中间件调用，热路径只做一次原子写）。
 func (g *Governor) NoteRequest() { g.lastReq.Store(time.Now().UnixNano()) }
 
+// Pressure 返回软目标到红线之间的压力系数：0 = 未超过软目标，1 = 已到红线。
+// 上层用它按比例收紧并发/预算，而不是等跨档才动作。
+func (g *Governor) Pressure() float64 {
+	r := g.Ratio()
+	p := (r - g.softPct) / (g.hardPct - g.softPct)
+	if p < 0 {
+		return 0
+	}
+	if p > 1 {
+		return 1
+	}
+	return p
+}
+
+// Permits 返回当前允许的「大操作并发数」（基准 4）。
+// 越接近红线越少：p=0 → 4，p≈0.5 → 2，p≈0.8 → 1，p≥0.9 → 0（禁止新的大分配）。
+func (g *Governor) Permits() int {
+	const base = 4
+	p := g.Pressure()
+	if p >= 0.9 {
+		return 0
+	}
+	if p <= 0 {
+		return base
+	}
+	n := int(float64(base) * (1 - p*0.9))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// ScaleMP 按压力把像素预算按比例缩小；压力到红线返回 0（禁止压缩）。
+func (g *Governor) ScaleMP(base int) int {
+	p := g.Pressure()
+	if p >= 1 {
+		return 0
+	}
+	scaled := int(float64(base) * (1 - p))
+	if scaled < 1 {
+		scaled = 1
+	}
+	return scaled
+}
+
 // Allow 判断在当前占用下能否再分配约 need 字节。
 //
 // 这是「事件级」保护：Tick 之间（最多 1 秒）可能出现瞬时大分配，
@@ -130,6 +179,7 @@ func (g *Governor) Ratio() float64 {
 // Tick 执行一次调节（Run 每 5 秒调用；测试可直接调用）。
 func (g *Governor) Tick() {
 	ratio := g.Ratio()
+	g.ratioBits.Store(math.Float64bits(ratio))
 	prev := g.Level()
 	next := prev
 
@@ -152,9 +202,9 @@ func (g *Governor) Tick() {
 		log.Printf("内存压力: %s（占用 %.0f%% / 预算 %d MB）", next, ratio*100, g.limit>>20)
 		switch next {
 		case Critical:
-			// 红线：软限压到 55%，GOGC 压到 20，尽快把堆收下来。
-			g.apply(g.limit*55/100, 20)
-			g.maybeFreeOS(30 * time.Second)
+			// 红线：紧急回收——软限压到 50%，GOGC 压到 15，并且每 5 秒就想归还一次。
+			g.apply(g.limit*50/100, 15)
+			g.maybeFreeOS(5 * time.Second)
 		case Warn:
 			// 偏高：软限压到 65%，GOGC 40。
 			g.apply(g.limit*65/100, 40)
@@ -162,6 +212,16 @@ func (g *Governor) Tick() {
 			// 正常：软限 70%，让 RSS 稳定在限制的 ~75%。
 			g.apply(g.limit*70/100, 50)
 		}
+	}
+
+	// 压力越大，归还越频繁（但都有下限，避免 GC/IO 抖动）：
+	//   p≥0.5 → 每 15s；p≥0.8 → 每 8s；到红线由上面 Critical 分支按 5s 处理。
+	p := g.Pressure()
+	switch {
+	case p >= 0.8:
+		g.maybeFreeOS(8 * time.Second)
+	case p >= 0.5:
+		g.maybeFreeOS(15 * time.Second)
 	}
 
 	// 空闲回收：30 秒没有请求、且有明显堆占用时，最多每分钟归还一次。

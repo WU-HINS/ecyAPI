@@ -30,6 +30,16 @@ func newGalleryGate(concurrency int, wait time.Duration) *galleryGate {
 	return &galleryGate{sem: make(chan struct{}, concurrency), wait: wait}
 }
 
+// tryAcquire 非阻塞获取：内存压力高时不希望请求在队里占着连接等待。
+func (g *galleryGate) tryAcquire() bool {
+	select {
+	case g.sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 // acquire 尝试获得渲染名额：有空位立即返回，否则最多等 wait。
 func (g *galleryGate) acquire(ctx context.Context) bool {
 	select {

@@ -134,6 +134,13 @@ var defaultLogs = []string{
 
 // New 创建服务，使用本地文件数据源。
 func New(cfg config.Config) (*Server, error) {
+	// 兜底：直接构造 Config 的场景（测试、嵌入式）可能没设这些值。
+	if cfg.PreviewMP <= 0 {
+		cfg.PreviewMP = 32
+	}
+	if cfg.MemoryLimit <= 0 {
+		cfg.MemoryLimit = 512 << 20
+	}
 	st, err := store.NewFileStoreWithOptions(cfg.DataDir, store.Options{
 		MaxDepth:     cfg.MaxDepth,
 		ScanInterval: time.Duration(cfg.ScanIntervalSeconds) * time.Second,

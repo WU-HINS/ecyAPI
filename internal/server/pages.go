@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
 )
 
@@ -98,16 +97,23 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	if !contains(cats, current) {
 		current = cats[0]
 	}
-	// 内存逼近红线时直接快速失败：图库是最大的单次分配方，不能硬顶。
-	if s.mem.Level() == memguard.Critical {
+	// 内存越接近红线，控制越严：
+	//   p≥0.9（接近红线）→ 直接拒绝，不做任何渲染；
+	//   p≥0.5 → 不排队，拿不到名额就返回 503；
+	//   否则按正常排队（最多等 ECY_GALLERY_WAIT）。
+	pressure := s.mem.Pressure()
+	if s.mem.Permits() == 0 {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
 		return
 	}
-
-	// 图库按「展示全部」设计：单次渲染开销随图片数增长，靠并发闸门把内存钉死。
-	// 同时渲染数受 ECY_GALLERY_CONCURRENCY 限制，排队超过 ECY_GALLERY_WAIT 返回 503。
-	if !s.galleryGate.acquire(r.Context()) {
+	var acquired bool
+	if pressure >= 0.5 {
+		acquired = s.galleryGate.tryAcquire()
+	} else {
+		acquired = s.galleryGate.acquire(r.Context())
+	}
+	if !acquired {
 		w.Header().Set("Retry-After", strconv.Itoa(s.cfg.GalleryWaitSeconds))
 		http.Error(w, "图库正在渲染大分类，请稍后重试", http.StatusServiceUnavailable)
 		return
