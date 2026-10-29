@@ -66,8 +66,8 @@ type Config struct {
 	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
 	// 超时则先启动服务、扫描在后台继续；0 表示等扫描完成再启动。
 	StartupWaitSeconds int
-	// VerifyIntervalSeconds 强制完整校验间隔（ECY_VERIFY_INTERVAL，默认 60 秒）。
-	// 用于发现「同名文件被原地替换」（大小/mtime 变了才重建）；库大时调大更省。
+	// VerifyIntervalSeconds 强制完整校验间隔（ECY_VERIFY_INTERVAL，默认 3600 秒 = 1 小时）。
+	// 用于发现「同名文件被原地替换」（大小/mtime 变了才重建）；每次要 stat 全目录，默认给得比较宽。
 	VerifyIntervalSeconds int
 	// SnapshotTTLSeconds 磁盘快照 TTL（ECY_SNAPSHOT_TTL，默认 900 秒 = 15 分钟）。
 	// 启动时有不超过该时长的快照就直接读回、跳过扫盘；运行期按同一间隔落盘。0 关闭。
@@ -145,7 +145,7 @@ func Load() Config {
 		GalleryWaitSeconds:    clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
-		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 60), 5, 86400),
+		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
 		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 900), 0, 86400),
 		DisableLinkVerify:     isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：未显式设置时按堆上限自适应（约 1/12，夹在 8~64MP），

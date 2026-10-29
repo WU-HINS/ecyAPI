@@ -339,7 +339,7 @@ type Options struct {
 	// 超时后先对外提供服务（返回已扫描到的部分），扫描在后台继续；
 	// 0 表示阻塞到扫描完成。
 	StartupWait time.Duration
-	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 60 秒）。
+	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
 	// SnapshotTTL 磁盘快照的 TTL（ECY_SNAPSHOT_TTL，默认 15 分钟）。
@@ -476,7 +476,7 @@ func isImageFile(name string) bool {
 
 // dirState 一个目录上次扫描的状态。
 // 目录内条目名集合未变时直接复用上次结果，避免每 3 秒把整库文件 stat 一遍；
-// 每 verifyInterval（ECY_VERIFY_INTERVAL，默认 60 秒）仍强制完整校验一次，
+// 每 verifyInterval（ECY_VERIFY_INTERVAL，默认 1 小时）仍强制完整校验一次，
 // 以捕获「同名文件被原地替换」。
 type dirState struct {
 	names    []string     // 上次的条目名（ReadDir 已按文件名排序）
@@ -486,10 +486,11 @@ type dirState struct {
 	skipped  []string     // 本目录下被跳过的子目录与原因
 }
 
-// defaultVerifyInterval 目录条目未变化时，两次完整 stat+方向校验的默认间隔。
+// defaultVerifyInterval 目录条目未变化时，两次完整 stat+方向校验的默认间隔（1 小时）。
 // 只影响「同名文件被原地覆盖」这一种情况的生效延迟，正常增删改立即生效。
-// 可用 ECY_VERIFY_INTERVAL 调整：库越大越该调大（每次都要 stat 全部文件）。
-const defaultVerifyInterval = 60 * time.Second
+// 每次完整校验要把该目录下所有文件 stat 一遍，大库上很贵，因此默认给到 1 小时；
+// 可用 ECY_VERIFY_INTERVAL 调整。
+const defaultVerifyInterval = time.Hour
 
 // scanCtx 一次扫描的上下文（避免 scanDir 参数越传越长）。
 type scanCtx struct {
