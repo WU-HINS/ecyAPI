@@ -63,6 +63,9 @@ type Config struct {
 	// ScanIntervalSeconds 后台增量刷新间隔（ECY_SCAN_INTERVAL，默认 3 秒）。
 	// 扫描已移出请求路径，文件增删在这个间隔内生效。
 	ScanIntervalSeconds int
+	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
+	// 超时则先启动服务、扫描在后台继续；0 表示等扫描完成再启动。
+	StartupWaitSeconds int
 	// DisableLinkVerify 关闭 302 前的目标文件校验（ECY_VERIFY_LINKS=off）。
 	// 默认开启：多一次热缓存 stat（约 1~5µs），换来「绝不 302 到已删除文件」。
 	// 用「关闭」语义是为了让零值结构体默认就是安全行为。
@@ -135,6 +138,7 @@ func Load() Config {
 		GalleryConcurrency:  clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
 		GalleryWaitSeconds:  clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds: clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
+		StartupWaitSeconds:  clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
 		DisableLinkVerify:   isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：未显式设置时按堆上限自适应（约 1/12，夹在 8~64MP），
 		// 4K 图约 8MP：512MB 容器 → 32MP（2 张并发），192MB 容器 → 15MP（1 张）。

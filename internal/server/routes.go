@@ -150,6 +150,7 @@ func New(cfg config.Config) (*Server, error) {
 	st, err := store.NewFileStoreWithOptions(cfg.DataDir, store.Options{
 		MaxDepth:     cfg.MaxDepth,
 		ScanInterval: time.Duration(cfg.ScanIntervalSeconds) * time.Second,
+		StartupWait:  time.Duration(cfg.StartupWaitSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, err
@@ -796,7 +797,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/sso/unbind", s.handleSSOUnbind)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		// 扫描中仍然返回 200（进程健康、能服务），但把状态标出来，便于排查
+		// 「刚启动时分类不全」；需要严格就绪探针的编排可以据此判断。
+		if s.st.Scanning() {
+			fmt.Fprint(w, "ok scanning")
+			return
+		}
 		fmt.Fprint(w, "ok")
+	})
+	// /readyz 是严格就绪：首次扫描没跑完就返回 503，供 K8s readinessProbe 使用。
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if s.st.Scanning() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, "scanning")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "ready")
 	})
 
 	return s.logMiddleware(corsMiddleware(mux))

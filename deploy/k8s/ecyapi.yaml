@@ -64,7 +64,8 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /app/data }
           readinessProbe:
-            httpGet: { path: /healthz, port: http }
+            # /readyz 在首次扫描未完成时返回 503，避免把流量打到还没加载完的实例
+            httpGet: { path: /readyz, port: http }
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:

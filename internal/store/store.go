@@ -190,6 +190,8 @@ type Store interface {
 	Verify(ctx context.Context, category, name string) bool
 	// Generation 文件索引的代次：每次扫描发现变化就 +1，用于缓存失效。
 	Generation() uint64
+	// Scanning 是否正在扫描磁盘（后台预热据此让路）。
+	Scanning() bool
 }
 
 // Admin 后台管理写操作接口。
@@ -303,7 +305,14 @@ type fileStore struct {
 	aggs map[string]*aggKids
 	// gen 索引代次：扫描发现任何目录变化就 +1，供图库 HTML 之类的外层缓存失效。
 	gen atomic.Uint64
+	// scanning 是否有扫描在进行（供后台预热让路、健康检查展示）。
+	scanning atomic.Bool
+	// scannedOnce 首次扫描是否已完成（首次扫描会分批发布部分结果）。
+	scannedOnce atomic.Bool
 }
+
+// Scanning 是否正在扫描磁盘。
+func (f *fileStore) Scanning() bool { return f.scanning.Load() }
 
 // Generation 返回当前索引代次。
 func (f *fileStore) Generation() uint64 { return f.gen.Load() }
@@ -320,6 +329,10 @@ type Options struct {
 	// ScanInterval 后台刷新间隔（ECY_SCAN_INTERVAL），0 取默认 3 秒。
 	// 扫描不再发生在请求路径上：请求只读快照，后台按此间隔增量刷新。
 	ScanInterval time.Duration
+	// StartupWait 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
+	// 超时后先对外提供服务（返回已扫描到的部分），扫描在后台继续；
+	// 0 表示阻塞到扫描完成。
+	StartupWait time.Duration
 }
 
 // NewFileStoreDepth 指定分类层级上限创建存储（ECY_MAX_DEPTH）。
@@ -351,11 +364,38 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
-	if err := fs.scan(); err != nil {
-		return nil, err
+	// 首次扫描放后台：大库全量扫描可能几十秒，不能让进程一直不监听。
+	fs.scanning.Store(true)
+	scanDone := make(chan error, 1)
+	go func() {
+		err := fs.scan()
+		fs.scanning.Store(false)
+		scanDone <- err
+	}()
+	if opt.StartupWait > 0 {
+		select {
+		case err := <-scanDone:
+			if err != nil {
+				return nil, err
+			}
+		case <-time.After(opt.StartupWait):
+			log.Printf("首次扫描超过 %s 仍未完成：先对外提供服务（已加载 %d 个分类），扫描在后台继续",
+				opt.StartupWait, fs.loadedCategories())
+		}
+	} else {
+		if err := <-scanDone; err != nil {
+			return nil, err
+		}
 	}
 	go fs.refreshLoop()
 	return fs, nil
+}
+
+// loadedCategories 当前已发布到读路径的分类数量（扫描进度示意）。
+func (f *fileStore) loadedCategories() int {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.cache)
 }
 
 // defaultScanInterval 后台刷新默认间隔。
@@ -373,7 +413,9 @@ func (f *fileStore) refreshLoop() {
 			return
 		}
 		f.reloadMu.Lock()
+		f.scanning.Store(true)
 		err := f.scan()
+		f.scanning.Store(false)
 		f.reloadMu.Unlock()
 		if err != nil {
 			log.Printf("后台刷新失败: %v", err)
@@ -408,6 +450,10 @@ type scanCtx struct {
 	seen    map[string]bool // 已扫描过的真实目录路径，用于符号链接回环/重复检测
 	skipped []string        // 被跳过的目录与原因，供启动日志诊断
 	changed bool            // 本次扫描是否有目录被重新读取（用于代次自增）
+
+	// 首次扫描时分批发布部分结果，让服务能先对外提供已有数据。
+	progressive bool
+	lastPublish time.Time
 }
 
 // maxScanWarnings 启动日志里最多展示多少条「跳过原因」。
@@ -427,6 +473,8 @@ func (f *fileStore) scan() error {
 		sets: make(map[string]*categorySet, len(f.cache)),
 		aggs: make(map[string]*aggKids, len(f.aggs)),
 		seen: map[string]bool{filepath.Clean(f.dir): true},
+		// 首次扫描（库还空着）分批发布，避免「要么全有、要么全无」。
+		progressive: !f.scannedOnce.Load(),
 	}
 	if err := f.scanDir("", 0, sc, true); err != nil {
 		return err
@@ -456,10 +504,28 @@ func (f *fileStore) scan() error {
 	f.skipped = warns
 	f.mu.Unlock()
 	f.dirs = sc.next
+	f.scannedOnce.Store(true)
 	if sc.changed {
 		f.gen.Add(1)
 	}
 	return nil
+}
+
+// publishPartial 把「已扫完的那部分」发布出去（浅拷贝，底层集合不可变）。
+// 只用于首次扫描：刷新扫描必须保持「要么旧的全量、要么新的全量」。
+func (f *fileStore) publishPartial(sc *scanCtx) {
+	sets := make(map[string]*categorySet, len(sc.sets))
+	for k, v := range sc.sets {
+		sets[k] = v
+	}
+	aggs := make(map[string]*aggKids, len(sc.aggs))
+	for k, v := range sc.aggs {
+		aggs[k] = v
+	}
+	f.mu.Lock()
+	f.cache = sets
+	f.aggs = aggs
+	f.mu.Unlock()
 }
 
 // dirEntryKind 判断条目是否为目录，并区分是否通过符号链接。
@@ -519,6 +585,11 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 		state.set = f.buildSet(rel, dirPath, entries)
 		if state.set != nil {
 			sc.sets[rel] = state.set
+			// 首次扫描：每 300ms 把已完成的部分发布一次。
+			if sc.progressive && time.Since(sc.lastPublish) > 300*time.Millisecond {
+				f.publishPartial(sc)
+				sc.lastPublish = time.Now()
+			}
 		}
 	}
 	if depth < f.maxDepth {
@@ -665,7 +736,9 @@ func (f *fileStore) reload() error {
 	f.reloadMu.Lock()
 	defer f.reloadMu.Unlock()
 	f.forceVerify = true
+	f.scanning.Store(true)
 	err := f.scan()
+	f.scanning.Store(false)
 	f.forceVerify = false
 	return err
 }

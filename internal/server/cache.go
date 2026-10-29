@@ -256,6 +256,10 @@ func (s *Server) handleAdminCacheCancel(w http.ResponseWriter, r *http.Request) 
 //
 // 返回 true 表示可以继续；false 表示应暂时停手。
 func (s *Server) prewarmYield() bool {
+	// 启动/刷新扫描优先级最高：扫描期间预热完全让路。
+	if s.st.Scanning() {
+		return false
+	}
 	if s.mem.RecentlyActive(time.Second) {
 		return false
 	}
