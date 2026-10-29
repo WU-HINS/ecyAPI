@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -49,7 +50,7 @@ func TestSnapshotRestore(t *testing.T) {
 	}
 }
 
-// TestSnapshotStaleIgnored 过期快照必须被忽略，回退到全量扫描。
+// TestSnapshotStaleIgnored 超过「最大有效期」的快照必须被忽略，回退到全量扫描。
 func TestSnapshotStaleIgnored(t *testing.T) {
 	dir := makeTree(t, 5, 2)
 	st, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
@@ -57,12 +58,9 @@ func TestSnapshotStaleIgnored(t *testing.T) {
 	if err := fs.saveSnapshot(); err != nil {
 		t.Fatal(err)
 	}
-	// 把快照改成 2 小时前
-	old := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(fs.snapshotPath(), old, old); err != nil {
-		t.Fatal(err)
-	}
-	st2, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: 15 * time.Minute})
+	// 把快照内容里的 SavedAt 改成 2 小时前（有效期判定看的是它，不是文件 mtime）
+	rewriteSnapshotTime(t, fs.snapshotPath(), time.Now().Add(-2*time.Hour))
+	st2, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour, SnapshotMaxAge: 15 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,5 +220,59 @@ func TestSnapshotRefreshedWhenIdle(t *testing.T) {
 	}
 	if age := time.Since(doc.SavedAt); age > 120*time.Millisecond {
 		t.Fatalf("快照未被周期刷新：已 %v 旧", age)
+	}
+}
+
+// rewriteSnapshotTime 改写快照内容里的 SavedAt（模拟一份旧快照）。
+func rewriteSnapshotTime(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	fh, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := gzip.NewReader(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc snapDoc
+	if err := json.NewDecoder(zr).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	_ = zr.Close()
+	_ = fh.Close()
+	doc.SavedAt = when
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if err := json.NewEncoder(zw).Encode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	_ = zw.Close()
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSnapshotOldButWithinMaxAge 默认 30 天有效期内，几小时前的快照仍然可用。
+func TestSnapshotOldButWithinMaxAge(t *testing.T) {
+	dir := makeTree(t, 5, 2)
+	st, _ := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
+	fs := st.(*fileStore)
+	if err := fs.saveSnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	rewriteSnapshotTime(t, fs.snapshotPath(), time.Now().Add(-6*time.Hour))
+
+	st2, err := NewFileStoreWithOptions(dir, Options{
+		StartupWait: 0, SnapshotTTL: time.Hour,
+		SnapshotMaxAge: 30 * 24 * time.Hour, // 默认值
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st2.Scanning() {
+		t.Fatal("6 小时前的快照应被接受，不该触发扫描")
+	}
+	if cats, _ := st2.Categories(context.Background()); len(cats) != 5 {
+		t.Fatalf("应恢复 5 个分类，实际 %d", len(cats))
 	}
 }

@@ -73,9 +73,12 @@ type Config struct {
 	// VerifyIntervalSeconds 强制完整校验间隔（ECY_VERIFY_INTERVAL，默认 3600 秒 = 1 小时）。
 	// 用于发现「同名文件被原地替换」（大小/mtime 变了才重建）；每次要 stat 全目录，默认给得比较宽。
 	VerifyIntervalSeconds int
-	// SnapshotTTLSeconds 磁盘快照 TTL（ECY_SNAPSHOT_TTL，默认 300 秒 = 5 分钟）。
-	// 启动时有不超过该时长的快照就直接读回、跳过扫盘；运行期按同一间隔落盘。0 关闭。
+	// SnapshotTTLSeconds 运行期把内存索引落盘的周期（ECY_SNAPSHOT_TTL，默认 300 秒 = 5 分钟）。
+	// 每个周期无条件重写一次；0 表示关闭快照。
 	SnapshotTTLSeconds int
+	// SnapshotMaxAgeSeconds 启动时接受的最大快照年龄（ECY_SNAPSHOT_MAX_AGE，默认 30 天）。
+	// 过期快照会被忽略、改为全量扫描；0 表示不做过期判断。
+	SnapshotMaxAgeSeconds int
 	// DisableLinkVerify 关闭 302 前的目标文件校验（ECY_VERIFY_LINKS=off）。
 	// 默认开启：多一次热缓存 stat（约 1~5µs），换来「绝不 302 到已删除文件」。
 	// 用「关闭」语义是为了让零值结构体默认就是安全行为。
@@ -152,6 +155,7 @@ func Load() Config {
 		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
 		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 300), 0, 86400),
+		SnapshotMaxAgeSeconds: clampInt(envInt("ECY_SNAPSHOT_MAX_AGE", 30*24*3600), 0, 365*24*3600),
 		DisableLinkVerify:     isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：未显式设置时按堆上限自适应（约 1/12，夹在 8~64MP），
 		// 4K 图约 8MP：512MB 容器 → 32MP（2 张并发），192MB 容器 → 15MP（1 张）。

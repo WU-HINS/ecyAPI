@@ -102,6 +102,7 @@ func (f *fileStore) saveSnapshot() error {
 }
 
 // loadSnapshot 尝试用快照恢复；返回 false 表示没有可用快照（走全量扫描）。
+// maxAge<=0 表示不做过期判断。
 func (f *fileStore) loadSnapshot(maxAge time.Duration) (bool, error) {
 	fh, err := os.Open(f.snapshotPath())
 	if err != nil {

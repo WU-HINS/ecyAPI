@@ -153,6 +153,7 @@ func New(cfg config.Config) (*Server, error) {
 		ScanInterval:      time.Duration(cfg.ScanIntervalSeconds) * time.Second,
 		StartupWait:       time.Duration(cfg.StartupWaitSeconds) * time.Second,
 		SnapshotTTL:       time.Duration(cfg.SnapshotTTLSeconds) * time.Second,
+		SnapshotMaxAge:    time.Duration(cfg.SnapshotMaxAgeSeconds) * time.Second,
 		VerifyInterval:    time.Duration(cfg.VerifyIntervalSeconds) * time.Second,
 		ParentAggDirsOnly: cfg.ParentAggDirsOnly,
 	})

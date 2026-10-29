@@ -352,10 +352,13 @@ type Options struct {
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
-	// SnapshotTTL 磁盘快照的 TTL（ECY_SNAPSHOT_TTL，默认 15 分钟）。
-	// 启动时若有不超过该时长的快照，直接读回、跳过全量扫描；
-	// 运行期按同一间隔把内存索引落盘（仅在有变化时）。0 表示关闭快照。
+	// SnapshotTTL 运行期把内存索引落盘的周期（ECY_SNAPSHOT_TTL，默认 5 分钟）。
+	// 每个周期无条件重写一次，保证重启时快照总是新鲜的。0 表示关闭快照。
 	SnapshotTTL time.Duration
+	// SnapshotMaxAge 启动时接受的最大快照年龄（ECY_SNAPSHOT_MAX_AGE，默认 30 天）。
+	// 快照再旧也只是「启动时的初值」，随后 3 秒一次的增量刷新会按文件名把增删纠正过来，
+	// 所以这里给得很宽。0 表示不做过期判断。
+	SnapshotMaxAge time.Duration
 }
 
 // NewFileStoreDepth 指定分类层级上限创建存储（ECY_MAX_DEPTH）。
@@ -395,7 +398,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	}
 	// 1) 先尝试磁盘快照：命中就不扫盘，毫秒级就绪。
 	if opt.SnapshotTTL > 0 {
-		ok, err := fs.loadSnapshot(opt.SnapshotTTL)
+		ok, err := fs.loadSnapshot(opt.SnapshotMaxAge)
 		if err != nil {
 			log.Printf("快照不可用，改为全量扫描：%v", err)
 		} else if ok {
