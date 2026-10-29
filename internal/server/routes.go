@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -922,6 +923,11 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.renderHome(w, r)
 		return
 	}
+	// 全分类随机：/@img 从所有已注册分类里抽一个，横竖按设备自动。
+	if strings.EqualFold(path, "@img") {
+		s.serveAllRandom(w, r)
+		return
+	}
 	s.mu.RLock()
 	ep, ok := s.epIndex[path]
 	s.mu.RUnlock()
@@ -940,6 +946,51 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.NotFound(w, r)
+}
+
+// serveAllRandom 全分类随机：先从「所有已注册分类」里随机挑一个，再在该分类里随机取图。
+// 横竖按设备自动（桌面横图 / 移动竖图），可用 ?orientation= 覆盖；
+// 抽到的分类恰好没有该方向的图（或全是死链）时会换一个分类再试，
+// 避免出现「某些分类永远抽不到图」的空转。
+func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
+	want := linkOrientation(r, endpoint{auto: true})
+	cats, err := s.st.Categories(r.Context())
+	if err != nil || len(cats) == 0 {
+		plainError(w, "No links found.", http.StatusNotFound)
+		return
+	}
+
+	suffix := ""
+	if v := r.URL.Query().Get("w"); v != "" {
+		suffix = "?w=" + url.QueryEscape(v)
+	}
+
+	start := rand.IntN(len(cats))
+	var picked store.Row
+	found := false
+	// 最多试 8 个（或全部分类），够避开空分类，又不会在百万分类时扫太久。
+	tries := len(cats)
+	if tries > 8 {
+		tries = 8
+	}
+	for i := 0; i < tries; i++ {
+		cat := cats[(start+i)%len(cats)]
+		if row, ok := s.pickVerified(r, cat, want); ok {
+			picked, found = row, true
+			break
+		}
+	}
+	if !found {
+		plainError(w, "No links found.", http.StatusNotFound)
+		return
+	}
+
+	// ?json 返回纯文本链接，与 /{分类}?json 的行为保持一致。
+	if _, ok := r.URL.Query()["json"]; ok {
+		plainText(w, s.absoluteURL(r, picked.Link)+suffix)
+		return
+	}
+	http.Redirect(w, r, picked.Link+suffix, http.StatusFound)
 }
 
 // resolveOrientation 解析方向参数；auto 表示跟随 UA（移动端竖图、桌面横图）。

@@ -60,7 +60,9 @@ const (
 // 也不会被后台创建，避免 /pic、/json 等被遮蔽。
 var reservedTop = map[string]bool{
 	"pic": true, "json": true, "admin": true, "img": true,
-	"docs": true, "healthz": true, "favicon.ico": true,
+	"docs": true, "healthz": true, "favicon.ico": true, "readyz": true,
+	// 全分类随机入口（等价于往所有分类里抽一个），见 server.handleRoot。
+	"@img": true,
 }
 
 // IsReservedTop 判断分类路径的首段是否与内置路由冲突。
