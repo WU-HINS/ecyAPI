@@ -300,6 +300,9 @@ type fileStore struct {
 	dirs map[string]*dirState
 	// verifyInterval 强制完整校验间隔（ECY_VERIFY_INTERVAL）。
 	verifyInterval time.Duration
+	// parentAggDirsOnly 父目录聚合模式：true = 仅对「自身没有图片」的父目录聚合；
+	// false（默认）= 自身有图片也把子目录聚合进来（ECY_PARENT_AGG=dirs_only 可关闭）。
+	parentAggDirsOnly bool
 	// forceVerify 下一次 scan 强制完整校验（写路径的 reload 使用），
 	// 保证上传/删除后即使条目名未变也能立即反映文件内容变化。
 	forceVerify bool
@@ -343,6 +346,9 @@ type Options struct {
 	// 超时后先对外提供服务（返回已扫描到的部分），扫描在后台继续；
 	// 0 表示阻塞到扫描完成。
 	StartupWait time.Duration
+	// ParentAggDirsOnly 父目录聚合模式：true = 仅聚合「自身没有图片」的父目录；
+	// false（默认）= 自身有图片时也把子目录聚合进来（ECY_PARENT_AGG=with_files）。
+	ParentAggDirsOnly bool
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
@@ -375,13 +381,14 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		verify = defaultVerifyInterval
 	}
 	fs := &fileStore{
-		dir:             dir,
-		maxDepth:        maxDepth,
-		refreshInterval: interval,
-		verifyInterval:  verify,
-		cache:           map[string]*categorySet{},
-		oriMeta:         map[string]map[string]orientMeta{},
-		dirs:            map[string]*dirState{},
+		dir:               dir,
+		maxDepth:          maxDepth,
+		refreshInterval:   interval,
+		verifyInterval:    verify,
+		parentAggDirsOnly: opt.ParentAggDirsOnly,
+		cache:             map[string]*categorySet{},
+		oriMeta:           map[string]map[string]orientMeta{},
+		dirs:              map[string]*dirState{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
@@ -832,14 +839,21 @@ func (f *fileStore) buildAgg(rel string, subdirs []string, sc *scanCtx) {
 	if rel == "" || len(subdirs) == 0 {
 		return
 	}
-	if _, isCategory := sc.sets[rel]; isCategory {
-		return // 自己有图片，就是普通分类
+	own, isCategory := sc.sets[rel]
+	if isCategory && f.parentAggDirsOnly {
+		return // dirs_only 模式：自己有图片就是普通分类，不聚合子目录
 	}
 	kids := make([]string, 0, len(subdirs))
 	for _, sub := range subdirs {
 		kids = append(kids, joinRel(rel, sub))
 	}
-	if agg := newAggKids(kids, sc.sets, sc.aggs); agg != nil {
+	var agg *aggKids
+	if isCategory {
+		agg = newAggKidsWithSelf(kids, sc.sets, sc.aggs, own) // with_files：自己的图 + 子目录
+	} else {
+		agg = newAggKids(kids, sc.sets, sc.aggs)
+	}
+	if agg != nil {
 		sc.aggs[rel] = agg
 	}
 }
@@ -1077,11 +1091,12 @@ func (f *fileStore) Count(ctx context.Context, category string) (int, error) {
 // 由调用方决定是否回退（服务端在无横图/竖图时会退回全集）。
 func (f *fileStore) CountWith(ctx context.Context, category string, want Orientation) (int, error) {
 	_ = ctx
+	// 聚合优先：with_files 模式下父目录的聚合 = 自身图片 + 子目录。
+	if agg := f.aggFor(category); agg != nil {
+		return agg.bucket(want).total, nil
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
-		if agg := f.aggFor(category); agg != nil {
-			return agg.bucket(want).total, nil
-		}
 		return 0, ErrNotFound
 	}
 	return len(set.pick(want)), nil
@@ -1097,16 +1112,16 @@ func (f *fileStore) Random(ctx context.Context, category string, limit int) ([]R
 // 只对前 limit 个位置做 Fisher-Yates 洗牌，分配与开销都是 O(limit)。
 func (f *fileStore) RandomWith(ctx context.Context, category string, limit int, want Orientation) ([]Row, error) {
 	_ = ctx
+	// 聚合优先：父目录（含自身图片 + 子目录）走聚合桶。
+	if agg := f.aggFor(category); agg != nil {
+		rows := agg.bucket(want).randomRows(limit)
+		if len(rows) == 0 {
+			return nil, ErrNotFound
+		}
+		return rows, nil
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
-		// 父目录：从子分类聚合里取（/pixiv 能出图的关键）。
-		if agg := f.aggFor(category); agg != nil {
-			rows := agg.bucket(want).randomRows(limit)
-			if len(rows) == 0 {
-				return nil, ErrNotFound
-			}
-			return rows, nil
-		}
 		return nil, ErrNotFound
 	}
 	entries := set.pick(want)
@@ -1160,13 +1175,14 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 	if index < 1 {
 		return Row{}, ErrNotFound
 	}
+	if agg := f.aggFor(category); agg != nil {
+		if row, ok := agg.bucket(want).rowAt(index - 1); ok {
+			return row, nil
+		}
+		return Row{}, ErrNotFound
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
-		if agg := f.aggFor(category); agg != nil {
-			if row, ok := agg.bucket(want).rowAt(index - 1); ok {
-				return row, nil
-			}
-		}
 		return Row{}, ErrNotFound
 	}
 	entries := set.pick(want)
@@ -1180,6 +1196,28 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 // 大分类的后台预览只要 40 条，不必先复制上万条记录。
 func (f *fileStore) LinksPage(ctx context.Context, category string, offset, limit int) ([]Row, int, error) {
 	_ = ctx
+	// 聚合优先：分页只按需取 rowAt，不会把整棵子树的条目materialize 出来。
+	if agg := f.aggFor(category); agg != nil {
+		b := &agg.all
+		total := b.total
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if limit <= 0 || end > total {
+			end = total
+		}
+		rows := make([]Row, 0, end-offset)
+		for i := offset; i < end; i++ {
+			if row, ok := b.rowAt(i); ok {
+				rows = append(rows, row)
+			}
+		}
+		return rows, total, nil
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
 		return nil, 0, ErrNotFound
@@ -1204,11 +1242,11 @@ func (f *fileStore) LinksPage(ctx context.Context, category string, offset, limi
 
 func (f *fileStore) Links(ctx context.Context, category string) ([]Row, error) {
 	_ = ctx
+	if agg := f.aggFor(category); agg != nil {
+		return agg.bucket(OrientationAny).allRows(), nil
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
-		if agg := f.aggFor(category); agg != nil {
-			return agg.bucket(OrientationAny).allRows(), nil
-		}
 		return nil, ErrNotFound
 	}
 	rows := make([]Row, 0, len(set.all))

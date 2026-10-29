@@ -66,6 +66,10 @@ type Config struct {
 	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
 	// 超时则先启动服务、扫描在后台继续；0 表示等扫描完成再启动。
 	StartupWaitSeconds int
+	// ParentAggDirsOnly 父目录聚合模式（ECY_PARENT_AGG）：
+	//   with_files（默认）= 父目录自己有图片时，聚合 = 自己的图片 + 子目录；
+	//   dirs_only        = 只有「自身没有图片」的父目录才聚合子目录。
+	ParentAggDirsOnly bool
 	// VerifyIntervalSeconds 强制完整校验间隔（ECY_VERIFY_INTERVAL，默认 3600 秒 = 1 小时）。
 	// 用于发现「同名文件被原地替换」（大小/mtime 变了才重建）；每次要 stat 全目录，默认给得比较宽。
 	VerifyIntervalSeconds int
@@ -145,6 +149,7 @@ func Load() Config {
 		GalleryWaitSeconds:    clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
+		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
 		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 300), 0, 86400),
 		DisableLinkVerify:     isOff(os.Getenv("ECY_VERIFY_LINKS")),

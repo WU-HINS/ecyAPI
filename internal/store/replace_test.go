@@ -12,6 +12,9 @@ import (
 
 func writePNG(t *testing.T, path string, w, h int) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	f, err := os.Create(path)
 	if err != nil {

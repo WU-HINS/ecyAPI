@@ -2,10 +2,10 @@ package store
 
 import "math/rand/v2"
 
-// 父目录聚合：data/categories/pixiv/ 下只有子目录、自身没有图片时，
-// /pixiv 默认是没有随机结果的。这里把子分类的图片集合按数量加权聚合，
-// 让「父目录」也能随机出图（/pixiv、/json?pixiv），但不出现在分类列表里，
-// 避免图库/后台重复计数。
+// 父目录聚合：把子分类的图片集合按数量加权聚合，让「父目录」也能随机出图
+// （/pixiv、/json?pixiv）。两种模式（ECY_PARENT_AGG）：
+//   - with_files（默认）：父目录自己有图片时，聚合 = 自己的图片 + 子目录；
+//   - dirs_only：父目录自己有图片时就是普通分类，不聚合子目录。
 //
 // 内存开销：每个父目录只保存对子分类切片（slice header）的引用，不复制图片条目。
 
@@ -35,10 +35,16 @@ func (a *aggKids) bucket(want Orientation) *aggBucket {
 
 // newAggKids 由子目录名构造聚合（子目录可能本身也是聚合目录，已展开为叶子）。
 func newAggKids(children []string, sets map[string]*categorySet, aggs map[string]*aggKids) *aggKids {
+	return newAggKidsWithSelf(children, sets, aggs, nil)
+}
+
+// newAggKidsWithSelf 与 newAggKids 相同，但把父目录自身的图片也并进聚合。
+// 「有文件聚合子目录」模式用它：/pixiv 既能取到自己的图，也能取到子目录的图。
+func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, self *categorySet) *aggKids {
 	agg := &aggKids{
-		all:  buildAggBucket(children, sets, aggs, OrientationAny),
-		land: buildAggBucket(children, sets, aggs, OrientationLandscape),
-		port: buildAggBucket(children, sets, aggs, OrientationPortrait),
+		all:  buildAggBucket(children, sets, aggs, OrientationAny, self),
+		land: buildAggBucket(children, sets, aggs, OrientationLandscape, self),
+		port: buildAggBucket(children, sets, aggs, OrientationPortrait, self),
 	}
 	if agg.all.total == 0 {
 		return nil
@@ -46,8 +52,16 @@ func newAggKids(children []string, sets map[string]*categorySet, aggs map[string
 	return agg
 }
 
-func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation) aggBucket {
+func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation, self *categorySet) aggBucket {
 	var b aggBucket
+	// 父目录自己的图片排在前面，保证聚合里的序号稳定、可二分。
+	if self != nil {
+		if entries := self.pick(want); len(entries) > 0 {
+			b.slices = append(b.slices, entries)
+			b.total += len(entries)
+			b.cum = append(b.cum, b.total)
+		}
+	}
 	for _, child := range children {
 		if set, ok := sets[child]; ok {
 			entries := set.pick(want)
