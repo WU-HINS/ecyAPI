@@ -309,6 +309,10 @@ type fileStore struct {
 	scanning atomic.Bool
 	// scannedOnce 首次扫描是否已完成（首次扫描会分批发布部分结果）。
 	scannedOnce atomic.Bool
+	// dirty 自上次写快照以来索引是否有变化。
+	dirty atomic.Bool
+	// snapshotErrLogged 写快照失败是否已提示过（避免只读部署刷屏）。
+	snapshotErrLogged atomic.Bool
 }
 
 // Scanning 是否正在扫描磁盘。
@@ -333,6 +337,10 @@ type Options struct {
 	// 超时后先对外提供服务（返回已扫描到的部分），扫描在后台继续；
 	// 0 表示阻塞到扫描完成。
 	StartupWait time.Duration
+	// SnapshotTTL 磁盘快照的 TTL（ECY_SNAPSHOT_TTL，默认 15 分钟）。
+	// 启动时若有不超过该时长的快照，直接读回、跳过全量扫描；
+	// 运行期按同一间隔把内存索引落盘（仅在有变化时）。0 表示关闭快照。
+	SnapshotTTL time.Duration
 }
 
 // NewFileStoreDepth 指定分类层级上限创建存储（ECY_MAX_DEPTH）。
@@ -364,12 +372,32 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
-	// 首次扫描放后台：大库全量扫描可能几十秒，不能让进程一直不监听。
+	// 1) 先尝试磁盘快照：命中就不扫盘，毫秒级就绪。
+	if opt.SnapshotTTL > 0 {
+		ok, err := fs.loadSnapshot(opt.SnapshotTTL)
+		if err != nil {
+			log.Printf("快照不可用，改为全量扫描：%v", err)
+		} else if ok {
+			log.Printf("已从磁盘快照恢复 %d 个分类（保存于 %s 前），跳过启动扫描",
+				fs.loadedCategories(), time.Since(snapshotTime(fs.snapshotPath())).Round(time.Minute))
+			go fs.refreshLoop()
+			go fs.snapshotLoop(opt.SnapshotTTL)
+			return fs, nil
+		}
+	}
+
+	// 2) 首次扫描放后台：大库全量扫描可能几十秒，不能让进程一直不监听。
 	fs.scanning.Store(true)
 	scanDone := make(chan error, 1)
 	go func() {
 		err := fs.scan()
 		fs.scanning.Store(false)
+		// 首次扫描完成后立刻落一份快照：新部署的下一次重启就能秒起。
+		if err == nil && opt.SnapshotTTL > 0 {
+			if serr := fs.saveSnapshot(); serr != nil {
+				log.Printf("写快照失败: %v", serr)
+			}
+		}
 		scanDone <- err
 	}()
 	if opt.StartupWait > 0 {
@@ -388,7 +416,16 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		}
 	}
 	go fs.refreshLoop()
+	go fs.snapshotLoop(opt.SnapshotTTL)
 	return fs, nil
+}
+
+// snapshotTime 快照文件的修改时间（用于日志展示「多久之前的快照」）。
+func snapshotTime(path string) time.Time {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.ModTime()
+	}
+	return time.Now()
 }
 
 // loadedCategories 当前已发布到读路径的分类数量（扫描进度示意）。
@@ -507,6 +544,7 @@ func (f *fileStore) scan() error {
 	f.scannedOnce.Store(true)
 	if sc.changed {
 		f.gen.Add(1)
+		f.dirty.Store(true)
 	}
 	return nil
 }

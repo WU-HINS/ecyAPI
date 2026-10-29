@@ -66,6 +66,9 @@ type Config struct {
 	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
 	// 超时则先启动服务、扫描在后台继续；0 表示等扫描完成再启动。
 	StartupWaitSeconds int
+	// SnapshotTTLSeconds 磁盘快照 TTL（ECY_SNAPSHOT_TTL，默认 900 秒 = 15 分钟）。
+	// 启动时有不超过该时长的快照就直接读回、跳过扫盘；运行期按同一间隔落盘。0 关闭。
+	SnapshotTTLSeconds int
 	// DisableLinkVerify 关闭 302 前的目标文件校验（ECY_VERIFY_LINKS=off）。
 	// 默认开启：多一次热缓存 stat（约 1~5µs），换来「绝不 302 到已删除文件」。
 	// 用「关闭」语义是为了让零值结构体默认就是安全行为。
@@ -139,6 +142,7 @@ func Load() Config {
 		GalleryWaitSeconds:  clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds: clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:  clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
+		SnapshotTTLSeconds:  clampInt(envInt("ECY_SNAPSHOT_TTL", 900), 0, 86400),
 		DisableLinkVerify:   isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：未显式设置时按堆上限自适应（约 1/12，夹在 8~64MP），
 		// 4K 图约 8MP：512MB 容器 → 32MP（2 张并发），192MB 容器 → 15MP（1 张）。

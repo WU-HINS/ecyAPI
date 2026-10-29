@@ -151,6 +151,7 @@ func New(cfg config.Config) (*Server, error) {
 		MaxDepth:     cfg.MaxDepth,
 		ScanInterval: time.Duration(cfg.ScanIntervalSeconds) * time.Second,
 		StartupWait:  time.Duration(cfg.StartupWaitSeconds) * time.Second,
+		SnapshotTTL:  time.Duration(cfg.SnapshotTTLSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, err
