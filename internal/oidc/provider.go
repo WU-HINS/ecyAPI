@@ -190,6 +190,7 @@ type KeySet struct {
 	hc      *http.Client
 	keys    map[string]crypto.PublicKey
 	byAlg   map[string]crypto.PublicKey
+	all     []crypto.PublicKey // 全部公钥（JWKS 可能既无 kid 也无 alg）
 	fetched time.Time
 }
 
@@ -223,6 +224,7 @@ func (k *KeySet) Refresh(ctx context.Context) error {
 	}
 	keys := make(map[string]crypto.PublicKey, len(set.Keys))
 	byAlg := make(map[string]crypto.PublicKey, len(set.Keys))
+	all := make([]crypto.PublicKey, 0, len(set.Keys))
 	for _, jk := range set.Keys {
 		if jk.Use != "" && jk.Use != "sig" {
 			continue
@@ -237,12 +239,13 @@ func (k *KeySet) Refresh(ctx context.Context) error {
 		if jk.Alg != "" {
 			byAlg[jk.Alg] = pub
 		}
+		all = append(all, pub)
 	}
-	if len(keys) == 0 && len(byAlg) == 0 {
+	if len(all) == 0 {
 		return fmt.Errorf("oidc: JWKS 中没有可用的签名公钥")
 	}
 	k.mu.Lock()
-	k.keys, k.byAlg, k.fetched = keys, byAlg, time.Now()
+	k.keys, k.byAlg, k.all, k.fetched = keys, byAlg, all, time.Now()
 	k.mu.Unlock()
 	return nil
 }
@@ -280,13 +283,19 @@ func (k *KeySet) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, er
 	return nil, fmt.Errorf("oidc: 找不到匹配的公钥（kid=%q alg=%q）", kid, alg)
 }
 
-// VerifyJWT 校验 id_token：签名（RS/PS/ES）+ iss/aud/exp/nonce。
+// Candidates 返回所有候选公钥（kid/alg 都对不上时逐个尝试）。
+// 有些 IdP 的 JWKS 既没有 kid 也没有 alg，只能靠「签名能验通」来选键。
+func (k *KeySet) Candidates() []crypto.PublicKey {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	out := make([]crypto.PublicKey, len(k.all))
+	copy(out, k.all)
+	return out
+}
+
+// VerifyJWT 校验 id_token：签名（RS/PS/ES/EdDSA）+ iss/aud/exp/nonce。
 func VerifyJWT(ctx context.Context, token string, ks *KeySet, issuer, clientID, nonce string) (*Claims, error) {
 	kid, alg, err := KeyID(token)
-	if err != nil {
-		return nil, err
-	}
-	pk, err := ks.Key(ctx, kid, alg)
 	if err != nil {
 		return nil, err
 	}
@@ -294,8 +303,24 @@ func VerifyJWT(ctx context.Context, token string, ks *KeySet, issuer, clientID, 
 	if err != nil {
 		return nil, err
 	}
-	if err := VerifySignature(alg, pk, SigningInput(token), sig); err != nil {
-		return nil, err
+	input := SigningInput(token)
+
+	if pk, kerr := ks.Key(ctx, kid, alg); kerr == nil {
+		if err := VerifySignature(alg, pk, input, sig); err != nil {
+			return nil, err
+		}
+	} else {
+		// 兜底：kid/alg 对不上（或 JWKS 没写 kid），逐个候选验证签名。
+		verified := false
+		for _, cand := range ks.Candidates() {
+			if VerifySignature(alg, cand, input, sig) == nil {
+				verified = true
+				break
+			}
+		}
+		if !verified {
+			return nil, kerr
+		}
 	}
 	_, raw, err := ParseUnverified(token)
 	if err != nil {

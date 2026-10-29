@@ -7,11 +7,13 @@ package oidc
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -49,6 +51,8 @@ type Key struct {
 	Crv string `json:"crv"`
 	X   string `json:"x"`
 	Y   string `json:"y"`
+	// X5c 证书链（有的 IdP 只发布证书，不发布 n/e 或 x/y）
+	X5c []string `json:"x5c"`
 }
 
 // JWKS 是 /jwks 文档。
@@ -56,8 +60,14 @@ type JWKS struct {
 	Keys []Key `json:"keys"`
 }
 
-// PublicKey 把 JWK 还原成 crypto.PublicKey（RSA 或 ECDSA）。
+// PublicKey 把 JWK 还原成 crypto.PublicKey（RSA / ECDSA / Ed25519）。
+// 若缺少 n/e 或 x/y 但带 x5c，则从证书里取公钥（部分 IdP 只发布证书）。
 func (k Key) PublicKey() (crypto.PublicKey, error) {
+	if k.N == "" && k.X == "" && len(k.X5c) > 0 {
+		if pub, err := publicKeyFromX5c(k.X5c[0]); err == nil {
+			return pub, nil
+		}
+	}
 	switch strings.ToUpper(k.Kty) {
 	case "RSA":
 		n, err := b64ToBigInt(k.N)
@@ -96,8 +106,30 @@ func (k Key) PublicKey() (crypto.PublicKey, error) {
 			return nil, fmt.Errorf("oidc: point not on curve")
 		}
 		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+	case "OKP":
+		if !strings.EqualFold(k.Crv, "Ed25519") {
+			return nil, fmt.Errorf("oidc: unsupported OKP curve %q", k.Crv)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(k.X))
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("oidc: bad Ed25519 public key")
+		}
+		return ed25519.PublicKey(raw), nil
 	}
 	return nil, fmt.Errorf("oidc: unsupported kty %q", k.Kty)
+}
+
+// publicKeyFromX5c 从 x5c（base64 DER 证书）里取公钥。
+func publicKeyFromX5c(der string) (crypto.PublicKey, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(der))
+	if err != nil {
+		return nil, err
+	}
+	cert, err := x509.ParseCertificate(raw)
+	if err != nil {
+		return nil, err
+	}
+	return cert.PublicKey, nil
 }
 
 func b64ToBigInt(s string) (*big.Int, error) {
@@ -157,6 +189,16 @@ func VerifySignature(alg string, key crypto.PublicKey, signingInput, sig []byte)
 		s := new(big.Int).SetBytes(sig[half:])
 		digest := digestOf(h, signingInput)
 		if !ecdsa.Verify(pk, digest, r, s) {
+			return ErrInvalidToken
+		}
+		return nil
+	case "EDDSA":
+		pk, ok := key.(ed25519.PublicKey)
+		if !ok {
+			return ErrInvalidToken
+		}
+		// Ed25519 直接对原始消息签名，不做哈希。
+		if !ed25519.Verify(pk, signingInput, sig) {
 			return ErrInvalidToken
 		}
 		return nil

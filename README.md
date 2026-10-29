@@ -206,8 +206,10 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 7. **栏目排序**：拖拽调整首页卡片与栏目的展示顺序
 9. **登录与 SSO（OAuth2 / OIDC）**：
    - 填 **发现端点 / Issuer**，点「发现」自动填充授权端点、token 端点、JWKS、userinfo；也支持全部手填
-   - **自动判定模式**：令牌响应里有 `id_token` 就按 OIDC 校验 JWT（RS256/384/512、PS256/384/512、ES256/384/512），
-     没有则退回 OAuth2，用 `userinfo` 取身份；也可强制 `oidc`/`oauth`
+   - **自动判定模式**：令牌响应里有 `id_token` 就按 OIDC 校验 JWT，没有则退回 OAuth2，用 `userinfo` 取身份；也可强制 `oidc`/`oauth`
+   - **签名算法**：RSA（RS256/384/512、PS256/384/512）、EC（ES256/384/512，对应 P-256/P-384/P-521）、EdDSA（Ed25519）；
+     JWKS 支持 `kid` 选键、缺 `kid`/`alg` 时逐个候选验签、只有 `x5c` 证书时从证书取公钥；明确拒绝 `alg=none`
+     （`ES256K`/secp256k1 标准库不支持，暂未覆盖）
    - **必须先绑定**：SSO 身份未出现在「已绑定账号」里时一律拒绝（403），绑定入口是后台的「绑定当前 SSO 账号」
    - **仅使用 SSO**：开启后未登录访问后台直接跳转 IdP，密码登录被拒绝；未绑定任何账号时不允许开启（防锁死）
    - 接口：`GET /admin/sso/login[?bind=1]`、`GET /admin/sso/callback`、`POST /admin/sso/config`、
