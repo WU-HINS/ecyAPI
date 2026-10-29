@@ -148,10 +148,11 @@ func New(cfg config.Config) (*Server, error) {
 		cfg.MemoryLimit = 512 << 20
 	}
 	st, err := store.NewFileStoreWithOptions(cfg.DataDir, store.Options{
-		MaxDepth:     cfg.MaxDepth,
-		ScanInterval: time.Duration(cfg.ScanIntervalSeconds) * time.Second,
-		StartupWait:  time.Duration(cfg.StartupWaitSeconds) * time.Second,
-		SnapshotTTL:  time.Duration(cfg.SnapshotTTLSeconds) * time.Second,
+		MaxDepth:       cfg.MaxDepth,
+		ScanInterval:   time.Duration(cfg.ScanIntervalSeconds) * time.Second,
+		StartupWait:    time.Duration(cfg.StartupWaitSeconds) * time.Second,
+		SnapshotTTL:    time.Duration(cfg.SnapshotTTLSeconds) * time.Second,
+		VerifyInterval: time.Duration(cfg.VerifyIntervalSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, err

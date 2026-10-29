@@ -107,3 +107,46 @@ func TestReplaceSameSizeAndMtime(t *testing.T) {
 		t.Fatalf("大小+mtime 未变时不应重新判定，实际竖图 %d 张", n)
 	}
 }
+
+// TestVerifyIntervalConfigurable ECY_VERIFY_INTERVAL 生效：间隔过后普通刷新也能发现同名替换。
+func TestVerifyIntervalConfigurable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	cat := filepath.Join(dir, "pc")
+	if err := os.MkdirAll(cat, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePNG(t, filepath.Join(cat, "a.png"), 40, 20)
+
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, VerifyInterval: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := st.(*fileStore)
+	ctx := context.Background()
+	if n, _ := st.CountWith(ctx, "pc", OrientationLandscape); n != 1 {
+		t.Fatalf("初始应为横图，实际 %d", n)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	writePNG(t, filepath.Join(cat, "a.png"), 20, 40) // 同名换成竖图
+
+	// 间隔内：仍走快速路径，不会发现
+	fs.reloadMu.Lock()
+	_ = fs.scan()
+	fs.reloadMu.Unlock()
+	if n, _ := st.CountWith(ctx, "pc", OrientationPortrait); n != 0 {
+		t.Fatalf("间隔内不应重新校验，实际竖图 %d", n)
+	}
+
+	// 等过间隔后再刷新：不需要 forceVerify 也能发现
+	time.Sleep(80 * time.Millisecond)
+	fs.reloadMu.Lock()
+	if err := fs.scan(); err != nil {
+		fs.reloadMu.Unlock()
+		t.Fatal(err)
+	}
+	fs.reloadMu.Unlock()
+	if n, _ := st.CountWith(ctx, "pc", OrientationPortrait); n != 1 {
+		t.Fatalf("超过校验间隔后应识别为竖图，实际 %d", n)
+	}
+}

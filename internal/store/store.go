@@ -294,6 +294,8 @@ type fileStore struct {
 	oriMeta map[string]map[string]orientMeta
 	// dirs 目录扫描状态：rel -> 上次条目名 / 子目录 / 文件集合，用于整目录跳过。
 	dirs map[string]*dirState
+	// verifyInterval 强制完整校验间隔（ECY_VERIFY_INTERVAL）。
+	verifyInterval time.Duration
 	// forceVerify 下一次 scan 强制完整校验（写路径的 reload 使用），
 	// 保证上传/删除后即使条目名未变也能立即反映文件内容变化。
 	forceVerify bool
@@ -337,6 +339,9 @@ type Options struct {
 	// 超时后先对外提供服务（返回已扫描到的部分），扫描在后台继续；
 	// 0 表示阻塞到扫描完成。
 	StartupWait time.Duration
+	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 60 秒）。
+	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
+	VerifyInterval time.Duration
 	// SnapshotTTL 磁盘快照的 TTL（ECY_SNAPSHOT_TTL，默认 15 分钟）。
 	// 启动时若有不超过该时长的快照，直接读回、跳过全量扫描；
 	// 运行期按同一间隔把内存索引落盘（仅在有变化时）。0 表示关闭快照。
@@ -361,10 +366,15 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	if interval <= 0 {
 		interval = defaultScanInterval
 	}
+	verify := opt.VerifyInterval
+	if verify <= 0 {
+		verify = defaultVerifyInterval
+	}
 	fs := &fileStore{
 		dir:             dir,
 		maxDepth:        maxDepth,
 		refreshInterval: interval,
+		verifyInterval:  verify,
 		cache:           map[string]*categorySet{},
 		oriMeta:         map[string]map[string]orientMeta{},
 		dirs:            map[string]*dirState{},
@@ -466,7 +476,8 @@ func isImageFile(name string) bool {
 
 // dirState 一个目录上次扫描的状态。
 // 目录内条目名集合未变时直接复用上次结果，避免每 3 秒把整库文件 stat 一遍；
-// 每 fullVerifyInterval 仍强制完整校验一次，以捕获「同名文件被原地替换」。
+// 每 verifyInterval（ECY_VERIFY_INTERVAL，默认 60 秒）仍强制完整校验一次，
+// 以捕获「同名文件被原地替换」。
 type dirState struct {
 	names    []string     // 上次的条目名（ReadDir 已按文件名排序）
 	subdirs  []string     // 已校验的子目录名
@@ -475,9 +486,10 @@ type dirState struct {
 	skipped  []string     // 本目录下被跳过的子目录与原因
 }
 
-// fullVerifyInterval 目录条目未变化时，两次完整 stat+方向校验的最大间隔。
+// defaultVerifyInterval 目录条目未变化时，两次完整 stat+方向校验的默认间隔。
 // 只影响「同名文件被原地覆盖」这一种情况的生效延迟，正常增删改立即生效。
-const fullVerifyInterval = 60 * time.Second
+// 可用 ECY_VERIFY_INTERVAL 调整：库越大越该调大（每次都要 stat 全部文件）。
+const defaultVerifyInterval = 60 * time.Second
 
 // scanCtx 一次扫描的上下文（避免 scanDir 参数越传越长）。
 type scanCtx struct {
@@ -499,7 +511,7 @@ const maxScanWarnings = 50
 // scan 扫描数据目录并整体替换缓存。
 //
 // 增量策略：每个目录只做一次 ReadDir 取条目名，与上次比较：
-//   - 条目名完全一致且距上次完整校验不足 fullVerifyInterval：整目录复用上次结果；
+//   - 条目名完全一致且距上次完整校验不足 verifyInterval：整目录复用上次结果；
 //   - 否则对该目录做完整校验（逐文件 stat + 必要时读文件头判定方向）。
 //
 // 因此未发生变更时的重扫代价是「每层目录一次 getdents + 名字比较」，
@@ -598,7 +610,7 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 	}
 	now := time.Now().UnixNano()
 	old := f.dirs[rel]
-	if old != nil && !f.forceVerify && now-old.verified < int64(fullVerifyInterval) && sameEntryNames(old.names, entries) {
+	if old != nil && !f.forceVerify && now-old.verified < int64(f.verifyInterval) && sameEntryNames(old.names, entries) {
 		sc.next[rel] = old
 		if old.set != nil {
 			sc.sets[rel] = old.set
