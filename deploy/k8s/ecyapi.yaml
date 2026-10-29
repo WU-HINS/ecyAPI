@@ -57,7 +57,6 @@ spec:
             - { name: ECY_GALLERY_WAIT, value: "5" }
             - { name: ECY_PREVIEW_MP, value: "16" }
             - { name: ECY_SCAN_INTERVAL, value: "3" }
-            - { name: ECY_MEMORY_LIMIT, value: "536870912" }
             - { name: ECY_BASE_URL, value: "https://api.example.com" }   # 改成你的域名
             - name: ECY_ADMIN_PASSWORD
               valueFrom:

@@ -26,7 +26,7 @@ services:
       ECY_PREVIEW_MP: ${ECY_PREVIEW_MP:-16}
       ECY_SCAN_INTERVAL: ${ECY_SCAN_INTERVAL:-3}
       ECY_VERIFY_LINKS: ${ECY_VERIFY_LINKS:-}
-      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
+      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./data:/app/data
@@ -53,7 +53,7 @@ services:
       ECY_PREVIEW_MP: ${ECY_PREVIEW_MP:-16}
       ECY_SCAN_INTERVAL: ${ECY_SCAN_INTERVAL:-3}
       ECY_VERIFY_LINKS: ${ECY_VERIFY_LINKS:-}
-      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-536870912}
+      ECY_MEMORY_LIMIT: ${ECY_MEMORY_LIMIT:-}
       # 副本不提供后台：随机接口只需要读权限
       ECY_ADMIN_PASSWORD: ${ECY_ADMIN_PASSWORD:?请在 .env 中设置 ECY_ADMIN_PASSWORD}
       TZ: ${TZ:-Asia/Shanghai}

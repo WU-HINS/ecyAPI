@@ -45,9 +45,8 @@ const (
 	previewMaxWidth = 4096
 )
 
-// previewCacheMaxFiles 缓存文件数量上限：超过后按修改时间删最旧的，
-// 防止磁盘被压缩缩略图无限吃掉。每次新写缓存后异步清理一次。
-const previewCacheMaxFiles = 2000
+// 缓存文件数量上限默认见 config.PreviewCacheFiles（ECY_PREVIEW_CACHE_FILES）：
+// 太小会导致浏览大图库时反复重压同一批图（CPU 抖动 + 磁盘 churn）。
 
 // previewCacheRoot 预览缓存根目录，与数据目录同级：data/preview-cache/<分类>/。
 func (s *Server) previewCacheRoot() string {
@@ -99,6 +98,13 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	}
 	units := previewUnits(cfg.Width, cfg.Height)
 	if !s.previewGate.tryAcquire(units) {
+		// 预算已满：先回退原图保证响应，同时把「补缓存」排进后台，
+		// 避免持续预览时缓存永远填不满、每次都在重复解码。
+		if width > 0 {
+			s.enqueuePreviewJob(previewJob{
+				path: path, cachePath: cachePath, width: width, units: units,
+			})
+		}
 		s.handlePic(w, r)
 		return
 	}
@@ -165,8 +171,15 @@ func imageConfig(path string) (image.Config, error) {
 // 修改时间，2000 以内的文件量排序开销可忽略；并发写导致偶发多删/少删
 // 一个文件无关紧要，下次落盘会再触发清理，无需加锁。
 func (s *Server) evictPreviewCache() {
-	evictPreviewCacheFiles(s.previewCacheRoot(), previewCacheMaxFiles)
+	max := s.cfg.PreviewCacheFiles
+	if max <= 0 {
+		max = defaultPreviewCacheFiles
+	}
+	evictPreviewCacheFiles(s.previewCacheRoot(), max)
 }
+
+// defaultPreviewCacheFiles 配置为零值（直接构造 Config 的测试场景）时的兜底。
+const defaultPreviewCacheFiles = 20000
 
 // evictPreviewCacheFiles 删除 root 下最旧的缓存文件，保留最新的 max 份。
 func evictPreviewCacheFiles(root string, max int) {

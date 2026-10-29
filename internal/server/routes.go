@@ -93,6 +93,9 @@ type Server struct {
 	// 图库渲染闸门：限制同时渲染「全部图片」的请求数。
 	galleryGate *galleryGate
 
+	// previewJobs 后台补缓存队列（有界，满则丢弃）。
+	previewJobs chan previewJob
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -140,6 +143,7 @@ func New(cfg config.Config) (*Server, error) {
 		access:       newAccessLog(),
 		previewGate:  newPreviewGate(cfg.PreviewMP),
 		galleryGate:  newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
+		previewJobs:  make(chan previewJob, 512),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),
 	}
@@ -159,6 +163,10 @@ func New(cfg config.Config) (*Server, error) {
 		}
 	}
 
+	if cfg.MemoryLimit > 0 {
+		log.Printf("内存：GOMEMLIMIT=%d MB（cgroup 限制的 75%% 或 ECY_MEMORY_LIMIT）",
+			cfg.MemoryLimit/(1<<20))
+	}
 	s.baseURL = cfg.BaseURL
 	s.slogan, s.share, s.icp = defaultSlogan, defaultShare, defaultICP
 	s.icpURL = defaultICPURL
@@ -177,6 +185,7 @@ func New(cfg config.Config) (*Server, error) {
 		"RichText": renderRichText,
 	}
 	go s.sweepSessionsLoop()
+	go s.previewWorker()
 
 	tpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {

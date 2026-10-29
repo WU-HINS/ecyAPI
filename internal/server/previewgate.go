@@ -38,6 +38,21 @@ func (g *previewGate) tryAcquire(n int) bool {
 	return true
 }
 
+// acquireWait 在 wait 时间内等待 n 个单位的预算；超时返回 false。
+// 供后台补缓存使用：宁可慢一点，也要把缓存填上。
+func (g *previewGate) acquireWait(n int, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		if g.tryAcquire(n) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // release 归还预算；若已完全空闲，按节流把空闲堆页还给操作系统。
 func (g *previewGate) release(n int) {
 	n = g.clampUnits(n)
