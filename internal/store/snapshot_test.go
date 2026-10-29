@@ -1,7 +1,9 @@
 package store
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -190,5 +192,35 @@ func TestSnapshotDeletedCategoryAfterRestart(t *testing.T) {
 	cats, _ := st2.Categories(ctx)
 	if len(cats) != 2 {
 		t.Fatalf("删除后应剩 2 个分类，实际 %d：%v", len(cats), cats)
+	}
+}
+
+// TestSnapshotRefreshedWhenIdle 索引没变化时，快照仍按 TTL 刷新时间戳。
+// 否则「长期没人动」的库会因快照变旧，导致每次重启都退化成全量扫描。
+func TestSnapshotRefreshedWhenIdle(t *testing.T) {
+	dir := makeTree(t, 3, 2)
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: 40 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := st.(*fileStore)
+
+	time.Sleep(150 * time.Millisecond) // 期间没有任何变更
+
+	fh, err := os.Open(fs.snapshotPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fh.Close()
+	zr, err := gzip.NewReader(fh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc snapDoc
+	if err := json.NewDecoder(zr).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	if age := time.Since(doc.SavedAt); age > 120*time.Millisecond {
+		t.Fatalf("快照未被周期刷新：已 %v 旧", age)
 	}
 }

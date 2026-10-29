@@ -181,9 +181,9 @@ func (f *fileStore) snapshotLoop(ttl time.Duration) {
 	t := time.NewTicker(ttl)
 	defer t.Stop()
 	for range t.C {
-		if !f.dirty.Load() {
-			continue
-		}
+		// 每个周期都重写一次：即便索引没变化也刷新 SavedAt。
+		// 否则「图库长期没人动」时快照会一直变旧，超过 TTL 后重启又要全量扫，
+		// 白白浪费一次冷启动（重写 400KB/5万张，代价可忽略）。
 		if err := f.saveSnapshot(); err != nil {
 			// 只读挂载（多实例只读副本）会一直失败：只提示一次，别刷屏。
 			if !f.snapshotErrLogged.Swap(true) {
