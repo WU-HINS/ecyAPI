@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -187,6 +188,8 @@ type Store interface {
 	// Verify 校验文件是否仍在磁盘上；不存在时从内存索引里摘掉并返回 false，
 	// 供 302 前做一次「目标是否还活着」的确认。
 	Verify(ctx context.Context, category, name string) bool
+	// Generation 文件索引的代次：每次扫描发现变化就 +1，用于缓存失效。
+	Generation() uint64
 }
 
 // Admin 后台管理写操作接口。
@@ -298,7 +301,12 @@ type fileStore struct {
 	// aggs 父目录聚合：rel -> 子分类集合的加权视图，只用于 URL/JSON 取图，
 	// 不进入分区列表（避免图库与后台重复计数）。与 cache 同锁保护。
 	aggs map[string]*aggKids
+	// gen 索引代次：扫描发现任何目录变化就 +1，供图库 HTML 之类的外层缓存失效。
+	gen atomic.Uint64
 }
+
+// Generation 返回当前索引代次。
+func (f *fileStore) Generation() uint64 { return f.gen.Load() }
 
 // NewFileStore 使用默认层级上限（DefaultMaxDepth）创建存储。
 func NewFileStore(dir string) (Store, error) {
@@ -399,6 +407,7 @@ type scanCtx struct {
 	aggs    map[string]*aggKids
 	seen    map[string]bool // 已扫描过的真实目录路径，用于符号链接回环/重复检测
 	skipped []string        // 被跳过的目录与原因，供启动日志诊断
+	changed bool            // 本次扫描是否有目录被重新读取（用于代次自增）
 }
 
 // maxScanWarnings 启动日志里最多展示多少条「跳过原因」。
@@ -447,6 +456,9 @@ func (f *fileStore) scan() error {
 	f.skipped = warns
 	f.mu.Unlock()
 	f.dirs = sc.next
+	if sc.changed {
+		f.gen.Add(1)
+	}
 	return nil
 }
 
@@ -501,6 +513,7 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 	for i, e := range entries {
 		names[i] = e.Name()
 	}
+	sc.changed = true // 走到这里说明该目录被重新读取（新增/删除/尚未扫过）
 	state := &dirState{names: names, verified: now}
 	if !isRoot {
 		state.set = f.buildSet(rel, dirPath, entries)

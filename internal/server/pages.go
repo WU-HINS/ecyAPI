@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +80,11 @@ type galleryImage struct {
 }
 
 // handleGallery 渲染图库页。后台设置为隐藏的分类不展示、不可访问。
+//
+// 图库要「展示全部」：单次渲染 5 万张约 2 秒、8MB，100 并发不可能各自渲染。
+// 因此渲染结果按「索引代次 + 隐藏集合 + 抽样上限」落盘缓存：
+//   - 命中：直接 sendfile，不占渲染名额，100 并发只是带宽问题；
+//   - 未命中：一个请求渲染，其余等待缓存出现（最多 ECY_GALLERY_WAIT），超时才 503。
 func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	hidden := s.galleryHiddenSet()
 	all := s.sortedCategories(r.Context())
@@ -93,25 +99,35 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.URL.Query().Get("category")
-	counts := s.categoryCountMap(r.Context())
 	if !contains(cats, current) {
 		current = cats[0]
 	}
-	// 内存越接近红线，控制越严：
-	//   p≥0.9（接近红线）→ 直接拒绝，不做任何渲染；
-	//   p≥0.5 → 不排队，拿不到名额就返回 503；
-	//   否则按正常排队（最多等 ECY_GALLERY_WAIT）。
-	pressure := s.mem.Pressure()
+
+	// 1) 缓存命中：直接输出。
+	gen := s.st.Generation()
+	dir, name := s.galleryCacheKey(current, gen)
+	cachePath := filepath.Join(s.galleryCacheRoot(), dir, name)
+	if s.serveGalleryCache(w, r, cachePath) {
+		return
+	}
+
+	// 2) 未命中：内存越接近红线，控制越严（p≥0.9 直接拒绝新渲染）。
 	if s.mem.Permits() == 0 {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
 		return
 	}
-	var acquired bool
-	if pressure >= 0.5 {
+	// 名额争用时不排长队：要么拿到名额自己渲染，要么等别人渲染完直接命中缓存。
+	// 这样冷启动瞬间的 100 并发只会产生「2 个渲染 + 98 个等待命中」，而不是 98 个 503。
+	waitDur := time.Duration(s.cfg.GalleryWaitSeconds) * time.Second
+	deadline := time.Now().Add(waitDur)
+	acquired := s.galleryGate.tryAcquire()
+	for !acquired && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if s.serveGalleryCache(w, r, cachePath) {
+			return
+		}
 		acquired = s.galleryGate.tryAcquire()
-	} else {
-		acquired = s.galleryGate.acquire(r.Context())
 	}
 	if !acquired {
 		w.Header().Set("Retry-After", strconv.Itoa(s.cfg.GalleryWaitSeconds))
@@ -120,12 +136,17 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.galleryGate.release()
 
+	// 拿到名额后再查一次：排队期间可能已被上一个渲染者填好。
+	if s.serveGalleryCache(w, r, cachePath) {
+		return
+	}
+
+	// 3) 真正渲染。
+	counts := s.categoryCountMap(r.Context())
 	total, err := s.st.CountWith(r.Context(), current, store.OrientationAny)
 	if err != nil {
 		total = 0
 	}
-	// 事件级红线保护：按「每张约 400 字节（行结构 + HTML）」估算本次渲染开销，
-	// 越线直接快速失败，避免在 Tick 之间把内存顶穿。
 	if !s.mem.Allow(int64(total) * 400) {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "服务繁忙（内存压力），请稍后重试", http.StatusServiceUnavailable)
@@ -133,7 +154,6 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	}
 	var rows []store.Row
 	if s.cfg.GalleryMax > 0 && total > s.cfg.GalleryMax {
-		// 兜底：显式配置了上限才抽样，默认展示全部。
 		rows, err = s.st.RandomWith(r.Context(), current, s.cfg.GalleryMax, store.OrientationAny)
 	} else {
 		rows, err = s.st.Links(r.Context(), current)
@@ -145,24 +165,42 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		images = append(images, galleryImage{URL: row.Link, Thumb: row.Link + "?w=480"})
 	}
-	data := map[string]any{
-		"Current":   current,
-		"Images":    images,
-		"Total":     total,
-		"Shown":     len(images),
-		"Sampled":   total > len(images),
-		"LoadError": false,
-	}
 	type cat struct {
 		Name  string
 		Count int
 	}
 	catList := make([]cat, 0, len(cats))
-	for _, name := range cats {
-		catList = append(catList, cat{Name: name, Count: counts[name]})
+	for _, c := range cats {
+		catList = append(catList, cat{Name: c, Count: counts[c]})
 	}
-	data["Categories"] = catList
-	s.render(w, http.StatusOK, "gallery.html", data)
+	data := map[string]any{
+		"Current":    current,
+		"Images":     images,
+		"Total":      total,
+		"Shown":      len(images),
+		"Sampled":    total > len(images),
+		"Categories": catList,
+		"LoadError":  false,
+	}
+	body, err := s.renderGalleryHTML(data)
+	if err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	s.writeGalleryCache(cachePath, body)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// galleryHiddenList 返回隐藏分类的稳定副本（用于缓存键）。
+func (s *Server) galleryHiddenList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.galleryHidden))
+	copy(out, s.galleryHidden)
+	return out
 }
 
 func contains(list []string, v string) bool {

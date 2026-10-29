@@ -108,3 +108,47 @@ func TestGalleryQueueFullReturns503(t *testing.T) {
 		t.Fatalf("释放后应恢复，得到 %d", rec.Code)
 	}
 }
+
+// TestGalleryHTMLCache 图库渲染结果落盘缓存；索引代次变化后换新缓存。
+func TestGalleryHTMLCache(t *testing.T) {
+	s := newGalleryServer(t, 50, nil)
+
+	rec1 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec1, httptest.NewRequest("GET", "/img", nil))
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("首次渲染状态码 %d", rec1.Code)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(s.galleryCacheRoot(), "*", "big.html"))
+	if len(matches) != 1 {
+		t.Fatalf("应生成 1 个图库缓存文件，实际 %d", len(matches))
+	}
+
+	rec2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec2, httptest.NewRequest("GET", "/img", nil))
+	if rec2.Body.String() != rec1.Body.String() {
+		t.Fatalf("缓存命中内容与首次渲染不一致")
+	}
+	if ct := rec2.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("缓存命中 Content-Type = %q", ct)
+	}
+
+	// 新增文件 → 经写路径触发重扫 → 代次变化 → 旧缓存目录被清理
+	before := s.st.Generation()
+	png := subdirPNG(t, 16, 9)
+	if err := os.WriteFile(filepath.Join(s.dataDir, "big", "zzz.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.admin.CreateCategory(t.Context(), "tmpcat"); err != nil {
+		t.Fatal(err)
+	}
+	if s.st.Generation() == before {
+		t.Fatalf("扫描后索引代次未变化")
+	}
+	rec3 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec3, httptest.NewRequest("GET", "/img", nil))
+	matches, _ = filepath.Glob(filepath.Join(s.galleryCacheRoot(), "*", "big.html"))
+	if len(matches) != 1 {
+		t.Fatalf("旧代次缓存应被清理，实际 %d 个", len(matches))
+	}
+}
