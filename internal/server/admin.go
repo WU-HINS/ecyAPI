@@ -98,6 +98,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"ScanWarnings": store.ScanWarnings(s.st),
 		"MaxDepth":     s.cfg.MaxDepth,
 		"SSO":          s.ssoConfig(),
+		"SSORedirect":  s.ssoCallbackForRequest(r),
+		"SSOBase":      s.baseFor(r),
 		"BaseURL":      baseURL,
 		"Slogan":       slogan,
 		"Share":        share,

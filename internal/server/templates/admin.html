@@ -746,15 +746,33 @@
                             <div class="field"><label for="sso_scopes">Scopes</label>
                                 <input type="text" id="sso_scopes" name="scopes" value="{{.SSO.Scopes}}"></div>
                         </div>
+                        <div class="field">
+                            <label for="sso_callback">回调地址（Redirect URI，在 IdP 后台登记这个）</label>
+                            <div style="display:flex;gap:8px">
+                                <input type="text" id="sso_callback" value="{{.SSORedirect}}" readonly
+                                       style="background:#f8f8f9;font-family:ui-monospace,monospace;font-size:12.5px">
+                                <button type="button" class="btn" onclick="copySSOCallback()">复制</button>
+                            </div>
+                            <span class="field-desc">
+                                固定为 <code>/admin/sso/callback</code>（登录入口同理：<code>{{.SSOBase}}/admin/sso/login</code>）。
+                                授权端点与 Token 端点会在服务端直接访问，回调则必须落在 <code>/admin</code> 下。
+                            </span>
+                            <details style="margin-top:8px">
+                                <summary class="field-desc" style="cursor:pointer">高级：自定义回调地址</summary>
+                                <input type="text" name="redirect_url" value="{{.SSO.RedirectURL}}"
+                                       placeholder="留空 = {{.SSORedirect}}" style="margin-top:8px">
+                                <span class="field-desc">用于反代改写域名等场景；路径必须在 <code>/admin</code> 下，否则保存会被拒绝。</span>
+                            </details>
+                        </div>
                         <div class="row">
-                            <div class="field"><label for="sso_redirect">回调地址（留空按请求推断）</label>
-                                <input type="text" id="sso_redirect" name="redirect_url" value="{{.SSO.RedirectURL}}"></div>
                             <div class="field"><label for="sso_mode">模式</label>
                                 <select id="sso_mode" name="mode">
                                     <option value="auto" {{if eq .SSO.Mode "auto"}}selected{{end}}>自动判定（推荐）</option>
                                     <option value="oidc" {{if eq .SSO.Mode "oidc"}}selected{{end}}>强制 OIDC</option>
                                     <option value="oauth" {{if eq .SSO.Mode "oauth"}}selected{{end}}>强制 OAuth2</option>
                                 </select></div>
+                            <div class="field"><label>最近一次判定</label>
+                                <input type="text" value="{{if .SSO.DetectedMode}}{{.SSO.DetectedMode}}{{else}}尚未登录过{{end}}" readonly style="background:#f8f8f9"></div>
                         </div>
                         <div class="field" style="line-height:2">
                             <label style="display:flex;align-items:center;gap:8px;font-weight:400">
@@ -844,6 +862,24 @@
             });
             if (name === 'cache') { refreshCache(); cacheTimer = setInterval(refreshCache, 2000); }
             else if (cacheTimer) { clearInterval(cacheTimer); cacheTimer = null; }
+        }
+
+        /* 登录与 SSO：复制回调地址 */
+        function copySSOCallback() {
+            var el = document.getElementById('sso_callback');
+            if (!el) { return; }
+            el.select();
+            el.setSelectionRange(0, 99999);
+            var done = function () {
+                var btn = event && event.target;
+                if (btn) { var old = btn.textContent; btn.textContent = '已复制'; setTimeout(function () { btn.textContent = old; }, 1200); }
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(el.value).then(done).catch(function () { document.execCommand('copy'); done(); });
+            } else {
+                document.execCommand('copy');
+                done();
+            }
         }
 
         /* 登录与 SSO：发现端点自动填充 */

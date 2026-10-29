@@ -297,3 +297,46 @@ func TestSSOOnlyMode(t *testing.T) {
 		t.Fatal("SSO-only 下密码登录不应成功")
 	}
 }
+
+// TestSSOCallbackUnderAdmin 回调地址必须展示、且必须在 /admin 下。
+func TestSSOCallbackUnderAdmin(t *testing.T) {
+	s := newGalleryServer(t, 3, nil)
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+
+	// 1) 后台页面展示回调地址
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.Host = "img.example.com"
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "/admin/sso/callback") {
+		t.Fatal("后台页面未展示回调地址")
+	}
+	if !strings.Contains(body, "http://img.example.com/admin/sso/callback") {
+		t.Fatalf("回调地址未按请求域名推断")
+	}
+
+	// 2) 拒绝 /admin 之外的路径
+	msg := postAdmin(t, s, cookie, "/admin/sso/config", url.Values{
+		"enabled": {"1"}, "client_id": {"c1"},
+		"authorization_endpoint": {"https://idp/auth"}, "token_endpoint": {"https://idp/token"},
+		"redirect_url": {"https://img.example.com/callback"},
+	})
+	if !strings.Contains(msg, "必须在 /admin 下") {
+		t.Fatalf("应拒绝 /admin 之外的回调地址: %s", msg)
+	}
+
+	// 3) 接受 /admin 下的路径
+	msg = postAdmin(t, s, cookie, "/admin/sso/config", url.Values{
+		"enabled": {"1"}, "client_id": {"c1"},
+		"authorization_endpoint": {"https://idp/auth"}, "token_endpoint": {"https://idp/token"},
+		"redirect_url": {"https://img.example.com/admin/sso/callback"},
+	})
+	if !strings.Contains(msg, "SSO 配置已保存") {
+		t.Fatalf("/admin 下的回调地址应被接受: %s", msg)
+	}
+}

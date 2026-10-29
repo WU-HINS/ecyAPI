@@ -151,12 +151,40 @@ func pkce() (verifier, challenge string) {
 	return
 }
 
+// ssoCallbackPath 固定的回调路径：必须位于 /admin 下，
+// 这样后台自身的会话、CSRF 策略和反代规则都只覆盖 /admin 前缀。
+const ssoCallbackPath = "/admin/sso/callback"
+
 // callbackURL 计算回调地址：优先配置，其次按请求推断。
 func (s *Server) callbackURL(r *http.Request, cfg ssoProvider) string {
 	if cfg.RedirectURL != "" {
 		return cfg.RedirectURL
 	}
-	return s.baseFor(r) + "/admin/sso/callback"
+	return s.baseFor(r) + ssoCallbackPath
+}
+
+// ssoCallbackForRequest 供后台页面展示「我该在 IdP 里登记哪个地址」。
+func (s *Server) ssoCallbackForRequest(r *http.Request) string {
+	return s.callbackURL(r, s.ssoConfig())
+}
+
+// validRedirectURL 校验自定义回调地址：必须落在 /admin 下。
+func validRedirectURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("回调地址不是合法 URL: %v", err)
+	}
+	if u.Host == "" && u.Path == "" {
+		return fmt.Errorf("回调地址不能为空")
+	}
+	path := u.Path
+	if path == "" {
+		path = raw // 允许只填路径
+	}
+	if path != "/admin" && !strings.HasPrefix(path, "/admin/") {
+		return fmt.Errorf("回调地址必须在 /admin 下（例如 https://your.host%s）", ssoCallbackPath)
+	}
+	return nil
 }
 
 // identity 一次登录解析出的身份。
@@ -439,6 +467,12 @@ func (s *Server) handleSSOConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Scopes = strings.TrimSpace(r.PostFormValue("scopes"))
 	cfg.RedirectURL = strings.TrimSpace(r.PostFormValue("redirect_url"))
+	if cfg.RedirectURL != "" && cfg.RedirectURL != s.callbackURL(r, ssoProvider{}) {
+		if err := validRedirectURL(cfg.RedirectURL); err != nil {
+			s.adminResult(w, err.Error())
+			return
+		}
+	}
 	switch m := r.PostFormValue("mode"); m {
 	case "oidc", "oauth", "auto":
 		cfg.Mode = m
