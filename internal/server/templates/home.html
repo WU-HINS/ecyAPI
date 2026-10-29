@@ -218,6 +218,9 @@
           </g>
         </svg>
         </div>
+        <p style="margin:10px 0 0;font-size:11.5px;letter-spacing:.08em;color:#9aa3af">
+            WU-HINS 二开特化 · <a href="https://github.com/WU-HINS/ecyAPI" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">github.com/WU-HINS/ecyAPI</a>
+        </p>
         <p class="slogan">{{RichText .Slogan}}</p>
         <div class="meta">
             <p>{{RichText .Share}}</p>
@@ -256,6 +259,10 @@
     {{- if .Logs}}
     <section class="logs">
         <h2>改动日志</h2>
+        <p style="margin:0 0 10px;font-size:12px;color:#9aa3af">
+            本部署为 <a href="https://github.com/WU-HINS/ecyAPI" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">WU-HINS/ecyAPI</a> 二开特化版本：
+            上游 <a href="https://cnb.cool/pupu/ecyAPI" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor">pupu/ecyAPI</a> 的改动与本地特化（内存调节、图库缓存、SSO 登录等）都记在这里。
+        </p>
         <div class="box">
             {{- range .Logs}}
             <p>{{.}}</p>
@@ -269,6 +276,9 @@
             <a class="icon-link" href="https://cnb.cool/pupu/ecyAPI" target="_blank" rel="noopener noreferrer" title="CNB" aria-label="CNB" style="--icon-c: #eb5a00; --icon-ch: #d24e00;">
                 <span class="icon-link-icon"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="none"><path fill="currentColor" d="M11.5286 1.87149C11.5769 1.73005 11.5356 1.5733 11.4233 1.47452C11.0472 1.14247 10.0965 0.443125 8.66911 0.339708C7.07054 0.223769 6.08089 0.652279 5.58096 0.969951C5.36531 1.10676 5.35326 1.41748 5.55499 1.57422L9.62723 4.73936C9.98617 5.01807 10.5125 4.8604 10.6591 4.43003L11.5286 1.87149Z"></path><path fill="currentColor" d="M1.49017 11.2664C1.32368 11.3781 1.24855 11.584 1.30235 11.7774C1.45724 12.3339 1.91868 13.4919 3.22833 14.5456C4.53797 15.5992 6.08738 15.7128 6.74962 15.6966C6.94764 15.692 7.12016 15.5617 7.17998 15.3724L9.79046 7.11064C9.97875 6.51425 9.31048 6.01386 8.79154 6.3626L1.49017 11.2664Z"></path><path fill="currentColor" d="M3.39813 2.54827C3.27013 2.49773 3.12683 2.50607 3.00579 2.57193C2.52256 2.83488 1.28526 3.64506 0.647135 5.30947C0.154627 6.59222 0.328071 8.01085 0.463488 8.70463C0.508009 8.9314 0.747306 9.06218 0.962489 8.97824L8.79485 5.92024C9.35414 5.70181 9.35646 4.91111 8.7981 4.6899L3.39813 2.54827Z"></path><path fill="currentColor" d="M15.0167 8.46843C15.243 8.62194 15.5528 8.48652 15.5922 8.21569C15.6961 7.49872 15.7861 6.25076 15.371 5.30933C14.8177 4.05487 13.8786 3.28133 13.433 2.9669C13.292 2.86766 13.1019 2.87786 12.9725 2.99241L10.9959 4.74541C10.6732 5.03154 10.7066 5.54492 11.0636 5.78746L15.0167 8.46936V8.46843Z"></path><path fill="currentColor" d="M9.49413 15.1604C9.47372 15.3937 9.67128 15.5866 9.90409 15.5616C10.6531 15.4813 12.1918 15.1841 13.3447 14.0827C14.467 13.0109 14.832 11.7384 14.9382 11.2319C14.9669 11.0951 14.9326 10.9528 14.8445 10.8442L11.3886 6.57909C11.0143 6.11719 10.2681 6.34535 10.2162 6.93757L9.49366 15.1604H9.49413Z"></path></g></svg></span>
             </a>
+                <a class="icon-link" href="https://github.com/WU-HINS/ecyAPI" target="_blank" rel="noopener noreferrer" title="GitHub" aria-label="GitHub" style="--icon-c: #24292f; --icon-ch: #57606a;">
+                    <span class="icon-link-icon"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></span>
+                </a>
         </div>
     </footer>
     </main>
