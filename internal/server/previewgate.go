@@ -53,6 +53,23 @@ func (g *previewGate) acquireWait(n int, wait time.Duration) bool {
 	}
 }
 
+// tryAcquireLow 低优先级获取：只在已用预算低于 fraction（如 0.5）时授予。
+// 后台预热用它，保证线上请求始终有至少 (1-fraction) 的预算可用。
+func (g *previewGate) tryAcquireLow(n int, fraction float64) bool {
+	n = g.clampUnits(n)
+	limit := int(float64(g.cap) * fraction)
+	if limit < 1 {
+		limit = 1
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.used+n > limit {
+		return false
+	}
+	g.used += n
+	return true
+}
+
 // release 归还预算；若已完全空闲，按节流把空闲堆页还给操作系统。
 func (g *previewGate) release(n int) {
 	n = g.clampUnits(n)

@@ -779,6 +779,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/cache/clear", s.handleAdminCacheClear)
 	mux.HandleFunc("POST /admin/cache/prewarm", s.handleAdminCachePrewarm)
 	mux.HandleFunc("GET /admin/cache/status", s.handleAdminCacheStatus)
+	mux.HandleFunc("POST /admin/cache/cancel", s.handleAdminCacheCancel)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
@@ -855,8 +856,12 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 // 其余请求投递给异步 writer，热路径上不加锁、不格式化。
 func (s *Server) logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 记录活跃时间（供内存调节器判断空闲），只做一次原子写。
-		s.mem.NoteRequest()
+		// 记录活跃时间（供内存调节器与预热让路判断）。
+		// 后台自己的请求（/admin）不算活跃：管理员开着状态页轮询，
+		// 不应把预热任务饿死。
+		if !strings.HasPrefix(r.URL.Path, "/admin") {
+			s.mem.NoteRequest()
+		}
 		if strings.HasPrefix(r.URL.Path, "/pic/") {
 			next.ServeHTTP(w, r)
 			return

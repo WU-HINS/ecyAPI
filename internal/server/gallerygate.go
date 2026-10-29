@@ -40,6 +40,23 @@ func (g *galleryGate) tryAcquire() bool {
 	}
 }
 
+// idleForPrewarm 当前是否没有任何渲染在进行（预热让路判断）。
+func (g *galleryGate) idleForPrewarm() bool { return len(g.sem) == 0 }
+
+// tryAcquireWhenIdle 只在完全没人渲染时占用名额（后台预热用）。
+// 有请求正在渲染就返回 false，让预热主动退让，而不是和请求抢名额。
+func (g *galleryGate) tryAcquireWhenIdle() bool {
+	if len(g.sem) != 0 {
+		return false
+	}
+	select {
+	case g.sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 // acquire 尝试获得渲染名额：有空位立即返回，否则最多等 wait。
 func (g *galleryGate) acquire(ctx context.Context) bool {
 	select {

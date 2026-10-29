@@ -527,6 +527,7 @@
                 <div class="page-head">
                     <h1>缓存与预热</h1>
                     <p>图库页（HTML + 预生成 gzip）与缩略图（<code>?w=</code>）都会落盘缓存。清理后首次访问会重新生成；预热可在低峰期提前做好，避免高峰期现场渲染。</p>
+                    <p class="field-desc" style="margin-top:-6px">预热是<b>低优先级</b>任务：有请求进来时自动让路（缩略图最多只占一半像素预算、渲染只在空闲时进行），请求空闲后自动继续。</p>
                 </div>
 
                 <div class="panel">
@@ -569,6 +570,9 @@
                             <div id="prewarmBar" style="height:100%;width:0;background:var(--accent,#0f8b8d);transition:width .3s"></div>
                         </div>
                         <p id="prewarmText" class="field-desc" style="margin-top:8px"></p>
+                        <form action="/admin/cache/cancel" method="post" style="margin-top:8px">
+                            <button type="submit" class="btn">取消预热</button>
+                        </form>
                     </div>
                 </div>
             </section>

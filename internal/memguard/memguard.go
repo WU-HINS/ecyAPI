@@ -108,6 +108,11 @@ func (g *Governor) Level() Level { return Level(g.level.Load()) }
 // NoteRequest 记录一次请求（由中间件调用，热路径只做一次原子写）。
 func (g *Governor) NoteRequest() { g.lastReq.Store(time.Now().UnixNano()) }
 
+// RecentlyActive 判断最近 d 时间内是否有请求。低优先级任务（预热）用它让路。
+func (g *Governor) RecentlyActive(d time.Duration) bool {
+	return time.Since(time.Unix(0, g.lastReq.Load())) < d
+}
+
 // Pressure 返回软目标到红线之间的压力系数：0 = 未超过软目标，1 = 已到红线。
 // 上层用它按比例收紧并发/预算，而不是等跨档才动作。
 func (g *Governor) Pressure() float64 {

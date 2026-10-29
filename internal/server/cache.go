@@ -74,6 +74,7 @@ func (s *Server) clearCaches() (cacheStats, error) {
 type prewarmState struct {
 	mu      sync.Mutex
 	running bool
+	cancel  bool
 	done    int
 	total   int
 	current string
@@ -116,6 +117,7 @@ func (s *Server) startPrewarm(cats []string, width int) bool {
 		return false
 	}
 	p.running = true
+	p.cancel = false
 	p.done, p.total, p.errors, p.current = 0, len(cats), 0, ""
 	p.started = time.Now()
 	p.message = "进行中"
@@ -127,36 +129,83 @@ func (s *Server) startPrewarm(cats []string, width int) bool {
 
 func (s *Server) prewarmLoop(cats []string, width int) {
 	p := s.prewarm
+	countErr := func() {
+		p.mu.Lock()
+		p.errors++
+		p.mu.Unlock()
+	}
+	// waitIdle 在请求/内存忙时退让：最长等 maxWait，期间一旦空闲立即返回。
+	// 返回 false 表示超时或任务被取消。
+	waitIdle := func(maxWait time.Duration) bool {
+		deadline := time.Now().Add(maxWait)
+		for {
+			if s.prewarmCancelled() {
+				return false
+			}
+			if s.prewarmYield() {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return false
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+
 	for _, cat := range cats {
 		p.mu.Lock()
 		p.current = cat
 		p.mu.Unlock()
 
-		if err := s.prewarmGallery(cat); err != nil {
-			p.mu.Lock()
-			p.errors++
-			p.mu.Unlock()
+		if s.prewarmCancelled() {
+			break
 		}
+		// 图库页：只在渲染空闲时占用名额；长时间有请求就跳过该分类。
+		if waitIdle(5 * time.Minute) {
+			for attempt := 0; attempt < 3; attempt++ {
+				err := s.prewarmGallery(cat)
+				if err == nil {
+					break
+				}
+				if errors.Is(err, errPrewarmBusy) {
+					time.Sleep(time.Second) // 有请求在渲染，让路后重试
+					continue
+				}
+				countErr()
+				break
+			}
+		} else {
+			countErr()
+		}
+
+		// 缩略图：逐张做，每张之前都看一眼请求是否来了。
 		if width > 0 {
 			rows, err := s.st.Links(context.Background(), cat)
 			if err == nil {
 				for _, row := range rows {
-					err := s.prewarmThumb(cat, row.ID, width)
-					if err == nil {
-						continue
+					if s.prewarmCancelled() {
+						break
 					}
-					if errors.Is(err, errPrewarmBusy) {
-						time.Sleep(500 * time.Millisecond)
-						if e2 := s.prewarmThumb(cat, row.ID, width); e2 != nil {
-							p.mu.Lock()
-							p.errors++
-							p.mu.Unlock()
+					// 有请求就等（最多 5 分钟），等到空闲再继续，而不是放弃。
+					if !waitIdle(5 * time.Minute) {
+						if s.prewarmCancelled() {
+							break
 						}
-						continue
+						countErr()
+						break
 					}
-					p.mu.Lock()
-					p.errors++
-					p.mu.Unlock()
+					if e := s.prewarmThumb(cat, row.ID, width); e != nil {
+						if errors.Is(e, errPrewarmBusy) {
+							time.Sleep(time.Second) // 预算被请求占着：退让
+							if e2 := s.prewarmThumb(cat, row.ID, width); e2 != nil {
+								countErr()
+							}
+							continue
+						}
+						countErr()
+					}
+					// 每张之间小睡，避免和线上抢 CPU
+					time.Sleep(20 * time.Millisecond)
 				}
 			}
 		}
@@ -166,11 +215,57 @@ func (s *Server) prewarmLoop(cats []string, width int) {
 	}
 	p.mu.Lock()
 	p.running = false
-	p.message = "完成"
+	if p.cancel {
+		p.message = "已取消"
+	} else {
+		p.message = "完成"
+	}
 	p.mu.Unlock()
 }
 
-// prewarmGallery 渲染并落盘一个分类的图库页（资源紧张时重试）。
+// prewarmCancelled 任务是否被管理员取消。
+func (s *Server) prewarmCancelled() bool {
+	p := s.prewarm
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cancel
+}
+
+// handleAdminCacheCancel 取消正在运行的预热任务。
+func (s *Server) handleAdminCacheCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
+	}
+	p := s.prewarm
+	p.mu.Lock()
+	if !p.running {
+		p.mu.Unlock()
+		s.adminResult(w, "当前没有运行中的预热任务")
+		return
+	}
+	p.cancel = true
+	p.mu.Unlock()
+	s.adminResult(w, "已请求取消预热，当前项完成后停止。")
+}
+
+// prewarmYield 判断当前是否适合做预热：
+//   - 最近 1 秒内有请求 → 让路；
+//   - 内存压力已进入 warn 档 → 让路；
+//   - 有请求正在渲染图库 → 让路。
+//
+// 返回 true 表示可以继续；false 表示应暂时停手。
+func (s *Server) prewarmYield() bool {
+	if s.mem.RecentlyActive(time.Second) {
+		return false
+	}
+	if s.mem.Pressure() > 0.3 {
+		return false
+	}
+	return s.galleryGate.idleForPrewarm()
+}
+
+// prewarmGallery 渲染并落盘一个分类的图库页（低优先级：仅在渲染空闲时占用名额）。
 func (s *Server) prewarmGallery(cat string) error {
 	hidden := s.galleryHiddenSet()
 	all := s.sortedCategories(context.Background())
@@ -181,7 +276,11 @@ func (s *Server) prewarmGallery(cat string) error {
 		}
 	}
 	for i := 0; i < 3; i++ {
+		if !s.galleryGate.tryAcquireWhenIdle() {
+			return errPrewarmBusy // 有请求在渲染：让路，稍后再来
+		}
 		_, err := s.buildGalleryPage(context.Background(), cat, cats)
+		s.galleryGate.release()
 		if err == nil {
 			return nil
 		}
@@ -209,7 +308,8 @@ func (s *Server) prewarmThumb(category, file string, width int) error {
 	if s.mem.Permits() == 0 || units > s.mem.ScaleMP(s.cfg.PreviewMP) {
 		return errPrewarmBusy
 	}
-	if !s.previewGate.tryAcquire(units) {
+	// 低优先级：最多占用一半像素预算，另一半留给线上请求。
+	if !s.previewGate.tryAcquireLow(units, 0.5) {
 		return errPrewarmBusy
 	}
 	defer s.previewGate.release(units)
