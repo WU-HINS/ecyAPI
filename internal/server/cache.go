@@ -321,11 +321,14 @@ func (s *Server) prewarmThumb(category, file string, width int) error {
 	if err != nil || len(data) == 0 {
 		return fmt.Errorf("compress %s: %w", file, err)
 	}
-	return s.writePreviewFile(cachePath, data)
+	return s.writePreviewFile(cachePath, data, path)
 }
 
 // writePreviewFile 原子写缩略图缓存。
-func (s *Server) writePreviewFile(cachePath string, data []byte) error {
+// 写完把缓存 mtime 顶到「源文件 mtime 与当前时间中的较大者」：
+// 这样即便源文件的时间戳在未来（时钟漂移、从别处拷来），
+// 下次判断新鲜度也不会永远判成过期而反复重压。
+func (s *Server) writePreviewFile(cachePath string, data []byte, srcPath string) error {
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		return err
 	}
@@ -337,6 +340,13 @@ func (s *Server) writePreviewFile(cachePath string, data []byte) error {
 	if err := os.Rename(tmp, cachePath); err != nil {
 		_ = os.Remove(tmp)
 		return err
+	}
+	if srcPath != "" {
+		if sfi, err := os.Stat(srcPath); err == nil {
+			if cfi, err := os.Stat(cachePath); err == nil && sfi.ModTime().After(cfi.ModTime()) {
+				_ = os.Chtimes(cachePath, sfi.ModTime(), sfi.ModTime())
+			}
+		}
 	}
 	return nil
 }

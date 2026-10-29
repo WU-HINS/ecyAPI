@@ -76,7 +76,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	_, cachePath := s.previewCachePath(category, file, width)
 
 	// 缓存命中：直接输出缓存文件（sendfile + ETag + 304），不整块读进内存。
-	if s.serveCachedPreview(w, r, cachePath) {
+	if s.serveCachedPreview(w, r, cachePath, path) {
 		return
 	}
 
@@ -84,7 +84,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 	// 其余等它落盘后直接命中缓存，避免重复解码与重复 CPU。
 	unlock := s.previewLocks.lock(cachePath)
 	defer unlock()
-	if s.serveCachedPreview(w, r, cachePath) {
+	if s.serveCachedPreview(w, r, cachePath, path) {
 		return
 	}
 
@@ -133,22 +133,23 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		return
 	}
 
-	// 原子落盘：先写唯一临时文件再 rename，避免并发读到半截文件。
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		tmp := cachePath + "." + strconv.FormatInt(time.Now().UnixNano(), 36) + ".tmp"
-		if os.WriteFile(tmp, data, 0o644) == nil && os.Rename(tmp, cachePath) == nil {
-			// 落盘成功后异步清理超量缓存，不阻塞本次响应。
-			go s.evictPreviewCache()
-		} else {
-			_ = os.Remove(tmp)
-		}
+	// 原子落盘（统一走 writePreviewFile，顺带处理「源文件时间戳在未来」的情况）。
+	if err := s.writePreviewFile(cachePath, data, path); err == nil {
+		// 落盘成功后异步清理超量缓存，不阻塞本次响应。
+		go s.evictPreviewCache()
 	}
 
 	writePreview(w, data, "image/webp")
 }
 
 // serveCachedPreview 命中缓存则直接输出并返回 true。
-func (s *Server) serveCachedPreview(w http.ResponseWriter, r *http.Request, cachePath string) bool {
+func (s *Server) serveCachedPreview(w http.ResponseWriter, r *http.Request, cachePath, srcPath string) bool {
+	// 源文件被「同名替换」时 mtime 会变新：此时缓存必须作废重压，
+	// 否则会一直返回旧图（缓存键只有路径+宽度，天生感知不到内容变化）。
+	if !previewCacheFresh(cachePath, srcPath) {
+		_ = os.Remove(cachePath)
+		return false
+	}
 	f, err := os.Open(cachePath)
 	if err != nil {
 		return false
@@ -162,6 +163,21 @@ func (s *Server) serveCachedPreview(w http.ResponseWriter, r *http.Request, cach
 	cacheLong(w.Header())
 	serveLocalFile(w, r, f, fi, "image/webp")
 	return true
+}
+
+// previewCacheFresh 缓存是否仍然对应当前源文件。
+// 判定标准：缓存文件的 mtime 不早于源文件 mtime（替换后源文件更新 → 缓存作废）。
+// 代价是一次 stat（热 dentry 上约 1~5µs），换取「换图后立刻看到新缩略图」。
+func previewCacheFresh(cachePath, srcPath string) bool {
+	cfi, err := os.Stat(cachePath)
+	if err != nil {
+		return false
+	}
+	sfi, err := os.Stat(srcPath)
+	if err != nil {
+		return false // 源文件没了：交给上层按 404 处理
+	}
+	return !sfi.ModTime().After(cfi.ModTime())
 }
 
 // previewCachePath 计算缓存文件路径与源图扩展名。

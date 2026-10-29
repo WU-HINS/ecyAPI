@@ -2,7 +2,6 @@ package server
 
 import (
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -41,16 +40,7 @@ func (s *Server) previewWorker() {
 		if err != nil || len(data) == 0 {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(job.cachePath), 0o755); err != nil {
-			continue
-		}
-		tmp := job.cachePath + "." + time.Now().Format("150405.000000") + ".tmp"
-		if err := os.WriteFile(tmp, data, 0o644); err != nil {
-			_ = os.Remove(tmp)
-			continue
-		}
-		if err := os.Rename(tmp, job.cachePath); err != nil {
-			_ = os.Remove(tmp)
+		if err := s.writePreviewFile(job.cachePath, data, job.path); err != nil {
 			continue
 		}
 		s.evictPreviewCache()
