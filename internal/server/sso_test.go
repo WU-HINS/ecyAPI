@@ -24,12 +24,14 @@ func b64u(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 // mockIdP 一个最小的 OIDC Provider（发现 + JWKS + token + userinfo）。
 type mockIdP struct {
-	srv    *httptest.Server
-	key    *rsa.PrivateKey
-	mu     sync.Mutex
-	nonces map[string]string // code -> nonce
-	sub    string
-	issuer string
+	srv     *httptest.Server
+	key     *rsa.PrivateKey
+	mu      sync.Mutex
+	nonces  map[string]string // code -> nonce
+	sub     string
+	issuer  string
+	algNone bool   // 发 alg=none 的 token
+	aud     string // 覆盖 aud（测试 aud 不符）
 }
 
 func newMockIdP(t *testing.T) *mockIdP {
@@ -60,19 +62,31 @@ func newMockIdP(t *testing.T) *mockIdP {
 			m.mu.Lock()
 			nonce := m.nonces[code]
 			sub := m.sub
+			aud := m.aud
+			algNone := m.algNone
 			m.mu.Unlock()
+			if aud == "" {
+				aud = "client-1"
+			}
 			claims := map[string]any{
-				"iss": m.issuer, "sub": sub, "aud": "client-1",
+				"iss": m.issuer, "sub": sub, "aud": aud,
 				"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(),
 				"nonce": nonce, "email": "admin@example.com",
 			}
-			h, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "k1"})
 			c, _ := json.Marshal(claims)
-			input := b64u(h) + "." + b64u(c)
-			sum := sha256.Sum256([]byte(input))
-			sig, _ := rsa.SignPKCS1v15(rand.Reader, key, 5, sum[:])
+			var token string
+			if algNone {
+				h, _ := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+				token = b64u(h) + "." + b64u(c) + "."
+			} else {
+				h, _ := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "k1"})
+				input := b64u(h) + "." + b64u(c)
+				sum := sha256.Sum256([]byte(input))
+				sig, _ := rsa.SignPKCS1v15(rand.Reader, m.key, 5, sum[:])
+				token = input + "." + b64u(sig)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "at", "token_type": "Bearer", "id_token": input + "." + b64u(sig),
+				"access_token": "at", "token_type": "Bearer", "id_token": token,
 			})
 		case "/userinfo":
 			_ = json.NewEncoder(w).Encode(map[string]any{"sub": "oauth-user", "email": "o@example.com"})
