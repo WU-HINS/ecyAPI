@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -388,6 +389,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.bindSSOIdentity(id)
+		log.Printf("安全事件：绑定 SSO 身份 %s / %s（%s）", id.Issuer, id.Sub, id.Label)
 		http.Redirect(w, r, "/admin?sso_bound=1", http.StatusFound)
 		return
 	}
@@ -397,6 +399,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sessionStart(w, r)
+	log.Printf("安全事件：SSO 登录成功 %s / %s（%s，模式 %s）", id.Issuer, id.Sub, id.Label, id.Mode)
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
@@ -495,6 +498,8 @@ func (s *Server) handleSSOConfig(w http.ResponseWriter, r *http.Request) {
 		s.adminResult(w, "保存失败: "+err.Error())
 		return
 	}
+	log.Printf("管理操作：SSO 配置已保存（启用=%v 仅SSO=%v 模式=%s 端点=%s）",
+		cfg.Enabled, cfg.SSOOnly, cfg.Mode, cfg.AuthorizationEndpoint)
 	s.adminResult(w, "SSO 配置已保存")
 }
 
@@ -552,5 +557,6 @@ func (s *Server) handleSSOUnbind(w http.ResponseWriter, r *http.Request) {
 		s.adminResult(w, "保存失败: "+err.Error())
 		return
 	}
+	log.Printf("管理操作：解除 SSO 绑定 %s / %s", iss, sub)
 	s.adminResult(w, "已解除绑定")
 }

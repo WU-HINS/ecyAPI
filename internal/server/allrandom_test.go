@@ -115,3 +115,28 @@ func TestAllRandomEmpty(t *testing.T) {
 		t.Fatalf("空数据源应 404，得到 %d", rec.Code)
 	}
 }
+
+// TestAllRandomSkipsHidden 图库隐藏的分类不参与 /@img。
+func TestAllRandomSkipsHidden(t *testing.T) {
+	s := newAllRandomServer(t)
+	s.mu.Lock()
+	s.galleryHidden = []string{"beta"}
+	s.mu.Unlock()
+
+	seen := map[string]int{}
+	for i := 0; i < 80; i++ {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/@img", nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("应 302，得到 %d", rec.Code)
+		}
+		loc := strings.TrimPrefix(rec.Header().Get("Location"), "/pic/")
+		seen[strings.Split(loc, "/")[0]]++
+	}
+	if seen["beta"] != 0 {
+		t.Fatalf("隐藏分类 beta 不应被抽到：%v", seen)
+	}
+	if seen["alpha"] == 0 || seen["gamma"] == 0 {
+		t.Fatalf("未隐藏的分类应能抽到：%v", seen)
+	}
+}

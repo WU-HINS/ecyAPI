@@ -107,3 +107,30 @@ func TestProgressivePublish(t *testing.T) {
 	}
 	t.Logf("观察到部分发布: %v（最终 %d 个分类）", sawPartial, len(cats))
 }
+
+// TestProgressiveAggBuildsParentEarly 首次扫描时，父目录聚合在子目录扫到一半就可发布。
+func TestProgressiveAggBuildsParentEarly(t *testing.T) {
+	f := &fileStore{cache: map[string]*categorySet{}, aggs: map[string]*aggKids{}}
+	child := &categorySet{}
+	child.add(fileEntry{name: "x.png", link: "/pic/a/x/x.png", w: 10, h: 5, ori: OrientationLandscape})
+	child.sort()
+
+	sc := &scanCtx{
+		sets:        map[string]*categorySet{"a/x": child},
+		aggs:        map[string]*aggKids{},
+		progressive: true,
+		lastPublish: time.Now().Add(-time.Second),
+	}
+	// 只扫完了一个子目录："a" 的聚合就应该先建出来
+	f.progressiveAgg("a", []string{"x"}, sc)
+	if _, ok := sc.aggs["a"]; !ok {
+		t.Fatal("父目录聚合未在首个子目录完成后建立")
+	}
+	// 发布的快照里也应能看到这个父聚合
+	f.mu.RLock()
+	_, published := f.aggs["a"]
+	f.mu.RUnlock()
+	if !published {
+		t.Fatal("父目录聚合未随部分结果发布")
+	}
+}

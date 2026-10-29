@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -161,6 +162,7 @@ func (s *Server) handleAdminUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		src.Close()
 	}
+	log.Printf("管理操作：上传 %d/%d 个文件到分类 %s（客户端 %s）", saved, len(files), category, clientIP(r))
 	s.adminResult(w, fmt.Sprintf("成功上传 %d / %d 张图片到分类 %s", saved, len(files), category))
 }
 
@@ -193,6 +195,7 @@ func (s *Server) handleAdminDelete(w http.ResponseWriter, r *http.Request) {
 	for _, name := range names {
 		s.cleanupPreviewCache(category, name)
 	}
+	log.Printf("管理操作：删除分类 %s 下 %d 张图片（%s）", category, n, strings.Join(names, ", "))
 	s.adminResult(w, fmt.Sprintf("已删除 %d 张图片", n))
 }
 
@@ -236,9 +239,11 @@ func (s *Server) handleAdminCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if auto {
+		log.Printf("管理操作：创建分类 %s（标签 %q，自动横竖）", name, label)
 		s.adminResult(w, "分类 "+name+" 创建成功，栏目 /"+name+" 已上线（按设备自动分横竖：桌面出横图、移动端出竖图）。")
 		return
 	}
+	log.Printf("管理操作：创建分类 %s（标签 %q，单端）", name, label)
 	s.adminResult(w, "分类 "+name+" 创建成功，首页栏目 /"+name+" 已同步上线（不区分设备）！")
 }
 
@@ -432,6 +437,7 @@ func (s *Server) handleAdminCategoryDelete(w http.ResponseWriter, r *http.Reques
 		s.adminResult(w, "删除失败: "+err.Error())
 		return
 	}
+	log.Printf("管理操作：删除分类 %s（%d 张图，下线 %d 个栏目）", category, count, len(removed))
 	s.cleanupPreviewCache(category, "")
 	// 顺带清掉图库隐藏列表中该分类的残留记录
 	if err := s.pruneGalleryHidden(s.sortedCategories(r.Context())); err != nil {

@@ -15,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -506,6 +508,13 @@ type scanCtx struct {
 	// 首次扫描时分批发布部分结果，让服务能先对外提供已有数据。
 	progressive bool
 	lastPublish time.Time
+	lastLog     time.Time
+	// scanned 本次扫描实际读过的目录（用于统计与日志）。
+	scanned []string
+	// rebuilt 本次扫描真正重建（走了慢路径）的目录数。
+	rebuilt int
+	// rebuiltDirs 前几个被重建的目录名（日志用，最多 5 个）。
+	rebuiltDirs []string
 }
 
 // maxScanWarnings 启动日志里最多展示多少条「跳过原因」。
@@ -520,6 +529,8 @@ const maxScanWarnings = 50
 // 因此未发生变更时的重扫代价是「每层目录一次 getdents + 名字比较」，
 // 与图片数量弱相关（不产生每文件 syscall），3000 张图约 0.2ms。
 func (f *fileStore) scan() error {
+	start := time.Now()
+	before := f.categoryNames()
 	sc := &scanCtx{
 		next: make(map[string]*dirState, len(f.dirs)),
 		sets: make(map[string]*categorySet, len(f.cache)),
@@ -561,7 +572,90 @@ func (f *fileStore) scan() error {
 		f.gen.Add(1)
 		f.dirty.Store(true)
 	}
+	f.logScanResult(before, sc, time.Since(start))
 	return nil
+}
+
+// categoryNames 当前分类名集合（用于扫描前后对比）。
+func (f *fileStore) categoryNames() map[string]bool {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	m := make(map[string]bool, len(f.cache))
+	for k := range f.cache {
+		m[k] = true
+	}
+	return m
+}
+
+// logScanResult 输出一次扫描的摘要：
+//   - 首次扫描：分类数、读了几个目录、耗时、耗时在哪；
+//   - 增量刷新：只在真有变化时打印「新增/移除/重建」明细，避免每 3 秒刷屏。
+func (f *fileStore) logScanResult(before map[string]bool, sc *scanCtx, dur time.Duration) {
+	added := make([]string, 0, 4)
+	removed := make([]string, 0, 4)
+	for name := range sc.sets {
+		if !before[name] {
+			added = append(added, name)
+		}
+	}
+	for name := range before {
+		if _, ok := sc.sets[name]; !ok {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+
+	detail := ""
+	if len(added) > 0 {
+		detail += " 新增 " + summarizeNames(added)
+	}
+	if len(removed) > 0 {
+		detail += " 移除 " + summarizeNames(removed)
+	}
+
+	if sc.progressive {
+		log.Printf("首次扫描完成：%d 个分类，读取 %d 个目录，耗时 %s%s",
+			len(sc.sets), len(sc.scanned), fmtDuration(dur), detail)
+		return
+	}
+	if !sc.changed {
+		return // 无变化不打印，避免每 3 秒一行
+	}
+	where := ""
+	if len(sc.rebuiltDirs) > 0 {
+		where = "（" + summarizeNames(sc.rebuiltDirs) + "）"
+	}
+	log.Printf("索引更新：重建 %d 个目录%s，耗时 %s%s（共 %d 个分类）",
+		sc.rebuilt, where, fmtDuration(dur), detail, len(sc.sets))
+}
+
+// fmtDuration 让亚毫秒的扫描不至于显示成「0s」。
+func fmtDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return strconv.FormatInt(int64(d/time.Microsecond), 10) + "µs"
+	}
+	if d < time.Second {
+		return strconv.FormatInt(int64(d/time.Millisecond), 10) + "ms"
+	}
+	return d.Round(10 * time.Millisecond).String()
+}
+
+// summarizeNames 名字太多时只列前几个，其余折叠成计数。
+func summarizeNames(names []string) string {
+	const max = 3
+	out := ""
+	for i, n := range names {
+		if i >= max {
+			out += " 等 " + strconv.Itoa(len(names)) + " 个"
+			break
+		}
+		if i > 0 {
+			out += "、"
+		}
+		out += n
+	}
+	return out
 }
 
 // publishPartial 把「已扫完的那部分」发布出去（浅拷贝，底层集合不可变）。
@@ -619,10 +713,14 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 			sc.sets[rel] = old.set
 		}
 		sc.skipped = append(sc.skipped, old.skipped...)
+		sc.scanned = append(sc.scanned, rel)
+		scanned := make([]string, 0, len(old.subdirs))
 		for _, sub := range old.subdirs {
 			if err := f.scanDir(joinRel(rel, sub), depth+1, sc, false); err != nil {
 				return err
 			}
+			scanned = append(scanned, sub)
+			f.progressiveAgg(rel, scanned, sc)
 		}
 		f.buildAgg(rel, old.subdirs, sc)
 		return nil
@@ -633,6 +731,10 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 		names[i] = e.Name()
 	}
 	sc.changed = true // 走到这里说明该目录被重新读取（新增/删除/尚未扫过）
+	sc.rebuilt++      // 统计真正重建的目录数（用于日志）
+	if len(sc.rebuiltDirs) < 5 && rel != "" {
+		sc.rebuiltDirs = append(sc.rebuiltDirs, rel)
+	}
 	state := &dirState{names: names, verified: now}
 	if !isRoot {
 		state.set = f.buildSet(rel, dirPath, entries)
@@ -691,13 +793,37 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 	}
 	sc.skipped = append(sc.skipped, state.skipped...)
 	sc.next[rel] = state
+	sc.scanned = append(sc.scanned, rel)
+	scanned := make([]string, 0, len(state.subdirs))
 	for _, sub := range state.subdirs {
 		if err := f.scanDir(joinRel(rel, sub), depth+1, sc, false); err != nil {
 			return err
 		}
+		scanned = append(scanned, sub)
+		// 首次扫描：每完成一个子目录就把父目录的部分聚合发出去，
+		// 让 /pixiv 这类父路径不必等整棵子树扫完才可用（HDD 上差别很大）。
+		f.progressiveAgg(rel, scanned, sc)
 	}
 	f.buildAgg(rel, state.subdirs, sc)
 	return nil
+}
+
+// progressiveAgg 首次扫描期间增量构建父目录聚合视图并发布。
+// 已有部分子目录就先用部分数据建视图，后续子目录扫完时再重建覆盖。
+func (f *fileStore) progressiveAgg(rel string, scanned []string, sc *scanCtx) {
+	if !sc.progressive || len(scanned) == 0 {
+		return
+	}
+	if time.Since(sc.lastPublish) < 300*time.Millisecond {
+		return
+	}
+	f.buildAgg(rel, scanned, sc)
+	f.publishPartial(sc)
+	sc.lastPublish = time.Now()
+	if time.Since(sc.lastLog) > 5*time.Second {
+		sc.lastLog = time.Now()
+		log.Printf("首次扫描进行中：已加载 %d 个分类（当前 %s）", len(sc.sets), rel)
+	}
 }
 
 // buildAgg 为「只有子目录、自身没有图片」的父目录建立聚合视图，
@@ -746,6 +872,8 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 	meta := make(map[string]orientMeta, len(entries))
 	set := &categorySet{}
 	childDirs := 0
+
+	imgs := make([]imgEntry, 0, len(entries))
 	for _, e := range entries {
 		if isDir, _ := dirEntryKind(dirPath, e); isDir {
 			if IsValidIdentifier(e.Name()) {
@@ -757,15 +885,36 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 		if !isImageFile(name) {
 			continue
 		}
-		entry := fileEntry{name: name, link: "/pic/" + rel + "/" + name, ori: OrientationUnknown}
-		if info, ierr := e.Info(); ierr == nil {
-			m, ok := oldMeta[name]
-			// mtime + size 都没变就复用上次判定，避免重复读文件头。
-			if !ok || m.size != info.Size() || m.mod != info.ModTime().UnixNano() {
-				w, h, o := detectOrientation(filepath.Join(dirPath, name))
-				m = orientMeta{size: info.Size(), mod: info.ModTime().UnixNano(), w: w, h: h, ori: o}
-			}
-			meta[name] = m
+		info, ierr := e.Info()
+		if ierr != nil {
+			// 拿不到 stat 就退回「读一次文件头」，保持与旧行为一致。
+			imgs = append(imgs, imgEntry{name: name, need: true})
+			continue
+		}
+		ie := imgEntry{name: name, size: info.Size(), mod: info.ModTime().UnixNano()}
+		m, ok := oldMeta[name]
+		// mtime + size 都没变就复用上次判定，避免重复读文件头。
+		if !ok || m.size != ie.size || m.mod != ie.mod {
+			ie.need = true
+		}
+		imgs = append(imgs, ie)
+	}
+
+	// 需要读文件头的文件并发探测：机械盘上顺序/并行读能明显减少寻道等待，
+	// SSD 上也能缩短冷启动时间。每个 goroutine 只处理自己那一批，结果按下标写回。
+	var results []orientMeta
+	if anyNeed(imgs) {
+		results = f.detectParallel(dirPath, imgs)
+	}
+
+	for i, ie := range imgs {
+		entry := fileEntry{name: ie.name, link: "/pic/" + rel + "/" + ie.name, ori: OrientationUnknown}
+		m := oldMeta[ie.name]
+		if results != nil && ie.need {
+			m = results[i]
+		}
+		if m.size != 0 || m.ori != OrientationUnknown || m.w != 0 || m.h != 0 {
+			meta[ie.name] = m
 			entry.w, entry.h, entry.ori = m.w, m.h, m.ori
 		}
 		set.add(entry)
@@ -781,6 +930,61 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 		delete(f.oriMeta, rel)
 	}
 	return set
+}
+
+// imgEntry buildSet 内部使用：一个待处理的图片文件。
+type imgEntry struct {
+	name string
+	size int64
+	mod  int64
+	need bool // 需要重新读文件头
+}
+
+// detectMaxWorkers 并发探测文件头的上限。
+// 机械盘上 4 个已经足够让内核重排请求；再多只增加随机寻道。
+const detectMaxWorkers = 4
+
+// detectParallel 并发读取一组图片的文件头，返回与 imgs 等长的结果（需要的才算，其余为零值）。
+func (f *fileStore) detectParallel(dirPath string, imgs []imgEntry) []orientMeta {
+	out := make([]orientMeta, len(imgs))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := detectMaxWorkers
+	if n := runtime.GOMAXPROCS(0); n < workers {
+		workers = n
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				ie := imgs[i]
+				w, h, o := detectOrientation(filepath.Join(dirPath, ie.name))
+				out[i] = orientMeta{size: ie.size, mod: ie.mod, w: w, h: h, ori: o}
+			}
+		}()
+	}
+	for i := range imgs {
+		if imgs[i].need {
+			jobs <- i
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return out
+}
+
+// anyNeed 判断是否有文件需要重新读头。
+func anyNeed(imgs []imgEntry) bool {
+	for _, ie := range imgs {
+		if ie.need {
+			return true
+		}
+	}
+	return false
 }
 
 // reload 同步强制重载（写路径使用）：跳过增量复用并强制完整校验。

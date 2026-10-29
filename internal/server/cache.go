@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -246,6 +247,7 @@ func (s *Server) handleAdminCacheCancel(w http.ResponseWriter, r *http.Request) 
 	}
 	p.cancel = true
 	p.mu.Unlock()
+	log.Printf("管理操作：取消预热")
 	s.adminResult(w, "已请求取消预热，当前项完成后停止。")
 }
 
@@ -364,6 +366,9 @@ func (s *Server) handleAdminCacheClear(w http.ResponseWriter, r *http.Request) {
 		s.adminResult(w, "清理失败: "+err.Error())
 		return
 	}
+	log.Printf("管理操作：清理缓存（图库页 %d 个 / %.1f MB，缩略图 %d 个 / %.1f MB）",
+		before.GalleryFiles, float64(before.GalleryBytes)/1048576,
+		before.ThumbFiles, float64(before.ThumbBytes)/1048576)
 	s.adminResult(w, fmt.Sprintf("缓存已清理：图库页 %d 个（%.1f MB）、缩略图 %d 个（%.1f MB）",
 		before.GalleryFiles, float64(before.GalleryBytes)/1048576,
 		before.ThumbFiles, float64(before.ThumbBytes)/1048576))
@@ -409,6 +414,7 @@ func (s *Server) handleAdminCachePrewarm(w http.ResponseWriter, r *http.Request)
 		s.adminResult(w, "已有预热任务在运行，请稍后查看进度")
 		return
 	}
+	log.Printf("管理操作：启动预热（%d 个分类，缩略图宽度 %d）", len(cats), width)
 	s.adminResult(w, fmt.Sprintf("预热已开始：%d 个分类，缩略图宽度 %d（0 表示只渲染图库页），进度见本页", len(cats), width))
 }
 

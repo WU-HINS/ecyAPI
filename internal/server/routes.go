@@ -954,8 +954,20 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 // 避免出现「某些分类永远抽不到图」的空转。
 func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 	want := linkOrientation(r, endpoint{auto: true})
-	cats, err := s.st.Categories(r.Context())
-	if err != nil || len(cats) == 0 {
+	all, err := s.st.Categories(r.Context())
+	if err != nil || len(all) == 0 {
+		plainError(w, "No links found.", http.StatusNotFound)
+		return
+	}
+	// 图库隐藏的分类同样不参与全分类随机（与 /img 的可见性保持一致）。
+	hidden := s.galleryHiddenSet()
+	cats := make([]string, 0, len(all))
+	for _, c := range all {
+		if !hidden[c] {
+			cats = append(cats, c)
+		}
+	}
+	if len(cats) == 0 {
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
