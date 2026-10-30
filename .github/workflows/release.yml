@@ -41,9 +41,36 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+  assets:
+    name: 下载看板娘素材
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: 下载静态资源
+        run: |
+          go run ./tools/fetchassets -dir static
+          du -sh static
+          find static -type f | wc -l
+      - name: 打包独立素材包
+        run: |
+          V="${{ needs.validate.outputs.version }}"
+          tar -czf "ecyapi-$V-static-assets.tar.gz" static
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ecyapi-assets
+          path: |
+            static
+            ecyapi-${{ needs.validate.outputs.version }}-static-assets.tar.gz
+          if-no-files-found: error
+
   binaries:
     name: 二进制 ${{ matrix.arch }}
-    needs: validate
+    needs: [validate, assets]
     strategy:
       fail-fast: false
       matrix:
@@ -61,18 +88,28 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: ecyapi-assets
+          path: .
+
       - name: 安装 libwebp
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebp-dev libsharpyuv-dev
 
-      - name: 构建静态二进制
+      - name: 构建静态二进制（含素材，开箱即用）
         run: |
-          mkdir -p dist
+          mkdir -p dist "pkg/$name"
           name="ecyapi-${{ needs.validate.outputs.version }}-linux-${{ matrix.arch }}"
           CGO_ENABLED=1 go build -tags "webp_system webp_sharpyuv" -trimpath \
             -ldflags="-s -w -extldflags '-static'" -o "dist/$name" ./cmd/server
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # 完整包：二进制 + data/static（默认 ECY_STATIC_DIR 指向这里）+ 说明
+          mkdir -p "pkg/$name/data"
+          cp "dist/$name" "pkg/$name/ecyapi"
+          cp -r static "pkg/$name/data/static"
+          cp README.md "pkg/$name/"
+          tar -C pkg -czf "dist/$name.tar.gz" "$name"
 
       - name: 冒烟测试
         run: |
@@ -115,6 +152,16 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: ecyapi-assets
+          path: assets-artifact
+
+      - name: 附上独立素材包
+        run: |
+          mv assets-artifact/ecyapi-*-static-assets.tar.gz dist/
+          rm -rf assets-artifact
+
       - name: 汇总校验和
         run: cd dist && sha256sum * > SHA256SUMS.txt
 
@@ -125,8 +172,12 @@ jobs:
           V="${{ needs.validate.outputs.version }}"
           NOTES="ecyAPI $V
 
-          静态二进制：linux/amd64、linux/arm64（CGO + libwebp，无运行时依赖）
-          Docker：ghcr.io/${{ github.repository }}:$V（多架构清单）
+          完整包（含看板娘素材，开箱即用）：
+            ecyapi-$V-linux-amd64.tar.gz / ecyapi-$V-linux-arm64.tar.gz
+            解压后：ecyapi 二进制 + data/static（脚本、配置、字体、99 个动画）
+          裸二进制：ecyapi-$V-linux-amd64 / ecyapi-$V-linux-arm64（不含素材）
+          素材包：ecyapi-$V-static-assets.tar.gz（给已有部署补素材用）
+          Docker：ghcr.io/${{ github.repository }}:$V（多架构清单，镜像内已含素材）
 
           校验：sha256sum -c SHA256SUMS.txt"
           if [ "${{ inputs.prerelease }}" = "true" ]; then
@@ -139,7 +190,7 @@ jobs:
 
   docker:
     name: 正式版镜像 ${{ matrix.arch }}
-    needs: validate
+    needs: [validate, assets]
     strategy:
       fail-fast: false
       matrix:
@@ -151,6 +202,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ecyapi-assets
+          path: .
 
       - uses: docker/setup-buildx-action@v3
 

@@ -366,6 +366,27 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 
 ## 构建
 
+### 发布产物（带素材的完整包）
+
+Release 会产出三类文件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `ecyapi-<版本>-linux-<arch>.tar.gz` | **完整包**：`ecyapi` 二进制 + `data/static`（脚本/配置/字体/99 个动画）+ README，解压即用 |
+| `ecyapi-<版本>-linux-<arch>` | 裸二进制（不含素材，适合自己挂卷） |
+| `ecyapi-<版本>-static-assets.tar.gz` | 单独的素材包（给已有部署补素材） |
+
+Docker 镜像里也内置了素材（`/app/data/static`），不用额外挂载。
+
+本地打同样的包：
+
+```bash
+make dist VERSION=v1.0.3     # 产物在 dist/ecyapi-v1.0.3-linux-amd64.tar.gz
+```
+
+素材由 `tools/fetchassets` 从上游一次性拉取（约 50 MB，过程可重复执行、自动跳过已有文件）。
+
+
 需要 Go 1.27+ 与 C 工具链（`?w=` 缩略图依赖 libwebp，通过 CGO 链接）。三种构建方式：
 
 ```bash

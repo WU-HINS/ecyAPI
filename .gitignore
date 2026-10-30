@@ -7,6 +7,10 @@
 /data/preview-cache/
 # 看板娘的大体积动画（用 tools/fetchassets 下载，不入库）
 /data/static/
+# 打包时临时拉取的素材与产物
+/static/
+/dist/
+/build/
 /data/endpoints.json
 /data/settings.json
 /data/logs.json

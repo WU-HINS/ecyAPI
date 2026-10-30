@@ -11,8 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY cmd ./cmd
-COPY internal ./internal
+# 整份上下文拷进来：构建需要 internal/，还要把（可选的）static/ 静态资源带进镜像。
+# static/ 由 CI 用 tools/fetchassets 下载后放入上下文；本地没有时目录为空，镜像照样能构建。
+COPY . .
+RUN mkdir -p /src/static
 RUN CGO_ENABLED=1 go build -tags webp_system -trimpath \
       -ldflags="-s -w -extldflags '-static'" -o /out/ecyapi ./cmd/server
 
@@ -23,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /out/ecyapi /app/ecyapi
+# 看板娘静态资源（脚本/配置/字体内置，动画 webm 来自 static/），默认从 data/static 读取
+COPY --from=builder /src/static /app/data/static
 # 容器直接以 root 运行：挂载宿主空目录/数据卷均无需处理属主权限，
 # 数据目录缺失时由应用启动时自动创建
 RUN mkdir -p /app/data/categories

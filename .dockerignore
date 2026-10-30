@@ -5,6 +5,8 @@ Dockerfile
 .dockerignore
 README.md
 data
+build
+dist
 # 镜像构建走 -tags webp_system（apk libwebp-dev），不需要仓库内预编译静态库
 internal/webp/lib
 tools
