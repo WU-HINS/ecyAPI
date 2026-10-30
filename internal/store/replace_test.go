@@ -111,8 +111,7 @@ func TestReplaceSameSizeAndMtime(t *testing.T) {
 	}
 }
 
-// TestVerifyIntervalConfigurable 校验间隔生效：间隔内走快速路径，过期后重新校验。
-// 用「把 verified 置零」模拟过期，避免依赖真实等待（-race 下会抖）。
+// TestVerifyIntervalConfigurable ECY_VERIFY_INTERVAL 生效：间隔过后普通刷新也能发现同名替换。
 func TestVerifyIntervalConfigurable(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "categories")
 	cat := filepath.Join(dir, "pc")
@@ -121,7 +120,7 @@ func TestVerifyIntervalConfigurable(t *testing.T) {
 	}
 	writePNG(t, filepath.Join(cat, "a.png"), 40, 20)
 
-	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, VerifyInterval: time.Hour})
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, VerifyInterval: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,9 +130,10 @@ func TestVerifyIntervalConfigurable(t *testing.T) {
 		t.Fatalf("初始应为横图，实际 %d", n)
 	}
 
+	time.Sleep(10 * time.Millisecond)
 	writePNG(t, filepath.Join(cat, "a.png"), 20, 40) // 同名换成竖图
 
-	// 间隔内（verified 很新）：不重新校验
+	// 间隔内：仍走快速路径，不会发现
 	fs.reloadMu.Lock()
 	_ = fs.scan()
 	fs.reloadMu.Unlock()
@@ -141,8 +141,8 @@ func TestVerifyIntervalConfigurable(t *testing.T) {
 		t.Fatalf("间隔内不应重新校验，实际竖图 %d", n)
 	}
 
-	// 模拟「校验间隔已过」：把该目录的 verified 置零
-	fs.dirs["pc"].verified = 0
+	// 等过间隔后再刷新：不需要 forceVerify 也能发现
+	time.Sleep(80 * time.Millisecond)
 	fs.reloadMu.Lock()
 	if err := fs.scan(); err != nil {
 		fs.reloadMu.Unlock()

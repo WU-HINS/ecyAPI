@@ -42,8 +42,6 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	type homeData struct {
 		Title string
 		Cards []homeCard
-		// Groups 虚拟分组卡片（/@img/<name>）
-		Groups []homeCard
 		// HeroImage 首页横幅背景（取第一个栏目/分类的预览图，没有就留空用纯色）
 		HeroImage string
 		// StaticBase 看板娘资源的根路径（带版本号，可长缓存）
@@ -62,7 +60,6 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "home.html", homeData{
 		Title:      "栗次元API - 举个栗子",
 		Cards:      cards,
-		Groups:     s.homeGroups(r.Context()),
 		HeroImage:  heroImage(cards, s.sortedCategories(r.Context())),
 		StaticBase: "/@index/v" + s.staticVersion,
 		Year:       time.Now().Year(),
@@ -72,33 +69,6 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 		ICPURL:     icpURL,
 		Logs:       logs,
 	})
-}
-
-// homeGroups 把虚拟分组渲染成首页卡片：链接到 /@img/<name>，预览图取组内随机一张。
-func (s *Server) homeGroups(ctx context.Context) []homeCard {
-	snap := s.groupsSnapshot()
-	if len(snap.list) == 0 {
-		return nil
-	}
-	out := make([]homeCard, 0, len(snap.list))
-	for _, g := range snap.list {
-		preview := ""
-		if rows, err := s.st.GroupRandom(ctx, g.Categories, store.OrientationAny, 1); err == nil && len(rows) > 0 {
-			preview = rows[0].Link
-		}
-		if preview == "" {
-			continue // 组里一张可用图都没有就不展示这张卡片
-		}
-		out = append(out, homeCard{
-			Path:       "/@img/" + g.Name,
-			Label:      g.Label,
-			Desc:       g.Desc,
-			Kind:       "image",
-			PreviewURL: preview,
-			URL:        "/@img/" + g.Name,
-		})
-	}
-	return out
 }
 
 // heroImage 取第一个可用栏目作为首页横幅背景；没有栏目时退回第一个分类。

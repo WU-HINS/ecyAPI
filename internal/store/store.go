@@ -198,12 +198,6 @@ type Store interface {
 	Generation() uint64
 	// Scanning 是否正在扫描磁盘（后台预热据此让路）。
 	Scanning() bool
-
-	// GroupCount / GroupRandom / GroupLinksPage 把若干分类当成一个「虚拟分组」，
-	// 用于 /@img/<name>：成员是任意分类路径（父目录聚合也可以）。
-	GroupCount(ctx context.Context, members []string, want Orientation) (int, error)
-	GroupRandom(ctx context.Context, members []string, want Orientation, limit int) ([]Row, error)
-	GroupLinksPage(ctx context.Context, members []string, offset, limit int) (rows []Row, total int, err error)
 }
 
 // Admin 后台管理写操作接口。
@@ -345,69 +339,6 @@ func (f *fileStore) Scanning() bool { return f.scanning.Load() }
 
 // Generation 返回当前索引代次。
 func (f *fileStore) Generation() uint64 { return f.gen.Load() }
-
-// groupAgg 由成员分类合成聚合视图（虚拟分组用）。
-// 成员可以是普通分类、父目录聚合，或两者混用；不存在的成员会被跳过。
-func (f *fileStore) groupAgg(members []string) *aggKids {
-	if len(members) == 0 {
-		return nil
-	}
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return newAggKids(members, f.cache, f.aggs)
-}
-
-// GroupCount 虚拟分组的图片数。
-func (f *fileStore) GroupCount(ctx context.Context, members []string, want Orientation) (int, error) {
-	_ = ctx
-	agg := f.groupAgg(members)
-	if agg == nil {
-		return 0, ErrNotFound
-	}
-	return agg.bucket(want).total, nil
-}
-
-// GroupRandom 从虚拟分组里随机取图。
-func (f *fileStore) GroupRandom(ctx context.Context, members []string, want Orientation, limit int) ([]Row, error) {
-	_ = ctx
-	agg := f.groupAgg(members)
-	if agg == nil {
-		return nil, ErrNotFound
-	}
-	rows := agg.bucket(want).randomRows(limit)
-	if len(rows) == 0 {
-		return nil, ErrNotFound
-	}
-	return rows, nil
-}
-
-// GroupLinksPage 虚拟分组的分页列表（按成员顺序拼接）。
-func (f *fileStore) GroupLinksPage(ctx context.Context, members []string, offset, limit int) ([]Row, int, error) {
-	_ = ctx
-	agg := f.groupAgg(members)
-	if agg == nil {
-		return nil, 0, ErrNotFound
-	}
-	b := &agg.all
-	total := b.total
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if limit <= 0 || end > total {
-		end = total
-	}
-	rows := make([]Row, 0, end-offset)
-	for i := offset; i < end; i++ {
-		if row, ok := b.rowAt(i); ok {
-			rows = append(rows, row)
-		}
-	}
-	return rows, total, nil
-}
 
 // NewFileStore 使用默认层级上限（DefaultMaxDepth）创建存储。
 func NewFileStore(dir string) (Store, error) {
