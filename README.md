@@ -422,8 +422,15 @@ go test -run XXX -bench . ./internal/...              # 基准测试
 
 ## Docker
 
-镜像里看板娘素材放在 **`/app/static`**（`ECY_STATIC_DIR=/app/static`），**不在 `/app/data`**——
-因为 `/app/data` 通常挂数据卷，卷会遮住镜像内同名目录，放在那里会导致动画 404。
+镜像里素材分两处，启动时自动同步：
+
+| 路径 | 作用 |
+| --- | --- |
+| `/app/static` | 镜像层素材源（`ECY_STATIC_SYNC_FROM`） |
+| `/app/data/static` | 运行目录（`ECY_STATIC_DIR`），位于数据卷内 |
+
+容器启动时把「镜像里有、卷里没有/较旧」的文件补进 `/app/data/static`（只 stat + 增量拷贝，5 万文件级也就几十毫秒）。
+所以即便 `/app/data` 被卷挂载，素材也会自动补齐；卷是只读时同步失败不影响启动——`/@index` 会直接回落到 `/app/static`。
 
 补素材（容器内，无需 Go 工具链）：
 

@@ -47,6 +47,108 @@ func staticContentType(name string) string {
 	return "application/octet-stream"
 }
 
+// syncStaticAssets 启动时把 staticSyncFrom 里的素材补进 staticDir。
+//
+// Docker 镜像把素材放在镜像层（/app/static），而运行目录 /app/data 通常是数据卷：
+// 挂载会盖住镜像里的同名目录，所以启动时把「镜像里有、卷里没有」的文件补进去。
+// 只对缺失或更新的文件做拷贝，已存在的只 stat 一次；卷只读时失败也不影响启动
+// （读路径会回落到 staticSyncFrom）。
+func (s *Server) syncStaticAssets() {
+	src, dst := s.staticSyncFrom, s.staticDir
+	if src == "" || dst == "" {
+		return
+	}
+	if absSrc, err1 := filepath.Abs(src); err1 == nil {
+		if absDst, err2 := filepath.Abs(dst); err2 == nil && absSrc == absDst {
+			return
+		}
+	}
+	if fi, err := os.Stat(src); err != nil || !fi.IsDir() {
+		return
+	}
+	start := time.Now()
+	copied, updated, err := syncTree(src, dst)
+	if err != nil {
+		log.Printf("提示：静态资源同步失败（%v）；/@index 会直接读 %s，功能不受影响", err, src)
+		return
+	}
+	if copied+updated > 0 {
+		log.Printf("静态资源已就绪：新增 %d、更新 %d 个文件 → %s（耗时 %s）",
+			copied, updated, dst, time.Since(start).Round(time.Millisecond))
+	}
+}
+
+// syncTree 把 src 下的普通文件按「缺失或更新」复制到 dst。
+// 返回新增/更新数量；目标目录不可写时返回错误。
+func syncTree(src, dst string) (added, updated int, err error) {
+	err = filepath.WalkDir(src, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil || rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(dst, rel), 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		sfi, serr := d.Info()
+		if serr != nil {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		dfi, derr := os.Stat(target)
+		if derr == nil && dfi.Size() == sfi.Size() && !sfi.ModTime().After(dfi.ModTime()) {
+			return nil // 已是最新
+		}
+		if err := copyFile(p, target, sfi); err != nil {
+			return err
+		}
+		if derr == nil {
+			updated++
+		} else {
+			added++
+		}
+		return nil
+	})
+	return added, updated, err
+}
+
+// copyFile 复制单个文件并保留 mtime（下次启动就能靠 mtime 判断是否需要更新）。
+func copyFile(src, dst string, fi os.FileInfo) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Chtimes(dst, fi.ModTime(), fi.ModTime())
+	return nil
+}
+
 // warnMissingPetAssets 启动时检查看板娘动画是否已安装（webm 体积大，不随二进制分发）。
 // 缺动画时页面仍能用，但控制台会一直刷 404，所以在日志里明确提示一次。
 func (s *Server) warnMissingPetAssets() {
@@ -68,6 +170,18 @@ func (s *Server) warnMissingPetAssets() {
 		"镜像里的素材会被卷遮住——新版镜像已改放到 /app/static，旧镜像可用 docker cp 取出素材", dir)
 }
 
+// staticRoots 返回磁盘资源的查找顺序（去重、跳过空值）。
+func (s *Server) staticRoots() []string {
+	out := make([]string, 0, 2)
+	if s.staticDir != "" {
+		out = append(out, s.staticDir)
+	}
+	if s.staticSyncFrom != "" && s.staticSyncFrom != s.staticDir {
+		out = append(out, s.staticSyncFrom)
+	}
+	return out
+}
+
 // handleIndexStatic 服务 /@index/*：磁盘目录优先，内置 embed 兜底。
 func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/@index/")
@@ -78,18 +192,23 @@ func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.staticDir != "" {
-		p := filepath.Join(s.staticDir, filepath.FromSlash(clean))
-		if f, err := os.Open(p); err == nil {
-			if fi, err := f.Stat(); err == nil && fi.Mode().IsRegular() {
-				defer f.Close()
-				w.Header().Set("Content-Type", staticContentType(clean))
-				w.Header().Set("Cache-Control", "public, max-age=86400")
-				http.ServeContent(w, r, clean, fi.ModTime(), f)
-				return
-			}
-			_ = f.Close()
+	// 磁盘目录按顺序找：运行目录（数据卷）→ 镜像层目录。卷只读或还没同步时也能用。
+	for _, root := range s.staticRoots() {
+		p := filepath.Join(root, filepath.FromSlash(clean))
+		f, err := os.Open(p)
+		if err != nil {
+			continue
 		}
+		fi, statErr := f.Stat()
+		if statErr != nil || !fi.Mode().IsRegular() {
+			_ = f.Close()
+			continue
+		}
+		w.Header().Set("Content-Type", staticContentType(clean))
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		http.ServeContent(w, r, clean, fi.ModTime(), f)
+		_ = f.Close()
+		return
 	}
 
 	sub, err := fs.Sub(staticIndexFS, "static/index")

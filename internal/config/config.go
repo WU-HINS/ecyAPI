@@ -69,6 +69,10 @@ type Config struct {
 	// StaticDir /@index/* 的磁盘资源目录（ECY_STATIC_DIR，默认 data/static）。
 	// 看板娘的动画 webm 等大文件放这里；为空或不存在的文件回落到二进制内置资源。
 	StaticDir string
+	// StaticSyncFrom 启动时把静态资源从这个目录同步到 StaticDir（ECY_STATIC_SYNC_FROM）。
+	// Docker 镜像用：素材在镜像层 /app/static，容器启动时补进数据卷 /app/data/static。
+	// 同步只补缺失/更新的文件，已存在的只做一次 stat；为空表示不同步。
+	StaticSyncFrom string
 	// ParentAggDirsOnly 父目录聚合模式（ECY_PARENT_AGG）：
 	//   with_files（默认）= 父目录自己有图片时，聚合 = 自己的图片 + 子目录；
 	//   dirs_only        = 只有「自身没有图片」的父目录才聚合子目录。
@@ -156,6 +160,7 @@ func Load() Config {
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
 		StaticDir:             env("ECY_STATIC_DIR", "data/static"),
+		StaticSyncFrom:        env("ECY_STATIC_SYNC_FROM", ""),
 		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
 		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 300), 0, 86400),

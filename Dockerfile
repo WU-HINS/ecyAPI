@@ -25,10 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /out/ecyapi /app/ecyapi
-# 看板娘静态资源放在 /app/static，**不要放进 /app/data**：
-# /app/data 通常被挂载成数据卷，卷会盖住镜像里的同名目录，动画就 404 了。
+# 看板娘素材的来源放在 /app/static（镜像层）；运行目录 /app/data 通常是数据卷，
+# 挂载会盖住镜像里的同名目录，所以启动时把素材同步进 /app/data/static
+# （静态资源同步见 internal/server/static.go：只补缺失/更新的文件）。
 COPY --from=builder /src/static /app/static
-ENV ECY_STATIC_DIR=/app/static
+RUN mkdir -p /app/data/static
+ENV ECY_STATIC_DIR=/app/data/static
+ENV ECY_STATIC_SYNC_FROM=/app/static
 # 容器直接以 root 运行：挂载宿主空目录/数据卷均无需处理属主权限，
 # 数据目录缺失时由应用启动时自动创建
 RUN mkdir -p /app/data/categories

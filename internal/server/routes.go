@@ -109,6 +109,8 @@ type Server struct {
 
 	// staticDir /@index/* 的磁盘资源目录（看板娘动画等大文件放这里，优先于内置资源）。
 	staticDir string
+	// staticSyncFrom 启动时把素材从这里同步进 staticDir（Docker 用镜像层 → 数据卷）。
+	staticSyncFrom string
 
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
@@ -166,13 +168,14 @@ func New(cfg config.Config) (*Server, error) {
 	admin, _ := store.NewFileAdmin(st)
 	s := &Server{
 		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
-		access:      newAccessLog(),
-		previewGate: newPreviewGate(cfg.PreviewMP),
-		galleryGate: newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
-		previewJobs: make(chan previewJob, 512),
-		prewarm:     &prewarmState{},
-		sso:         newSSOState(),
-		staticDir:   cfg.StaticDir,
+		access:         newAccessLog(),
+		previewGate:    newPreviewGate(cfg.PreviewMP),
+		galleryGate:    newGalleryGate(cfg.GalleryConcurrency, time.Duration(cfg.GalleryWaitSeconds)*time.Second),
+		previewJobs:    make(chan previewJob, 512),
+		prewarm:        &prewarmState{},
+		sso:            newSSOState(),
+		staticDir:      cfg.StaticDir,
+		staticSyncFrom: cfg.StaticSyncFrom,
 		mem: memguard.New(memguard.Options{
 			LimitBytes: cfg.MemoryLimit,
 			SoftPct:    float64(cfg.MemSoftPct) / 100,
@@ -197,6 +200,7 @@ func New(cfg config.Config) (*Server, error) {
 		}
 	}
 
+	s.syncStaticAssets()
 	s.warnMissingPetAssets()
 
 	if cfg.MemoryLimit > 0 {
