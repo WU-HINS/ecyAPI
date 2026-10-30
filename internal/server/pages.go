@@ -40,29 +40,46 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	type homeData struct {
-		Title  string
-		Cards  []homeCard
-		Year   int
-		Slogan string
-		Share  string
-		ICP    string
-		ICPURL string
-		Logs   []string
+		Title string
+		Cards []homeCard
+		// HeroImage 首页横幅背景（取第一个栏目/分类的预览图，没有就留空用纯色）
+		HeroImage string
+		Year      int
+		Slogan    string
+		Share     string
+		ICP       string
+		ICPURL    string
+		Logs      []string
 	}
 	s.mu.RLock()
 	slogan, share, icp, icpURL := s.slogan, s.share, s.icp, s.icpURL
 	logs := append([]string(nil), s.logs...)
 	s.mu.RUnlock()
 	s.render(w, http.StatusOK, "home.html", homeData{
-		Title:  "栗次元API - 举个栗子",
-		Cards:  cards,
-		Year:   time.Now().Year(),
-		Slogan: slogan,
-		Share:  share,
-		ICP:    icp,
-		ICPURL: icpURL,
-		Logs:   logs,
+		Title:     "栗次元API - 举个栗子",
+		Cards:     cards,
+		HeroImage: heroImage(cards, s.sortedCategories(r.Context())),
+		Year:      time.Now().Year(),
+		Slogan:    slogan,
+		Share:     share,
+		ICP:       icp,
+		ICPURL:    icpURL,
+		Logs:      logs,
 	})
+}
+
+// heroImage 取第一个可用栏目作为首页横幅背景；没有栏目时退回第一个分类。
+// 之前这里写死了 /fj，部署到没有该分类的实例上会一直 404。
+func heroImage(cards []homeCard, cats []string) string {
+	for _, c := range cards {
+		if c.PreviewURL != "" {
+			return c.PreviewURL
+		}
+	}
+	if len(cats) > 0 {
+		return "/" + cats[0]
+	}
+	return ""
 }
 
 // handleDocs 渲染 JSON 参数文档页。

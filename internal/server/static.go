@@ -10,6 +10,7 @@ import (
 	"embed"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -44,6 +45,26 @@ func staticContentType(name string) string {
 		return ct
 	}
 	return "application/octet-stream"
+}
+
+// warnMissingPetAssets 启动时检查看板娘动画是否已安装（webm 体积大，不随二进制分发）。
+// 缺动画时页面仍能用，但控制台会一直刷 404，所以在日志里明确提示一次。
+func (s *Server) warnMissingPetAssets() {
+	dir := filepath.Join(s.staticDir, "assets", "webm")
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		n := 0
+		for _, e := range entries {
+			if strings.HasSuffix(strings.ToLower(e.Name()), ".webm") {
+				n++
+			}
+		}
+		if n > 0 {
+			return
+		}
+	}
+	log.Printf("提示：看板娘动画未安装（%s 下没有 .webm），首页会报动画 404；"+
+		"执行 make assets 或改用带素材的完整包即可", dir)
 }
 
 // handleIndexStatic 服务 /@index/*：磁盘目录优先，内置 embed 兜底。

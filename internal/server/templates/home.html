@@ -29,8 +29,13 @@
             position: fixed;
             inset: 0;
             z-index: -1;
-            background: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)),
-                        url('/fj?w=1280') center / cover no-repeat;
+            /* 背景图取第一个可用栏目（服务端注入 --hero-bg）；没有栏目时用纯色，
+               不再写死某个分类名，避免部署后一直 404。 */
+            background-color: #2d1e16;
+            background-image: linear-gradient(rgba(45, 30, 22, 0.55), rgba(45, 30, 22, 0.55)), var(--hero-bg, none);
+            background-position: center;
+            background-size: cover;
+            background-repeat: no-repeat;
             transform: translateZ(0);
             will-change: transform;
         }
@@ -146,7 +151,7 @@
     </style>
 </head>
 <body>
-    <div class="hero-bg" aria-hidden="true"></div>
+    <div class="hero-bg" aria-hidden="true"{{with .HeroImage}} style="--hero-bg: url('{{.}}?w=1280')"{{end}}></div>
     <section class="hero">
         <div class="logo" role="img" aria-label="栗次元 API">
         <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1125.62 303.95">

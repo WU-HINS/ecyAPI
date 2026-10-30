@@ -197,6 +197,8 @@ func New(cfg config.Config) (*Server, error) {
 		}
 	}
 
+	s.warnMissingPetAssets()
+
 	if cfg.MemoryLimit > 0 {
 		log.Printf("内存预算：%d MB（软目标 %d%%、红线 %d%%；GOMEMLIMIT 由 memguard 动态调节）",
 			cfg.MemoryLimit>>20, cfg.MemSoftPct, cfg.MemHardPct)
