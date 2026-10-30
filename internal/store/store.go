@@ -65,6 +65,8 @@ var reservedTop = map[string]bool{
 	"docs": true, "healthz": true, "favicon.ico": true, "readyz": true,
 	// 全分类随机入口（等价于往所有分类里抽一个），见 server.handleRoot。
 	"@img": true,
+	// 内置静态资源（看板娘脚本与素材），见 server.handleIndexStatic。
+	"@index": true,
 }
 
 // IsReservedTop 判断分类路径的首段是否与内置路由冲突。

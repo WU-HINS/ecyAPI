@@ -38,6 +38,29 @@ go build -o ecyapi ./cmd/server
 - `http://localhost:8080/admin` — 后台管理
 - `http://localhost:8080/healthz` — 健康检查
 
+## 前端静态资源（/@index/*）
+
+首页的看板娘（网页宠物）已经完全自托管，不再从第三方域名拉取：
+
+| 资源 | 位置 | 体积 |
+| --- | --- | --- |
+| 脚本 `dsh-pet.standalone.js` | 内置（编译进二进制） | 46 KB |
+| 配置 `assets/config.jsonc`、光标、字体 | 内置 | ~4 MB |
+| 动画 `assets/webm/*.webm`（99 个） | 磁盘 `ECY_STATIC_DIR`（默认 `data/static`） | ~50 MB |
+
+服务端按 **磁盘优先、内置兜底** 提供 `/@index/*`：
+
+- 内置资源开箱即用（脚本、配置、光标、字体）；
+- 动画体积大，不随仓库分发，首次部署执行一次：
+
+  ```bash
+  make assets            # 等价于 go run ./tools/fetchassets -dir data/static
+  ```
+
+  已存在的文件会跳过，可重复执行；下载失败（比如分组标题被误当动画名）会跳过并计数。
+
+想换目录就设 `ECY_STATIC_DIR`，把下载结果和这个变量指到同一处即可。
+
 ## 数据源
 
 图片文件直接存放在项目目录，以分类名为子文件夹；分类支持多级子目录：

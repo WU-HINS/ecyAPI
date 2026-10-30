@@ -5,6 +5,8 @@
 # 图片数据与绑定配置（本地运行数据，不入库）
 /data/categories/*/
 /data/preview-cache/
+# 看板娘的大体积动画（用 tools/fetchassets 下载，不入库）
+/data/static/
 /data/endpoints.json
 /data/settings.json
 /data/logs.json

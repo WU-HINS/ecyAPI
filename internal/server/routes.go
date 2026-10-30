@@ -107,6 +107,9 @@ type Server struct {
 	// sso OAuth2 / OIDC 登录状态（配置、进行中的授权流程、JWKS 缓存）。
 	sso *ssoState
 
+	// staticDir /@index/* 的磁盘资源目录（看板娘动画等大文件放这里，优先于内置资源）。
+	staticDir string
+
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
 }
@@ -169,6 +172,7 @@ func New(cfg config.Config) (*Server, error) {
 		previewJobs: make(chan previewJob, 512),
 		prewarm:     &prewarmState{},
 		sso:         newSSOState(),
+		staticDir:   cfg.StaticDir,
 		mem: memguard.New(memguard.Options{
 			LimitBytes: cfg.MemoryLimit,
 			SoftPct:    float64(cfg.MemSoftPct) / 100,
@@ -800,6 +804,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/sso/config", s.handleSSOConfig)
 	mux.HandleFunc("POST /admin/sso/discover", s.handleSSODiscover)
 	mux.HandleFunc("POST /admin/sso/unbind", s.handleSSOUnbind)
+	// 内置静态资源（看板娘）：磁盘目录优先，embed 兜底。
+	mux.HandleFunc("GET /@index/", s.handleIndexStatic)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		// 扫描中仍然返回 200（进程健康、能服务），但把状态标出来，便于排查

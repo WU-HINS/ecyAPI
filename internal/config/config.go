@@ -66,6 +66,9 @@ type Config struct {
 	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
 	// 超时则先启动服务、扫描在后台继续；0 表示等扫描完成再启动。
 	StartupWaitSeconds int
+	// StaticDir /@index/* 的磁盘资源目录（ECY_STATIC_DIR，默认 data/static）。
+	// 看板娘的动画 webm 等大文件放这里；为空或不存在的文件回落到二进制内置资源。
+	StaticDir string
 	// ParentAggDirsOnly 父目录聚合模式（ECY_PARENT_AGG）：
 	//   with_files（默认）= 父目录自己有图片时，聚合 = 自己的图片 + 子目录；
 	//   dirs_only        = 只有「自身没有图片」的父目录才聚合子目录。
@@ -152,6 +155,7 @@ func Load() Config {
 		GalleryWaitSeconds:    clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
+		StaticDir:             env("ECY_STATIC_DIR", "data/static"),
 		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
 		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 300), 0, 86400),
