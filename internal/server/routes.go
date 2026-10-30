@@ -111,6 +111,8 @@ type Server struct {
 	staticDir string
 	// staticSyncFrom 启动时把素材从这里同步进 staticDir（Docker 用镜像层 → 数据卷）。
 	staticSyncFrom string
+	// staticVersion 静态资源版本号（8 位十六进制），用于 /@index/v<版本>/... 这种可长缓存的 URL。
+	staticVersion string
 
 	// login 后台登录失败限流（按来源 IP）。
 	login *loginLimiter
@@ -202,6 +204,7 @@ func New(cfg config.Config) (*Server, error) {
 
 	s.syncStaticAssets()
 	s.warnMissingPetAssets()
+	s.staticVersion = s.staticAssetVersion()
 
 	if cfg.MemoryLimit > 0 {
 		log.Printf("内存预算：%d MB（软目标 %d%%、红线 %d%%；GOMEMLIMIT 由 memguard 动态调节）",

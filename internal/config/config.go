@@ -69,6 +69,9 @@ type Config struct {
 	// StaticDir /@index/* 的磁盘资源目录（ECY_STATIC_DIR，默认 data/static）。
 	// 看板娘的动画 webm 等大文件放这里；为空或不存在的文件回落到二进制内置资源。
 	StaticDir string
+	// StaticMaxAge /@index/* 的浏览器/CDN 缓存时长（ECY_STATIC_MAX_AGE，默认 604800 = 7 天）。
+	// 带版本前缀的 URL（/@index/v<hash>/…）会再加 immutable；不带前缀的仍给同样 max-age。
+	StaticMaxAge int
 	// StaticSyncFrom 启动时把静态资源从这个目录同步到 StaticDir（ECY_STATIC_SYNC_FROM）。
 	// Docker 镜像用：素材在镜像层 /app/static，容器启动时补进数据卷 /app/data/static。
 	// 同步只补缺失/更新的文件，已存在的只做一次 stat；为空表示不同步。
@@ -160,6 +163,7 @@ func Load() Config {
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
 		StaticDir:             env("ECY_STATIC_DIR", "data/static"),
+		StaticMaxAge:          clampInt(envInt("ECY_STATIC_MAX_AGE", 7*24*3600), 60, 30*24*3600),
 		StaticSyncFrom:        env("ECY_STATIC_SYNC_FROM", ""),
 		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),

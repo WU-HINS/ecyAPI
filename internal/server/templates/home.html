@@ -317,7 +317,7 @@
         }, { rootMargin: '0px 0px 100px 0px' });
         document.querySelectorAll('[data-src]').forEach(function (m) { observer.observe(m); });
     </script>
-    <script src="/@index/dsh-pet.standalone.js"></script>
-    <script>DSHPet.init({ size: 300, corner: 'bottom-right', assetRoot: '/@index' })</script>
+    <script src="{{.StaticBase}}/dsh-pet.standalone.js"></script>
+    <script>DSHPet.init({ size: 300, corner: 'bottom-right', assetRoot: '{{.StaticBase}}' })</script>
 </body>
 </html>

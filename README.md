@@ -48,7 +48,16 @@ go build -o ecyapi ./cmd/server
 | 配置 `assets/config.jsonc`、光标、字体 | 内置 | ~4 MB |
 | 动画 `assets/webm/*.webm`（99 个） | 磁盘 `ECY_STATIC_DIR`（默认 `data/static`） | ~50 MB |
 
-服务端按 **磁盘优先、内置兜底** 提供 `/@index/*`：
+服务端按 **磁盘优先、内置兜底** 提供 `/@index/*`，并且页面引用的是**带版本前缀**的地址：
+
+```
+/@index/v2b563ceb/dsh-pet.standalone.js     → Cache-Control: public, max-age=604800, immutable
+/@index/dsh-pet.standalone.js               → Cache-Control: public, max-age=604800
+```
+
+版本号取「内置资源内容 + 磁盘素材名/大小/mtime」的摘要，**素材或程序一变，前缀就变**，
+所以 CDN 可以放心吃满 7 天缓存（默认值，可用 `ECY_STATIC_MAX_AGE` 调）。不带前缀的地址照旧可用，
+只是没有 `immutable`。
 
 - 内置资源开箱即用（脚本、配置、光标、字体）；
 - 动画体积大，不随仓库分发，首次部署执行一次：
@@ -305,6 +314,7 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 | `ECY_MEM_HARD_PCT` | `90` | 红线百分比（60~99）。到达即紧急回收（GOMEMLIMIT 50%、GOGC 15、5 秒一次归还）并停止新的大分配 |
 | `ECY_SCAN_INTERVAL` | `3` | 后台增量刷新间隔（秒，1~3600）。扫描已移出请求路径，文件增删在这个间隔内生效 |
 | `ECY_STARTUP_WAIT` | `15` | 首次扫描的等待上限（秒，0~300）。到点还没扫完就先监听端口、后台继续扫描；`0` = 等扫描完成再启动 |
+| `ECY_STATIC_MAX_AGE` | `604800` | `/@index/*` 静态资源的 `Cache-Control: max-age`（秒，60~2592000，默认 **7 天**）。带版本前缀的 URL 会再加 `immutable` |
 | `ECY_PARENT_AGG` | `with_files` | 父目录聚合模式：`with_files` = 父目录自己有图片时，`/父目录` = 自己的图 **+** 子目录的图；`dirs_only` = 只有自身没有图片的父目录才聚合子目录 |
 | `ECY_VERIFY_INTERVAL` | `3600` | 强制完整校验间隔（秒，5~86400，默认 1 小时）。条目名没变时，最多隔这么久把该目录的文件 stat 一遍，用于发现「同名文件被原地替换」；库很大时可再调大以省 IO |
 | `ECY_SNAPSHOT_TTL` | `300` | **运行期落盘周期**（秒，0~86400，默认 5 分钟）。每周期把内存索引重写一次（没变化也写，保证时间戳新鲜）；`0` = 关闭快照 |

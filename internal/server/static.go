@@ -7,7 +7,10 @@ package server
 // 服务端按「磁盘优先、内置兜底」的顺序提供，所以缺动画时页面依然能用。
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -16,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -170,6 +174,23 @@ func (s *Server) warnMissingPetAssets() {
 		"镜像里的素材会被卷遮住——新版镜像已改放到 /app/static，旧镜像可用 docker cp 取出素材", dir)
 }
 
+// staticVersionRe 匹配版本前缀（v + 6~16 位十六进制）。
+var staticVersionRe = regexp.MustCompile(`^v[0-9a-f]{6,16}$`)
+
+// staticCacheControl 静态资源的缓存策略：
+//   - 带版本前缀（/@index/v<hash>/...）：immutable，可以吃满 max-age；
+//   - 不带前缀：同样 max-age，但允许 revalidate（ServeContent 会回 304）。
+func (s *Server) staticCacheControl(immutable bool) string {
+	maxAge := s.cfg.StaticMaxAge
+	if maxAge <= 0 {
+		maxAge = 7 * 24 * 3600
+	}
+	if immutable {
+		return fmt.Sprintf("public, max-age=%d, immutable", maxAge)
+	}
+	return fmt.Sprintf("public, max-age=%d", maxAge)
+}
+
 // staticRoots 返回磁盘资源的查找顺序（去重、跳过空值）。
 func (s *Server) staticRoots() []string {
 	out := make([]string, 0, 2)
@@ -182,6 +203,42 @@ func (s *Server) staticRoots() []string {
 	return out
 }
 
+// staticAssetVersion 计算静态资源版本号（前 8 位十六进制）。
+// 用于 /@index/v<版本>/... 这种带版本前缀的 URL：前缀一变浏览器/CDN 自然回源，
+// 所以可以放心给很长的缓存时间；不带前缀的 URL 仍然可用，但只给较短的缓存。
+func (s *Server) staticAssetVersion() string {
+	h := sha256.New()
+	// 内置资源（脚本/配置/光标/字体）
+	if sub, err := fs.Sub(staticIndexFS, "static/index"); err == nil {
+		_ = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if fi, ferr := d.Info(); ferr == nil {
+				fmt.Fprintf(h, "%s:%d;", p, fi.Size())
+			}
+			if data, rerr := fs.ReadFile(sub, p); rerr == nil {
+				h.Write(data)
+			}
+			return nil
+		})
+	}
+	// 磁盘素材（webm 等）：按名字+大小+修改时间摘要，不读内容（50MB 太贵）
+	for _, root := range s.staticRoots() {
+		_ = filepath.WalkDir(filepath.Join(root, "assets", "webm"), func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if fi, ferr := d.Info(); ferr == nil {
+				fmt.Fprintf(h, "%s:%d:%d;", p, fi.Size(), fi.ModTime().UnixNano())
+			}
+			return nil
+		})
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:4]) // 8 位十六进制
+}
+
 // handleIndexStatic 服务 /@index/*：磁盘目录优先，内置 embed 兜底。
 func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/@index/")
@@ -190,6 +247,12 @@ func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 	if clean == "" || clean == "." || strings.HasPrefix(clean, "..") {
 		http.NotFound(w, r)
 		return
+	}
+	// 版本前缀：/@index/v1a2b3c4d/xxx → 去掉前缀，并按「不可变」下发缓存头。
+	immutable := false
+	if first, rest, ok := strings.Cut(clean, "/"); ok && staticVersionRe.MatchString(first) && rest != "" {
+		clean = rest
+		immutable = true
 	}
 
 	// 磁盘目录按顺序找：运行目录（数据卷）→ 镜像层目录。卷只读或还没同步时也能用。
@@ -205,7 +268,7 @@ func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		w.Header().Set("Content-Type", staticContentType(clean))
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Cache-Control", s.staticCacheControl(immutable))
 		http.ServeContent(w, r, clean, fi.ModTime(), f)
 		_ = f.Close()
 		return
@@ -232,7 +295,7 @@ func (s *Server) handleIndexStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", staticContentType(clean))
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", s.staticCacheControl(immutable))
 	// embed 文件没有有意义的 mtime，用零值让 ServeContent 只做 Range 处理。
 	http.ServeContent(w, r, clean, time.Time{}, rs)
 }

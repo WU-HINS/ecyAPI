@@ -120,3 +120,47 @@ func TestIndexStaticRange(t *testing.T) {
 		t.Fatalf("Range 未生效: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// TestStaticVersionedCache 带版本前缀：去掉前缀后照常出文件，并下发 7 天 immutable 缓存。
+func TestStaticVersionedCache(t *testing.T) {
+	s := newStaticServer(t, filepath.Join(t.TempDir(), "empty"))
+	rec := get(t, s, "/@index/v1a2b3c4d/dsh-pet.standalone.js")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("版本化 URL 应 200，得到 %d", rec.Code)
+	}
+	cc := rec.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "max-age=604800") || !strings.Contains(cc, "immutable") {
+		t.Fatalf("缓存头不对: %q", cc)
+	}
+	// 不带版本：同样 7 天，但没有 immutable
+	rec = get(t, s, "/@index/dsh-pet.standalone.js")
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=604800") || strings.Contains(cc, "immutable") {
+		t.Fatalf("无版本 URL 缓存头不对: %q", cc)
+	}
+	// 伪装成版本前缀但内容不存在 → 404（前缀被正确剥离）
+	if rec := get(t, s, "/@index/v1a2b3c4d/nope.js"); rec.Code != http.StatusNotFound {
+		t.Fatalf("不存在的版本化路径应 404，得到 %d", rec.Code)
+	}
+}
+
+// TestStaticVersionChanges 素材变化后版本号应变化（首页 URL 随之更新，CDN 自然回源）。
+func TestStaticVersionChanges(t *testing.T) {
+	dir := t.TempDir()
+	s1 := newStaticServer(t, dir)
+	v1 := s1.staticVersion
+	if v1 == "" {
+		t.Fatal("版本号不应为空")
+	}
+
+	// 往磁盘素材里加一个 webm → 版本号应变化
+	if err := os.MkdirAll(filepath.Join(dir, "assets", "webm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "webm", "a.webm"), []byte("AAAA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2 := newStaticServer(t, dir)
+	if s2.staticVersion == v1 {
+		t.Fatalf("素材变化后版本号应变化，仍是 %s", v1)
+	}
+}
