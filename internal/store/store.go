@@ -324,6 +324,14 @@ type fileStore struct {
 	dirty atomic.Bool
 	// snapshotErrLogged 写快照失败是否已提示过（避免只读部署刷屏）。
 	snapshotErrLogged atomic.Bool
+	// stop 关闭后后台循环（刷新/快照）退出，供测试与优雅关闭使用。
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+// Close 停止后台刷新与快照循环。可重复调用。
+func (f *fileStore) Close() {
+	f.stopOnce.Do(func() { close(f.stop) })
 }
 
 // Scanning 是否正在扫描磁盘。
@@ -391,6 +399,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		refreshInterval:   interval,
 		verifyInterval:    verify,
 		parentAggDirsOnly: opt.ParentAggDirsOnly,
+		stop:              make(chan struct{}),
 		cache:             map[string]*categorySet{},
 		oriMeta:           map[string]map[string]orientMeta{},
 		dirs:              map[string]*dirState{},
@@ -469,7 +478,12 @@ const defaultScanInterval = 3 * time.Second
 func (f *fileStore) refreshLoop() {
 	t := time.NewTicker(f.refreshInterval)
 	defer t.Stop()
-	for range t.C {
+	for {
+		select {
+		case <-f.stop:
+			return
+		case <-t.C:
+		}
 		// 数据目录被删掉（测试临时目录回收、误删挂载点）时停止刷新，
 		// 避免日志被无意义的失败刷屏。
 		if _, err := os.Stat(f.dir); err != nil {

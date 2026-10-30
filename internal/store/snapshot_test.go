@@ -202,6 +202,8 @@ func TestSnapshotRefreshedWhenIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs := st.(*fileStore)
+	// 先在测试结束前停掉后台循环，否则 t.TempDir 清理会和「每 40ms 重写快照」打架
+	defer fs.Close()
 
 	time.Sleep(150 * time.Millisecond) // 期间没有任何变更
 
