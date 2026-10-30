@@ -37,6 +37,9 @@ services:
       #   /app/data/gallery.json    图库隐藏分类
       #   /app/data/preview-cache   ?w= 缩略图缓存
       - ./data:/app/data
+      # 看板娘素材在镜像的 /app/static（**不在 /app/data**，否则会被上面的卷遮住）。
+      # 想自己改素材时再挂：./static:/app/static（注意：挂空目录同样会遮住镜像内素材）
+      # - ./static:/app/static
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 30s

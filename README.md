@@ -54,7 +54,8 @@ go build -o ecyapi ./cmd/server
 - 动画体积大，不随仓库分发，首次部署执行一次：
 
   ```bash
-  make assets            # 等价于 go run ./tools/fetchassets -dir data/static
+  make assets                 # 等价于 go run ./tools/fetchassets -dir data/static
+  ecyapi -fetch-assets        # 服务端内置：下载到 ECY_STATIC_DIR 后退出（Docker 里最方便）
   ```
 
   已存在的文件会跳过，可重复执行；下载失败（比如分组标题被误当动画名）会跳过并计数。
@@ -420,6 +421,26 @@ go test -run XXX -bench . ./internal/...              # 基准测试
 ```
 
 ## Docker
+
+镜像里看板娘素材放在 **`/app/static`**（`ECY_STATIC_DIR=/app/static`），**不在 `/app/data`**——
+因为 `/app/data` 通常挂数据卷，卷会遮住镜像内同名目录，放在那里会导致动画 404。
+
+补素材（容器内，无需 Go 工具链）：
+
+```bash
+docker exec <容器名> /app/ecyapi -fetch-assets
+```
+
+> 从 v1.0.3 升级的老部署：镜像把素材放在 `/app/data/static`，被数据卷遮住后取不到。
+> 新版已改到 `/app/static`；老镜像可以用 docker cp 从镜像层里取出一次：
+>
+> ```bash
+> cid=$(docker create ghcr.io/wu-hins/ecyapi:v1.0.3)
+> docker cp "$cid:/app/data/static" ./static
+> docker rm "$cid"
+> # 然后把 ./static 挂到 /app/static（新版镜像不用挂）
+> ```
+
 
 ```bash
 # 多架构镜像：ghcr.io/wu-hins/ecyapi（linux/amd64 + linux/arm64 原生构建）

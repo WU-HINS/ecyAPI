@@ -64,7 +64,8 @@ func (s *Server) warnMissingPetAssets() {
 		}
 	}
 	log.Printf("提示：看板娘动画未安装（%s 下没有 .webm），首页会报动画 404；"+
-		"执行 make assets 或改用带素材的完整包即可", dir)
+		"执行 make assets、或改用带素材的完整包；Docker 下若把卷挂在 /app/data，"+
+		"镜像里的素材会被卷遮住——新版镜像已改放到 /app/static，旧镜像可用 docker cp 取出素材", dir)
 }
 
 // handleIndexStatic 服务 /@index/*：磁盘目录优先，内置 embed 兜底。

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -14,11 +15,24 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"ecyapi/internal/config"
+	"ecyapi/internal/petassets"
 	"ecyapi/internal/server"
 )
 
 func main() {
+	// 内置的素材下载器：Docker 等没有 Go 工具链的环境里补看板娘动画最方便。
+	//   docker exec <容器> /app/ecyapi -fetch-assets
+	fetchAssets := flag.Bool("fetch-assets", false, "下载看板娘素材到 ECY_STATIC_DIR 后退出")
+	flag.Parse()
+
 	cfg := config.Load()
+	if *fetchAssets {
+		log.Printf("开始下载看板娘素材到 %s …", cfg.StaticDir)
+		if _, err := petassets.Fetch(cfg.StaticDir, petassets.DefaultBase, log.Printf); err != nil {
+			log.Fatalf("下载失败: %v", err)
+		}
+		return
+	}
 
 	srv, err := server.New(cfg)
 	if err != nil {

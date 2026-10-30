@@ -60,6 +60,7 @@ services:
     volumes:
       - ./data:/app/data:ro
       - cache-a:/app/data/preview-cache
+      # 素材在镜像的 /app/static（不随数据卷被遮住）
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -74,6 +75,7 @@ services:
     volumes:
       - ./data:/app/data:ro
       - cache-b:/app/data/preview-cache
+      # 素材在镜像的 /app/static（不随数据卷被遮住）
 
   # ---------- 入口：/admin 固定打到写入实例，其余按轮询分发 ----------
   caddy:

@@ -25,8 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /out/ecyapi /app/ecyapi
-# 看板娘静态资源（脚本/配置/字体内置，动画 webm 来自 static/），默认从 data/static 读取
-COPY --from=builder /src/static /app/data/static
+# 看板娘静态资源放在 /app/static，**不要放进 /app/data**：
+# /app/data 通常被挂载成数据卷，卷会盖住镜像里的同名目录，动画就 404 了。
+COPY --from=builder /src/static /app/static
+ENV ECY_STATIC_DIR=/app/static
 # 容器直接以 root 运行：挂载宿主空目录/数据卷均无需处理属主权限，
 # 数据目录缺失时由应用启动时自动创建
 RUN mkdir -p /app/data/categories
