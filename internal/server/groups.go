@@ -240,53 +240,125 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 	_, _ = w.Write(body)
 }
 
-// handleAdminGroupsSave 保存分组定义（后台 JSON 编辑器）。
-func (s *Server) handleAdminGroupsSave(w http.ResponseWriter, r *http.Request) {
-	if !s.sessionValid(r) {
-		http.Error(w, "未授权", http.StatusUnauthorized)
-		return
-	}
-	raw := strings.TrimSpace(r.PostFormValue("groups_json"))
-	if raw == "" {
-		raw = `{"groups":[]}`
-	}
-	// 先落到临时文件校验，再原子替换
-	tmp := groupsFile + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(groupsFile), 0o755); err != nil {
-		s.adminResult(w, "保存失败: "+err.Error())
-		return
-	}
-	if err := os.WriteFile(tmp, []byte(raw), 0o644); err != nil {
-		s.adminResult(w, "保存失败: "+err.Error())
-		return
-	}
-	snap, err := readGroups(tmp)
+// saveGroups 把分组列表原子写回 groups.json 并刷新内存快照。
+func (s *Server) saveGroups(list []virtualGroup) error {
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	doc := groupsDoc{Groups: list}
+	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		_ = os.Remove(tmp)
-		s.adminResult(w, "定义有误: "+err.Error())
-		return
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(groupsFile), 0o755); err != nil {
+		return err
+	}
+	tmp := groupsFile + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
 	}
 	if err := os.Rename(tmp, groupsFile); err != nil {
 		_ = os.Remove(tmp)
-		s.adminResult(w, "保存失败: "+err.Error())
-		return
+		return err
+	}
+	// 重新解析一次，保证内存里的快照与磁盘完全一致（含 hash）
+	snap, err := readGroups(groupsFile)
+	if err != nil {
+		return err
 	}
 	s.mu.Lock()
 	s.groups = snap
 	s.mu.Unlock()
-	log.Printf("管理操作：保存虚拟分组 %d 个", len(snap.list))
-	s.adminResult(w, fmt.Sprintf("已保存 %d 个虚拟分组：%s", len(snap.list), groupNames(snap)))
+	return nil
 }
 
-// groupsJSON 把当前分组渲染成可编辑的 JSON（后台文本框用）。
-func groupsJSON(snap *groupSnapshot) string {
-	doc := groupsDoc{Groups: make([]virtualGroup, 0, len(snap.list))}
-	doc.Groups = append(doc.Groups, snap.list...)
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return `{"groups":[]}`
+// handleAdminGroupUpsert 新增或更新一个虚拟分组（后台列表表单）。
+func (s *Server) handleAdminGroupUpsert(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
 	}
-	return string(b)
+	orig := strings.ToLower(strings.TrimSpace(r.PostFormValue("orig")))
+	name := strings.ToLower(strings.TrimSpace(r.PostFormValue("name")))
+	label := strings.TrimSpace(r.PostFormValue("label"))
+	desc := strings.TrimSpace(r.PostFormValue("desc"))
+	if name == "" {
+		s.adminResult(w, "分组名不能为空")
+		return
+	}
+	if !groupNameRe.MatchString(name) {
+		s.adminResult(w, "分组名只能用小写字母/数字与 - _，最长 32，且不能带 /（单级）")
+		return
+	}
+	// 只接受真实存在的分类，避免写进一堆不存在的成员
+	exist := map[string]bool{}
+	for _, c := range s.sortedCategories(r.Context()) {
+		exist[c] = true
+	}
+	members := make([]string, 0, len(r.PostForm["categories"]))
+	seen := map[string]bool{}
+	for _, c := range r.PostForm["categories"] {
+		c = strings.Trim(strings.TrimSpace(c), "/")
+		if c == "" || seen[c] || !exist[c] {
+			continue
+		}
+		seen[c] = true
+		members = append(members, c)
+	}
+	if len(members) == 0 {
+		s.adminResult(w, "至少要勾选一个存在的分类")
+		return
+	}
+
+	cur := s.groupsSnapshot()
+	list := make([]virtualGroup, 0, len(cur.list)+1)
+	for _, g := range cur.list {
+		if g.Name == orig && orig != "" {
+			continue // 被本次更新替换
+		}
+		if g.Name == name {
+			s.adminResult(w, "分组名 "+name+" 已存在")
+			return
+		}
+		list = append(list, g)
+	}
+	if label == "" {
+		label = name
+	}
+	list = append(list, virtualGroup{Name: name, Label: label, Desc: desc, Categories: members})
+	if err := s.saveGroups(list); err != nil {
+		s.adminResult(w, "保存失败: "+err.Error())
+		return
+	}
+	log.Printf("管理操作：保存虚拟分组 /@img/%s（%d 个分类）", name, len(members))
+	s.adminResult(w, "已保存分组 /@img/"+name)
+}
+
+// handleAdminGroupDelete 删除一个虚拟分组。
+func (s *Server) handleAdminGroupDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.sessionValid(r) {
+		http.Error(w, "未授权", http.StatusUnauthorized)
+		return
+	}
+	name := strings.ToLower(strings.TrimSpace(r.PostFormValue("name")))
+	cur := s.groupsSnapshot()
+	list := make([]virtualGroup, 0, len(cur.list))
+	found := false
+	for _, g := range cur.list {
+		if g.Name == name {
+			found = true
+			continue
+		}
+		list = append(list, g)
+	}
+	if !found {
+		s.adminResult(w, "分组不存在")
+		return
+	}
+	if err := s.saveGroups(list); err != nil {
+		s.adminResult(w, "删除失败: "+err.Error())
+		return
+	}
+	log.Printf("管理操作：删除虚拟分组 /@img/%s", name)
+	s.adminResult(w, "已删除分组 /@img/"+name)
 }
 
 func groupNames(snap *groupSnapshot) string {

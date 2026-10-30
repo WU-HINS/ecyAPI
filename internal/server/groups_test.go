@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,4 +123,58 @@ func writeTemp(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// TestGroupAdminUpsertAndDelete 后台列表编辑：新增、改名、删分类、删除分组。
+func TestGroupAdminUpsertAndDelete(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+
+	// 新增
+	msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name": {"mix"}, "label": {"混合"}, "categories": {"pc", "phone"},
+	})
+	if !strings.Contains(msg, "已保存分组") {
+		t.Fatalf("新增失败: %s", msg)
+	}
+	if rec := get(t, s, "/@img/mix"); rec.Code != http.StatusOK {
+		t.Fatalf("新分组页面应 200，得到 %d", rec.Code)
+	}
+
+	// 更新（改名 + 换成员）
+	msg = postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"orig": {"mix"}, "name": {"mix2"}, "label": {"混合2"}, "categories": {"phone"},
+	})
+	if !strings.Contains(msg, "已保存分组") {
+		t.Fatalf("更新失败: %s", msg)
+	}
+	if rec := get(t, s, "/@img/mix"); rec.Code != http.StatusNotFound {
+		t.Fatalf("旧名字应 404，得到 %d", rec.Code)
+	}
+	if rec := get(t, s, "/@img/mix2"); rec.Code != http.StatusOK {
+		t.Fatalf("新名字应 200，得到 %d", rec.Code)
+	}
+
+	// 非法名字 / 空成员被拒
+	if msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name": {"a/b"}, "categories": {"pc"},
+	}); !strings.Contains(msg, "只能用小写字母") {
+		t.Fatalf("非法名字应被拒: %s", msg)
+	}
+	if msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name": {"empty"},
+	}); !strings.Contains(msg, "至少要勾选") {
+		t.Fatalf("空成员应被拒: %s", msg)
+	}
+
+	// 删除
+	if msg := postAdmin(t, s, cookie, "/admin/groups/delete", url.Values{"name": {"mix2"}}); !strings.Contains(msg, "已删除分组") {
+		t.Fatalf("删除失败: %s", msg)
+	}
+	if rec := get(t, s, "/@img/mix2"); rec.Code != http.StatusNotFound {
+		t.Fatalf("删除后应 404，得到 %d", rec.Code)
+	}
 }

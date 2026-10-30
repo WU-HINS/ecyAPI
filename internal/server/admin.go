@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -123,7 +124,18 @@ func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {
 	if _, ok := data["Groups"]; !ok {
 		snap := s.groupsSnapshot()
 		data["Groups"] = snap.list
-		data["GroupsJSON"] = groupsJSON(snap)
+		// 分类选择器：名字 + 数量
+		type pickCat struct {
+			Name  string
+			Count int
+		}
+		cats := s.sortedCategories(context.Background())
+		counts := s.categoryCountMap(context.Background())
+		pick := make([]pickCat, 0, len(cats))
+		for _, c := range cats {
+			pick = append(pick, pickCat{Name: c, Count: counts[c]})
+		}
+		data["PickCategories"] = pick
 	}
 	s.render(w, http.StatusOK, "admin.html", data)
 }

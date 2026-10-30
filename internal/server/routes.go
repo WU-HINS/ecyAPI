@@ -233,6 +233,15 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	funcMap := template.FuncMap{
 		"Add": func(a, b int) int { return a + b },
+		// HasString 判断切片里是否包含某个字符串（模板里勾选已选分类用）。
+		"HasString": func(list []string, v string) bool {
+			for _, x := range list {
+				if x == v {
+					return true
+				}
+			}
+			return false
+		},
 		// RichText 允许首页文案使用白名单内的少量 HTML 标签（如 <br> 换行）。
 		"RichText": renderRichText,
 	}
@@ -812,7 +821,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/cache/prewarm", s.handleAdminCachePrewarm)
 	mux.HandleFunc("GET /admin/cache/status", s.handleAdminCacheStatus)
 	mux.HandleFunc("POST /admin/cache/cancel", s.handleAdminCacheCancel)
-	mux.HandleFunc("POST /admin/groups/save", s.handleAdminGroupsSave)
+	mux.HandleFunc("POST /admin/groups/upsert", s.handleAdminGroupUpsert)
+	mux.HandleFunc("POST /admin/groups/delete", s.handleAdminGroupDelete)
 
 	// 管理登录的 OAuth2 / OIDC
 	mux.HandleFunc("GET /admin/sso/login", s.handleSSOLogin)
