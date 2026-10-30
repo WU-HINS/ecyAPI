@@ -11,7 +11,7 @@ BIN ?= ecyapi
 # CI 与 Docker 镜像用系统库：make build TAGS="webp_system webp_sharpyuv"
 TAGS ?=
 
-.PHONY: build test assets dist run fmt vet
+.PHONY: build test assets dist docker run fmt vet
 
 build:
 	CGO_ENABLED=1 $(GO) build -tags $(TAGS) -ldflags "-s -w" -o $(BIN) ./cmd/server
@@ -40,6 +40,10 @@ dist:
 	cp README.md build/ecyapi-$(VERSION)-linux-$(ARCH)/
 	tar -C build -czf dist/ecyapi-$(VERSION)-linux-$(ARCH).tar.gz ecyapi-$(VERSION)-linux-$(ARCH)
 	@echo "产物: dist/ecyapi-$(VERSION)-linux-$(ARCH).tar.gz"
+
+# 本地构建镜像（默认让镜像自己去下载素材；已有素材时直接打进上下文）
+docker:
+	docker build -t ecyapi:local .
 
 run: build
 	./$(BIN)

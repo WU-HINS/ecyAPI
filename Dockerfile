@@ -9,12 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+# FETCH_ASSETS=1（默认）：构建上下文里没有素材时，用容器内的 Go 工具链自动下载一次，
+# 这样直接 docker build . 出来的镜像就带看板娘动画，不用先跑 make assets。
+# CI 每次推送的镜像传 --build-arg FETCH_ASSETS=0 跳过（构建更快）。
+ARG FETCH_ASSETS=1
 COPY go.mod go.sum ./
 RUN go mod download
 # 整份上下文拷进来：构建需要 internal/，还要把（可选的）static/ 静态资源带进镜像。
-# static/ 由 CI 用 tools/fetchassets 下载后放入上下文；本地没有时目录为空，镜像照样能构建。
 COPY . .
-RUN mkdir -p /src/static
+RUN mkdir -p /src/static && \
+    if [ "$FETCH_ASSETS" = "1" ] && [ -z "$(ls -A /src/static/assets/webm 2>/dev/null)" ]; then \
+      echo "上下文没有素材，开始下载到 /src/static ..." && \
+      go run ./tools/fetchassets -dir /src/static || echo "素材下载失败：镜像将不含动画（可容器内用 ecyapi -fetch-assets 补）"; \
+    fi
 RUN CGO_ENABLED=1 go build -tags webp_system -trimpath \
       -ldflags="-s -w -extldflags '-static'" -o /out/ecyapi ./cmd/server
 

@@ -50,6 +50,8 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: true
+          # CI 镜像不下载 50MB 素材，构建快；正式版镜像由 release.yml 带素材构建
+          build-args: FETCH_ASSETS=0
           tags: ${{ env.IMAGE }}:ci-${{ github.sha }}-${{ matrix.arch }}
           provenance: false
           sbom: false
