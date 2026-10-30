@@ -111,6 +111,9 @@ type Server struct {
 	staticDir string
 	// staticSyncFrom 启动时把素材从这里同步进 staticDir（Docker 用镜像层 → 数据卷）。
 	staticSyncFrom string
+
+	// groups 虚拟分组快照（/@img/<name>）。
+	groups *groupSnapshot
 	// staticVersion 静态资源版本号（8 位十六进制），用于 /@index/v<版本>/... 这种可长缓存的 URL。
 	staticVersion string
 
@@ -224,6 +227,9 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if err := s.loadSSO(); err != nil {
 		return nil, err
+	}
+	if err := s.loadGroups(); err != nil {
+		log.Printf("虚拟分组定义有误，已忽略：%v", err)
 	}
 	funcMap := template.FuncMap{
 		"Add": func(a, b int) int { return a + b },
@@ -806,6 +812,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/cache/prewarm", s.handleAdminCachePrewarm)
 	mux.HandleFunc("GET /admin/cache/status", s.handleAdminCacheStatus)
 	mux.HandleFunc("POST /admin/cache/cancel", s.handleAdminCacheCancel)
+	mux.HandleFunc("POST /admin/groups/save", s.handleAdminGroupsSave)
 
 	// 管理登录的 OAuth2 / OIDC
 	mux.HandleFunc("GET /admin/sso/login", s.handleSSOLogin)
@@ -944,6 +951,16 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	// 全分类随机：/@img 从所有已注册分类里抽一个，横竖按设备自动。
 	if strings.EqualFold(path, "@img") {
 		s.serveAllRandom(w, r)
+		return
+	}
+	// 虚拟分组：/@img/<name>（单级）
+	if strings.HasPrefix(strings.ToLower(path), "@img/") {
+		name := path[len("@img/"):]
+		if name == "" || strings.Contains(name, "/") {
+			plainError(w, "No such group.", http.StatusNotFound)
+			return
+		}
+		s.handleGroup(w, r, strings.ToLower(name))
 		return
 	}
 	s.mu.RLock()

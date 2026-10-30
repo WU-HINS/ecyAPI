@@ -120,6 +120,11 @@ func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {
 	if _, ok := data["SSO"]; !ok {
 		data["SSO"] = s.ssoConfig()
 	}
+	if _, ok := data["Groups"]; !ok {
+		snap := s.groupsSnapshot()
+		data["Groups"] = snap.list
+		data["GroupsJSON"] = groupsJSON(snap)
+	}
 	s.render(w, http.StatusOK, "admin.html", data)
 }
 
