@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ecyapi/internal/config"
+	"ecyapi/internal/store"
 )
 
 // newGroupServer 造一个含两个分类的实例，并写入 groups.json。
@@ -166,7 +167,7 @@ func TestGroupAdminUpsertAndDelete(t *testing.T) {
 	}
 	if msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
 		"name": {"empty"},
-	}); !strings.Contains(msg, "至少要勾选") {
+	}); !strings.Contains(msg, "至少要包含一个存在的分类") {
 		t.Fatalf("空成员应被拒: %s", msg)
 	}
 
@@ -176,5 +177,44 @@ func TestGroupAdminUpsertAndDelete(t *testing.T) {
 	}
 	if rec := get(t, s, "/@img/mix2"); rec.Code != http.StatusNotFound {
 		t.Fatalf("删除后应 404，得到 %d", rec.Code)
+	}
+}
+
+// TestGroupManualCategories 手填分类（逗号/空格分隔）与勾选合并，不存在的被忽略并提示。
+func TestGroupManualCategories(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+	msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name":              {"m1"},
+		"categories":        {"pc"},
+		"categories_manual": {"phone, nope/xx  pc"},
+	})
+	if !strings.Contains(msg, "已保存分组") {
+		t.Fatalf("保存失败: %s", msg)
+	}
+	if !strings.Contains(msg, "忽略 1 个不存在的分类") {
+		t.Fatalf("应提示忽略了不存在的分类: %s", msg)
+	}
+	if n, err := s.st.GroupCount(t.Context(), []string{"pc", "phone"}, store.OrientationAny); err != nil || n != 4 {
+		t.Fatalf("分组应聚合 pc(2)+phone(2)=4，实际 %d（%v）", n, err)
+	}
+}
+
+// TestHomeShowsGroups 首页展示虚拟分组卡片。
+func TestHomeShowsGroups(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"label\":\"混合合集\",\"desc\":\"两组一起\",\"categories\":[\"pc\",\"phone\"]}]}")
+	rec := get(t, s, "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("首页应 200，得到 %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/@img/mix") {
+		t.Fatal("首页应出现分组链接 /@img/mix")
+	}
+	if !strings.Contains(body, "混合合集") {
+		t.Fatal("首页应显示分组标签")
 	}
 }

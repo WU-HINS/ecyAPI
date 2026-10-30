@@ -293,18 +293,31 @@ func (s *Server) handleAdminGroupUpsert(w http.ResponseWriter, r *http.Request) 
 	for _, c := range s.sortedCategories(r.Context()) {
 		exist[c] = true
 	}
-	members := make([]string, 0, len(r.PostForm["categories"]))
+	// 勾选 + 手填合并：手填支持逗号/空格/换行分隔，方便批量粘路径。
+	raw := append([]string{}, r.PostForm["categories"]...)
+	if manual := strings.TrimSpace(r.PostFormValue("categories_manual")); manual != "" {
+		fields := strings.FieldsFunc(manual, func(r rune) bool {
+			return r == ',' || r == '，' || r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '、'
+		})
+		raw = append(raw, fields...)
+	}
+	members := make([]string, 0, len(raw))
+	ignored := make([]string, 0, 4)
 	seen := map[string]bool{}
-	for _, c := range r.PostForm["categories"] {
+	for _, c := range raw {
 		c = strings.Trim(strings.TrimSpace(c), "/")
-		if c == "" || seen[c] || !exist[c] {
+		if c == "" || seen[c] {
 			continue
 		}
 		seen[c] = true
+		if !exist[c] {
+			ignored = append(ignored, c)
+			continue
+		}
 		members = append(members, c)
 	}
 	if len(members) == 0 {
-		s.adminResult(w, "至少要勾选一个存在的分类")
+		s.adminResult(w, "至少要包含一个存在的分类（勾选或手填都可以）")
 		return
 	}
 
@@ -329,7 +342,11 @@ func (s *Server) handleAdminGroupUpsert(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	log.Printf("管理操作：保存虚拟分组 /@img/%s（%d 个分类）", name, len(members))
-	s.adminResult(w, "已保存分组 /@img/"+name)
+	msg := fmt.Sprintf("已保存分组 /@img/%s（%d 个分类）", name, len(members))
+	if len(ignored) > 0 {
+		msg += fmt.Sprintf("；忽略 %d 个不存在的分类：%s", len(ignored), joinCapped(ignored, 5))
+	}
+	s.adminResult(w, msg)
 }
 
 // handleAdminGroupDelete 删除一个虚拟分组。
@@ -359,6 +376,14 @@ func (s *Server) handleAdminGroupDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	log.Printf("管理操作：删除虚拟分组 /@img/%s", name)
 	s.adminResult(w, "已删除分组 /@img/"+name)
+}
+
+// joinCapped 最多列 n 个名字，其余折叠成「等 N 个」。
+func joinCapped(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, "、")
+	}
+	return strings.Join(names[:n], "、") + fmt.Sprintf(" 等 %d 个", len(names))
 }
 
 func groupNames(snap *groupSnapshot) string {
