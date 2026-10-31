@@ -23,7 +23,8 @@ func (s *Server) galleryCacheRoot() string {
 
 // galleryCacheKey 计算缓存目录名与文件名。
 func (s *Server) galleryCacheKey(category string, gen uint64) (dir string, file string) {
-	h := sha1.Sum([]byte(strings.Join(s.galleryHiddenList(), "\x00")))
+	// 分类栏里还有虚拟分组：定义变了也要换缓存
+	h := sha1.Sum([]byte(strings.Join(s.galleryHiddenList(), "\x00") + s.groupsSnapshot().hash))
 	dir = fmt.Sprintf("%d-%s-%d", gen, hex.EncodeToString(h[:4]), s.cfg.GalleryMax)
 	file = category + ".html"
 	return dir, file

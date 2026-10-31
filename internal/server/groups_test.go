@@ -328,3 +328,24 @@ func TestCategorySearchUI(t *testing.T) {
 		t.Fatal("图库分类区缺少 id=categoryTabs")
 	}
 }
+
+// TestGalleryTabsIncludeGroups 图库分类栏要列出虚拟分组（排在分类之后，链接到 /@img/<name>）。
+func TestGalleryTabsIncludeGroups(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"label\":\"混合分组\",\"categories\":[\"pc\",\"phone\"]}]}")
+	rec := get(t, s, "/img")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("图库应 200，得到 %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// 分类按钮仍走 ?category=
+	if !strings.Contains(body, `href="?category=pc"`) {
+		t.Fatal("分类按钮应指向 ?category=pc")
+	}
+	// 虚拟分组按钮指向 /@img/<name>
+	if !strings.Contains(body, `href="/@img/mix"`) {
+		t.Fatal("分类栏应包含虚拟分组 /@img/mix")
+	}
+	if !strings.Contains(body, "混合分组") {
+		t.Fatal("分类栏应显示分组标签")
+	}
+}
