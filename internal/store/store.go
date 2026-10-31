@@ -198,6 +198,8 @@ type Store interface {
 	Generation() uint64
 	// Scanning 是否正在扫描磁盘（后台预热据此让路）。
 	Scanning() bool
+	// Counts 分类 → 图片数（按索引代次缓存，返回的表只读）。
+	Counts(ctx context.Context) map[string]int
 
 	// GroupCount / GroupRandom / GroupLinksPage 把若干分类当成一个「虚拟分组」，
 	// 用于 /@img/<name>：成员是任意分类路径（父目录聚合也可以）。
@@ -343,6 +345,12 @@ type fileStore struct {
 	// groupAggCache 虚拟分组聚合视图的缓存（按代次失效），避免每个请求重建。
 	groupAggMu    sync.RWMutex
 	groupAggCache *groupAggEntry
+
+	// 分类名与计数的代次快照（Categories/Counts 复用，避免每次请求重排 5 万个名字）。
+	snapMu     sync.RWMutex
+	snapGen    uint64
+	sortedCats []string
+	counts     map[string]int
 }
 
 // groupAggEntry 一代索引下各虚拟分组的聚合视图。
@@ -1234,16 +1242,49 @@ func (f *fileStore) aggFor(category string) *aggKids {
 	return agg
 }
 
+// Categories 返回排好序的分类名。
+//
+// 结果按「索引代次」缓存并复用：调用方**只读**，不要修改切片内容。
+// 这样 /@img、图库、后台每次都复用同一份，不再为 5 万个分类反复分配+排序。
 func (f *fileStore) Categories(ctx context.Context) ([]string, error) {
 	_ = ctx
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	names := make([]string, 0, len(f.cache))
-	for name := range f.cache {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names, _ := f.catSnapshot()
 	return names, nil
+}
+
+// Counts 分类 → 图片数（按代次缓存，只读）。
+func (f *fileStore) Counts(ctx context.Context) map[string]int {
+	_, counts := f.catSnapshot()
+	return counts
+}
+
+// catSnapshot 返回当前代次下的分类名（已排序）与计数表；代次变化才重建。
+func (f *fileStore) catSnapshot() ([]string, map[string]int) {
+	gen := f.gen.Load()
+	f.snapMu.RLock()
+	if f.snapGen == gen && f.sortedCats != nil {
+		names, counts := f.sortedCats, f.counts
+		f.snapMu.RUnlock()
+		return names, counts
+	}
+	f.snapMu.RUnlock()
+
+	f.snapMu.Lock()
+	defer f.snapMu.Unlock()
+	if f.snapGen == gen && f.sortedCats != nil {
+		return f.sortedCats, f.counts
+	}
+	f.mu.RLock()
+	names := make([]string, 0, len(f.cache))
+	counts := make(map[string]int, len(f.cache))
+	for name, set := range f.cache {
+		names = append(names, name)
+		counts[name] = len(set.pick(OrientationAny))
+	}
+	f.mu.RUnlock()
+	sort.Strings(names)
+	f.sortedCats, f.counts, f.snapGen = names, counts, gen
+	return names, counts
 }
 
 func (f *fileStore) Count(ctx context.Context, category string) (int, error) {

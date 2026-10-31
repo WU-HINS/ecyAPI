@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +117,10 @@ type Server struct {
 	homeOrder []string
 	// act 活跃任务计数（每 N 秒输出一行状态日志）。
 	act activityTracker
+	// hiddenVersion/hiddenCache 图库隐藏集合的版本与缓存（列表不变就复用）。
+	hiddenVersion int64
+	hiddenVer     int64
+	hiddenCache   map[string]bool
 	// staticVersion 静态资源版本号（8 位十六进制），用于 /@index/v<版本>/... 这种可长缓存的 URL。
 	staticVersion string
 
@@ -707,6 +710,7 @@ func (s *Server) loadGalleryHidden() error {
 		return fmt.Errorf("parse %s: %w", galleryHiddenFile, err)
 	}
 	s.galleryHidden = hidden
+	s.hiddenVersion++
 	return nil
 }
 
@@ -736,18 +740,34 @@ func (s *Server) toggleGalleryHidden(category string) (bool, error) {
 		next = append(next, category)
 	}
 	s.galleryHidden = next
+	s.hiddenVersion++
 	s.mu.Unlock()
 	return !hidden, s.saveGalleryHidden()
 }
 
 // galleryHiddenSet 返回隐藏分类集合快照。
+// galleryHiddenSet 图库隐藏集合。按「隐藏列表版本号」缓存：
+// 列表不变时直接复用同一份 map，避免每个 /@img 请求都重建。
 func (s *Server) galleryHiddenSet() map[string]bool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	set := make(map[string]bool, len(s.galleryHidden))
-	for _, c := range s.galleryHidden {
+	ver := s.hiddenVersion
+	if s.hiddenCache != nil && s.hiddenVer == ver {
+		set := s.hiddenCache
+		s.mu.RUnlock()
+		return set
+	}
+	hidden := append([]string(nil), s.galleryHidden...)
+	s.mu.RUnlock()
+
+	set := make(map[string]bool, len(hidden))
+	for _, c := range hidden {
 		set[c] = true
 	}
+	s.mu.Lock()
+	if s.hiddenVersion == ver {
+		s.hiddenCache, s.hiddenVer = set, ver
+	}
+	s.mu.Unlock()
 	return set
 }
 
@@ -765,6 +785,7 @@ func (s *Server) pruneGalleryHidden(categories []string) error {
 		}
 	}
 	s.galleryHidden = next
+	s.hiddenVersion++
 	s.mu.Unlock()
 	return s.saveGalleryHidden()
 }
@@ -1322,26 +1343,17 @@ func plainError(w http.ResponseWriter, msg string, status int) {
 }
 
 // categoryCountMap 拉取各分类数量。
+// categoryCountMap 分类 → 图片数。直接用 store 的代次缓存，不再逐个 Count（每次都要拿锁）。
 func (s *Server) categoryCountMap(ctx context.Context) map[string]int {
-	out := map[string]int{}
-	names, err := s.st.Categories(ctx)
-	if err != nil {
-		return out
-	}
-	for _, n := range names {
-		if c, err := s.st.Count(ctx, n); err == nil {
-			out[n] = c
-		}
-	}
-	return out
+	return s.st.Counts(ctx)
 }
 
 // sortedCategories 返回有序分类名。
+// sortedCategories 分类名（store 已排序并缓存，这里不再重复排序或复制）。
 func (s *Server) sortedCategories(ctx context.Context) []string {
 	names, err := s.st.Categories(ctx)
 	if err != nil {
 		return nil
 	}
-	sort.Strings(names)
 	return names
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // setupAggTree 构造 pixiv/{a,b} 与一个自身有图的三级目录，返回 store。
@@ -168,5 +169,47 @@ func TestNestedAggUniformPerLevel(t *testing.T) {
 		if counts[branch] < n/3 || counts[branch] > n*2/3 {
 			t.Fatalf("分支 %s 占比异常：%d/%d（%v）—— 说明没按层级平权", branch, counts[branch], n, counts)
 		}
+	}
+}
+
+// TestCategorySnapshotReuse 分类名与计数按代次复用，索引变了才重建。
+func TestCategorySnapshotReuse(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	writePNG(t, filepath.Join(dir, "a", "1.png"), 4, 2)
+	writePNG(t, filepath.Join(dir, "b", "1.png"), 4, 2)
+
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, ScanInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := st.(*fileStore)
+	defer fs.Close()
+	ctx := context.Background()
+
+	first, _ := st.Categories(ctx)
+	counts := st.Counts(ctx)
+	if len(first) != 2 || counts["a"] != 1 {
+		t.Fatalf("初始快照不对: %v %v", first, counts)
+	}
+	// 再取一次：应复用同一份底层数组
+	second, _ := st.Categories(ctx)
+	if len(first) > 0 && len(second) > 0 && &first[0] != &second[0] {
+		t.Fatal("分类快照应复用同一份切片，实际重新分配了")
+	}
+
+	// 新增分类并重扫 → 代次变化，快照重建
+	writePNG(t, filepath.Join(dir, "c", "1.png"), 4, 2)
+	fs.reloadMu.Lock()
+	if err := fs.scan(); err != nil {
+		fs.reloadMu.Unlock()
+		t.Fatal(err)
+	}
+	fs.reloadMu.Unlock()
+	third, _ := st.Categories(ctx)
+	if len(third) != 3 {
+		t.Fatalf("重扫后应有 3 个分类，实际 %v", third)
+	}
+	if got := st.Counts(ctx)["c"]; got != 1 {
+		t.Fatalf("新分类计数 = %d", got)
 	}
 }
