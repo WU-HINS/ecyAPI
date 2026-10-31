@@ -124,16 +124,22 @@ func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {
 	if _, ok := data["Groups"]; !ok {
 		snap := s.groupsSnapshot()
 		data["Groups"] = snap.list
-		// 分类选择器：名字 + 数量
+		// 分类选择器：真实分类 + 父目录聚合（后者自身没有图片，靠子目录聚合出图）
 		type pickCat struct {
 			Name  string
 			Count int
+			Agg   bool
 		}
-		cats := s.sortedCategories(context.Background())
-		counts := s.categoryCountMap(context.Background())
+		ctx := context.Background()
+		cats := s.sortedCategories(ctx)
+		counts := s.categoryCountMap(ctx)
 		pick := make([]pickCat, 0, len(cats))
 		for _, c := range cats {
 			pick = append(pick, pickCat{Name: c, Count: counts[c]})
+		}
+		for _, agg := range s.st.Aggregates(ctx) {
+			n, _ := s.st.CountWith(ctx, agg, store.OrientationAny)
+			pick = append(pick, pickCat{Name: agg, Count: n, Agg: true})
 		}
 		data["PickCategories"] = pick
 	}

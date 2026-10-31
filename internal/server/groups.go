@@ -137,31 +137,37 @@ func (s *Server) groupByName(name string) (virtualGroup, bool) {
 	return g, ok
 }
 
-// handleGroup 处理 /@img/<name>：
-//   - 默认渲染该分组的图库页（与 /img 同模板，带缓存）；
-//   - ?json / ?json=N 返回随机链接（纯文本）；
-//   - ?orientation=、?w= 与其他接口一致。
+// handleGroup 处理 /@img/<name>：在一个虚拟分组的成员图片池里随机，
+// 对外与 /{分类} 一致——默认 302 跳一张图，?json / ?json=N / ?orientation= / ?w= 语义相同。
+//
+// 注意：分组是「成员的图片并集」，按图片数量加权随机（不是先随机分类再取图），
+// 这样成员大小差异很大时也不会被小分类稀释。
 func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string) {
 	g, ok := s.groupByName(name)
 	if !ok {
 		plainError(w, "No such group.", http.StatusNotFound)
 		return
 	}
-	want := linkOrientation(r, endpoint{auto: true})
-	// 与分类接口一致：该方向没有图时回退到「不限方向」，避免竖图分组在桌面端 404。
-	groupWant := func() store.Orientation {
-		if n, _ := s.st.GroupCount(r.Context(), g.Categories, want); n == 0 && want != store.OrientationAny {
-			return store.OrientationAny
+	// 与 /@img 一致：图库隐藏的分类不参与
+	hidden := s.galleryHiddenSet()
+	members := make([]string, 0, len(g.Categories))
+	for _, c := range g.Categories {
+		if !hidden[c] {
+			members = append(members, c)
 		}
-		return want
 	}
-	want = groupWant()
+	if len(members) == 0 {
+		plainError(w, "No links found.", http.StatusNotFound)
+		return
+	}
+
+	want := linkOrientation(r, endpoint{auto: true})
 	suffix := ""
 	if v := r.URL.Query().Get("w"); v != "" {
 		suffix = "?w=" + url.QueryEscape(v)
 	}
 
-	// ?json 分支：随机链接（与 /{分类}?json 行为一致）
+	// ?json 分支
 	if _, hasJSON := r.URL.Query()["json"]; hasJSON {
 		limit := positiveParam(r, "quantity", 1, s.cfg.MaxLinks)
 		if v := r.URL.Query().Get("json"); v != "" {
@@ -169,12 +175,15 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 				limit = n
 			}
 		}
-		rows, err := s.st.GroupRandom(r.Context(), g.Categories, want, limit)
+		rows, err := s.st.GroupRandom(r.Context(), members, want, limit)
+		if (err != nil || len(rows) == 0) && want != store.OrientationAny {
+			rows, err = s.st.GroupRandom(r.Context(), members, store.OrientationAny, limit)
+		}
 		if err != nil || len(rows) == 0 {
 			plainError(w, "No links found.", http.StatusNotFound)
 			return
 		}
-		if limit == 1 {
+		if len(rows) == 1 {
 			plainText(w, s.absoluteURL(r, rows[0].Link)+suffix)
 			return
 		}
@@ -186,58 +195,29 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
-	// 页面：缓存键 = 索引代次 + 分组定义摘要（定义变了自动换缓存）
-	gen := s.st.Generation()
-	dir := fmt.Sprintf("%d-%s", gen, s.groupsSnapshot().hash)
-	cachePath := filepath.Join(s.galleryCacheRoot(), dir, "@img-"+g.Name+".html")
-	if s.serveGalleryCache(w, r, cachePath) {
+	row, ok := s.pickGroupVerified(r, members, want)
+	if !ok {
+		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
+	http.Redirect(w, r, row.Link+suffix, http.StatusFound)
+}
 
-	total, err := s.st.GroupCount(r.Context(), g.Categories, want)
-	if err != nil {
-		total = 0
+// pickGroupVerified 从分组里取一条并确认文件还在；方向为空时回退不限方向。
+func (s *Server) pickGroupVerified(r *http.Request, members []string, want store.Orientation) (store.Row, bool) {
+	for attempt := 0; attempt < 3; attempt++ {
+		rows, err := s.st.GroupRandom(r.Context(), members, want, 1)
+		if err != nil || len(rows) == 0 {
+			break
+		}
+		if s.verifyRow(r, rows[0]) {
+			return rows[0], true
+		}
 	}
-	limit := s.cfg.GalleryMax
-	if limit <= 0 || limit > total {
-		limit = total
+	if want != store.OrientationAny {
+		return s.pickGroupVerified(r, members, store.OrientationAny)
 	}
-	rows, err := s.st.GroupRandom(r.Context(), g.Categories, want, limit)
-	if err != nil {
-		rows = nil
-	}
-	images := make([]galleryImage, 0, len(rows))
-	for _, row := range rows {
-		images = append(images, galleryImage{URL: row.Link, Thumb: row.Link + "?w=480"})
-	}
-	type cat struct {
-		Name  string
-		Count int
-	}
-	catList := make([]cat, 0, len(g.Categories))
-	for _, member := range g.Categories {
-		n, _ := s.st.CountWith(r.Context(), member, want)
-		catList = append(catList, cat{Name: member, Count: n})
-	}
-	data := map[string]any{
-		"Current":    g.Label,
-		"Images":     images,
-		"Total":      total,
-		"Shown":      len(images),
-		"Sampled":    total > len(images),
-		"Categories": catList,
-		"LoadError":  false,
-	}
-	body, err := s.renderGalleryHTML(data)
-	if err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-		return
-	}
-	s.writeGalleryCache(cachePath, body)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=60")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	return store.Row{}, false
 }
 
 // saveGroups 把分组列表原子写回 groups.json 并刷新内存快照。
@@ -288,11 +268,7 @@ func (s *Server) handleAdminGroupUpsert(w http.ResponseWriter, r *http.Request) 
 		s.adminResult(w, "分组名只能用小写字母/数字与 - _，最长 32，且不能带 /（单级）")
 		return
 	}
-	// 只接受真实存在的分类，避免写进一堆不存在的成员
-	exist := map[string]bool{}
-	for _, c := range s.sortedCategories(r.Context()) {
-		exist[c] = true
-	}
+	// 接受「真实分类」与「父目录聚合」：像 /pixiv 这种自身没图、只有子目录的路径也能入选
 	// 勾选 + 手填合并：手填支持逗号/空格/换行分隔，方便批量粘路径。
 	raw := append([]string{}, r.PostForm["categories"]...)
 	if manual := strings.TrimSpace(r.PostFormValue("categories_manual")); manual != "" {
@@ -310,7 +286,7 @@ func (s *Server) handleAdminGroupUpsert(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		seen[c] = true
-		if !exist[c] {
+		if !s.st.HasPath(r.Context(), c) {
 			ignored = append(ignored, c)
 			continue
 		}

@@ -201,6 +201,10 @@ type Store interface {
 
 	// GroupCount / GroupRandom / GroupLinksPage 把若干分类当成一个「虚拟分组」，
 	// 用于 /@img/<name>：成员是任意分类路径（父目录聚合也可以）。
+	// HasPath 路径是否可用：真实分类（自身有图）或父目录聚合都算。
+	HasPath(ctx context.Context, name string) bool
+	// Aggregates 返回父目录聚合路径（自身没有图片、由子目录聚合而来）。
+	Aggregates(ctx context.Context) []string
 	GroupCount(ctx context.Context, members []string, want Orientation) (int, error)
 	GroupRandom(ctx context.Context, members []string, want Orientation, limit int) ([]Row, error)
 	GroupLinksPage(ctx context.Context, members []string, offset, limit int) (rows []Row, total int, err error)
@@ -345,6 +349,28 @@ func (f *fileStore) Scanning() bool { return f.scanning.Load() }
 
 // Generation 返回当前索引代次。
 func (f *fileStore) Generation() uint64 { return f.gen.Load() }
+
+// HasPath 路径是否可用（分类或父目录聚合）。
+func (f *fileStore) HasPath(ctx context.Context, name string) bool {
+	_ = ctx
+	if _, ok := f.categorySet(name); ok {
+		return true
+	}
+	return f.aggFor(name) != nil
+}
+
+// Aggregates 返回所有父目录聚合路径（排序后）。
+func (f *fileStore) Aggregates(ctx context.Context) []string {
+	_ = ctx
+	f.mu.RLock()
+	out := make([]string, 0, len(f.aggs))
+	for rel := range f.aggs {
+		out = append(out, rel)
+	}
+	f.mu.RUnlock()
+	sort.Strings(out)
+	return out
+}
 
 // groupAgg 由成员分类合成聚合视图（虚拟分组用）。
 // 成员可以是普通分类、父目录聚合，或两者混用；不存在的成员会被跳过。

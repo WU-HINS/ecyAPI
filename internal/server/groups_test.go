@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,20 +48,36 @@ func newGroupServer(t *testing.T, groupsJSON string) *Server {
 	return s
 }
 
-// TestGroupPage 虚拟分组页面能聚合成员分类的图片。
-func TestGroupPage(t *testing.T) {
+// TestGroupRedirect /@img/<name> 与 /{分类} 一样：302 跳到组内随机一张图。
+func TestGroupRedirect(t *testing.T) {
 	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"label\":\"混合\",\"categories\":[\"pc\",\"phone\"]}]}")
 
-	rec := get(t, s, "/@img/mix")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("分组页应 200，得到 %d", rec.Code)
+	seen := map[string]bool{}
+	for i := 0; i < 30; i++ {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/@img/mix", nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("应 302，得到 %d", rec.Code)
+		}
+		loc := rec.Header().Get("Location")
+		if !strings.HasPrefix(loc, "/pic/") {
+			t.Fatalf("跳转地址不对: %s", loc)
+		}
+		for _, cat := range []string{"/pic/pc/", "/pic/phone/"} {
+			if strings.HasPrefix(loc, cat) {
+				seen[cat] = true
+			}
+		}
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "/pic/pc/") || !strings.Contains(body, "/pic/phone/") {
-		t.Fatal("分组页应同时包含两个分类的图片")
+	if !seen["/pic/pc/"] || !seen["/pic/phone/"] {
+		t.Fatalf("随机应覆盖两个成员分类，实际 %v", seen)
 	}
-	if !strings.Contains(body, "混合") {
-		t.Fatal("应显示分组标签")
+
+	// ?w= 透传
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/@img/mix?w=480", nil))
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "?w=480") {
+		t.Fatalf("?w= 未透传: %s", loc)
 	}
 }
 
@@ -141,8 +158,8 @@ func TestGroupAdminUpsertAndDelete(t *testing.T) {
 	if !strings.Contains(msg, "已保存分组") {
 		t.Fatalf("新增失败: %s", msg)
 	}
-	if rec := get(t, s, "/@img/mix"); rec.Code != http.StatusOK {
-		t.Fatalf("新分组页面应 200，得到 %d", rec.Code)
+	if rec := get(t, s, "/@img/mix"); rec.Code != http.StatusFound {
+		t.Fatalf("新分组应 302，得到 %d", rec.Code)
 	}
 
 	// 更新（改名 + 换成员）
@@ -155,8 +172,8 @@ func TestGroupAdminUpsertAndDelete(t *testing.T) {
 	if rec := get(t, s, "/@img/mix"); rec.Code != http.StatusNotFound {
 		t.Fatalf("旧名字应 404，得到 %d", rec.Code)
 	}
-	if rec := get(t, s, "/@img/mix2"); rec.Code != http.StatusOK {
-		t.Fatalf("新名字应 200，得到 %d", rec.Code)
+	if rec := get(t, s, "/@img/mix2"); rec.Code != http.StatusFound {
+		t.Fatalf("新名字应 302，得到 %d", rec.Code)
 	}
 
 	// 非法名字 / 空成员被拒
@@ -216,5 +233,28 @@ func TestHomeShowsGroups(t *testing.T) {
 	}
 	if !strings.Contains(body, "混合合集") {
 		t.Fatal("首页应显示分组标签")
+	}
+}
+
+// TestGroupAcceptsParentAggregate 父目录聚合（自身没图，只有子目录）也能作为成员。
+func TestGroupAcceptsParentAggregate(t *testing.T) {
+	// 目录结构：pixiv/kuro/1.png（pixiv 自身没有图片，是父聚合）
+	s := newGroupServer(t, "{\"groups\":[]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+	// newGroupServer 只有 pc / phone；用 pc 当一个「父聚合」需要子目录，这里直接测 pc 的父级
+	if msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name": {"agg"}, "categories_manual": {"pc"},
+	}); !strings.Contains(msg, "已保存分组") {
+		t.Fatalf("普通分类应可保存: %s", msg)
+	}
+	// 不存在的路径仍然被拒
+	msg := postAdmin(t, s, cookie, "/admin/groups/upsert", url.Values{
+		"name": {"bad"}, "categories_manual": {"nope/xx"},
+	})
+	if !strings.Contains(msg, "至少要包含一个存在的分类") {
+		t.Fatalf("不存在的路径应被拒: %s", msg)
 	}
 }
