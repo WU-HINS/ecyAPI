@@ -98,3 +98,38 @@ func TestRedirectRandomNoStore(t *testing.T) {
 		}
 	}
 }
+
+// TestRedirectTargetIsCacheable 302 不缓存，但 302 指向的图片必须可缓存（带 ETag）。
+func TestRedirectTargetIsCacheable(t *testing.T) {
+	s := newHopServer(t)
+	rec := get(t, s, "/pc")
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Fatalf("302 必须 no-store，实际 %q", cc)
+	}
+	loc := rec.Header().Get("Location")
+	if loc == "" {
+		t.Fatal("缺少 Location")
+	}
+
+	// 原图
+	rec2 := get(t, s, loc)
+	cc := rec2.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "public") || !strings.Contains(cc, "max-age=") {
+		t.Fatalf("目标图应可缓存，实际 Cache-Control=%q", cc)
+	}
+	if rec2.Header().Get("ETag") == "" {
+		t.Fatal("目标图缺少 ETag（无法协商缓存）")
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("目标图应 200，得到 %d", rec2.Code)
+	}
+
+	// 缩略图目标同样可缓存
+	rec3 := get(t, s, loc+"?w=480")
+	if cc := rec3.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=") {
+		t.Fatalf("缩略图应可缓存，实际 %q", cc)
+	}
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("缩略图应 200，得到 %d", rec3.Code)
+	}
+}

@@ -321,6 +321,10 @@ curl 'http://localhost:8080/json?category=pc&count=5'
 但如果 CDN/浏览器缓存了这条 302，同一个入口会长期只给同一张图——随机性被缓存冻住。
 所以随机跳转显式禁止缓存。
 
+**目标图片则相反，要缓存**：302 指向的 `/pic/...` 响应带
+`Cache-Control: public, max-age=604800, stale-while-revalidate=86400` 与 `ETag`，
+CDN 命中后源站零压力；内容变了 ETag 会变，配合 `If-None-Match` 仍能正确协商。
+
 实测 1000 次：`/@img` → big 260 / small 256 / pixiv 484（四个叶子分类各约 25%）；`/pixiv` → a 475 / b 525。
 
 ## 日志
