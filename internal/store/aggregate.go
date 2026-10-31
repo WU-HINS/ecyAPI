@@ -111,23 +111,35 @@ func (b *aggBucket) locate(k int) (int, int) {
 }
 
 // randomRows 从聚合桶里随机取 limit 条（不放回）。
+//
+// 抽样口径是「子分类平权」：先等概率选中一个子集合（子分类），再在它内部等概率取一条。
+// 这样父目录下 5 万张的大子目录不会把 100 张的小子目录淹没——
+// 与 /@img（分类之间平权）保持一致。
 func (b *aggBucket) randomRows(limit int) []Row {
-	if b.total == 0 || limit < 1 {
+	if b.total == 0 || limit < 1 || len(b.slices) == 0 {
 		return nil
 	}
 	if limit > b.total {
 		limit = b.total
 	}
 	rows := make([]Row, 0, limit)
-	seen := make(map[int]struct{}, limit)
-	for len(rows) < limit {
-		k := rand.IntN(b.total)
-		if _, dup := seen[k]; dup {
+	seen := make(map[string]struct{}, limit)
+	maxTries := limit * 50
+	if maxTries < 500 {
+		maxTries = 500
+	}
+	for tries := 0; len(rows) < limit && tries < maxTries; tries++ {
+		s := b.slices[rand.IntN(len(b.slices))]
+		if len(s) == 0 {
 			continue
 		}
-		seen[k] = struct{}{}
-		si, ei := b.locate(k)
-		rows = append(rows, b.slices[si][ei].row())
+		e := s[rand.IntN(len(s))]
+		// 用 link（含分类路径）去重：不同子目录里可能有同名文件
+		if _, dup := seen[e.link]; dup {
+			continue
+		}
+		seen[e.link] = struct{}{}
+		rows = append(rows, e.row())
 	}
 	return rows
 }

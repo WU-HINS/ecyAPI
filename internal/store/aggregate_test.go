@@ -103,3 +103,35 @@ func TestAggregateIgnoresEmptyChildren(t *testing.T) {
 		t.Fatalf("全空父目录应 ErrNotFound，得到 %v", err)
 	}
 }
+
+// TestAggregateUniformPerChild 父聚合按「子分类」平权随机，不按图片数加权。
+// big 子目录 100 张、small 1 张：两者应各占约 50%。
+func TestAggregateUniformPerChild(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	for i := 0; i < 100; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "big", "b"+pad(i)+".png"), 4, 2)
+	}
+	writePNG(t, filepath.Join(dir, "pixiv", "small", "one.png"), 4, 2)
+
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	counts := map[string]int{}
+	const n = 2000
+	for i := 0; i < n; i++ {
+		rows, err := st.RandomWith(ctx, "pixiv", 1, OrientationAny)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("取图失败: %v", err)
+		}
+		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
+		counts[parts[0]]++
+	}
+	// 平权：各约 50%；给足容差（2000 次的二项分布 σ≈1.1%）
+	for _, child := range []string{"big", "small"} {
+		if counts[child] < n/3 || counts[child] > n*2/3 {
+			t.Fatalf("子分类 %s 占比异常: %d/%d（%v）", child, counts[child], n, counts)
+		}
+	}
+}

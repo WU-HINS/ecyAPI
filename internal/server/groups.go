@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -137,11 +138,11 @@ func (s *Server) groupByName(name string) (virtualGroup, bool) {
 	return g, ok
 }
 
-// handleGroup 处理 /@img/<name>：在一个虚拟分组的成员图片池里随机，
-// 对外与 /{分类} 一致——默认 302 跳一张图，?json / ?json=N / ?orientation= / ?w= 语义相同。
+// handleGroup 处理 /@img/<name>：对外与 /{分类} 一致——默认 302 跳一张图，
+// ?json / ?json=N / ?orientation= / ?w= 语义相同。
 //
-// 注意：分组是「成员的图片并集」，按图片数量加权随机（不是先随机分类再取图），
-// 这样成员大小差异很大时也不会被小分类稀释。
+// 抽样口径与 /@img 相同：**成员分类之间平权**（先等概率选一个成员，再在它内部随机取图），
+// 而不是在并集上按图片数量加权——否则大分类会把小分类淹没。
 func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string) {
 	g, ok := s.groupByName(name)
 	if !ok {
@@ -167,7 +168,6 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		suffix = "?w=" + url.QueryEscape(v)
 	}
 
-	// ?json 分支
 	if _, hasJSON := r.URL.Query()["json"]; hasJSON {
 		limit := positiveParam(r, "quantity", 1, s.cfg.MaxLinks)
 		if v := r.URL.Query().Get("json"); v != "" {
@@ -175,11 +175,8 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 				limit = n
 			}
 		}
-		rows, err := s.st.GroupRandom(r.Context(), members, want, limit)
-		if (err != nil || len(rows) == 0) && want != store.OrientationAny {
-			rows, err = s.st.GroupRandom(r.Context(), members, store.OrientationAny, limit)
-		}
-		if err != nil || len(rows) == 0 {
+		rows := s.rowsFromMembers(r, members, limit, want)
+		if len(rows) == 0 {
 			plainError(w, "No links found.", http.StatusNotFound)
 			return
 		}
@@ -195,7 +192,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
-	row, ok := s.pickGroupVerified(r, members, want)
+	row, ok := s.pickFromMembers(r, members, want)
 	if !ok {
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
@@ -203,21 +200,46 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 	http.Redirect(w, r, row.Link+suffix, http.StatusFound)
 }
 
-// pickGroupVerified 从分组里取一条并确认文件还在；方向为空时回退不限方向。
-func (s *Server) pickGroupVerified(r *http.Request, members []string, want store.Orientation) (store.Row, bool) {
-	for attempt := 0; attempt < 3; attempt++ {
-		rows, err := s.st.GroupRandom(r.Context(), members, want, 1)
-		if err != nil || len(rows) == 0 {
-			break
-		}
-		if s.verifyRow(r, rows[0]) {
-			return rows[0], true
+// pickFromMembers 在成员分类里平权随机：先随机挑一个成员，取不到再换下一个（最多 8 个）。
+func (s *Server) pickFromMembers(r *http.Request, members []string, want store.Orientation) (store.Row, bool) {
+	if len(members) == 0 {
+		return store.Row{}, false
+	}
+	start := rand.IntN(len(members))
+	tries := len(members)
+	if tries > 8 {
+		tries = 8
+	}
+	for i := 0; i < tries; i++ {
+		if row, ok := s.pickVerified(r, members[(start+i)%len(members)], want); ok {
+			return row, true
 		}
 	}
 	if want != store.OrientationAny {
-		return s.pickGroupVerified(r, members, store.OrientationAny)
+		return s.pickFromMembers(r, members, store.OrientationAny)
 	}
 	return store.Row{}, false
+}
+
+// rowsFromMembers 从成员分类里平权轮转取 limit 条（每个成员最多取到够为止）。
+func (s *Server) rowsFromMembers(r *http.Request, members []string, limit int, want store.Orientation) []store.Row {
+	if limit < 1 || len(members) == 0 {
+		return nil
+	}
+	rows := make([]store.Row, 0, limit)
+	start := rand.IntN(len(members))
+	for i := 0; i < len(members) && len(rows) < limit; i++ {
+		cat := members[(start+i)%len(members)]
+		rs, err := s.st.RandomWith(r.Context(), cat, limit-len(rows), want)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, rs...)
+	}
+	if len(rows) == 0 && want != store.OrientationAny {
+		return s.rowsFromMembers(r, members, limit, store.OrientationAny)
+	}
+	return rows
 }
 
 // saveGroups 把分组列表原子写回 groups.json 并刷新内存快照。

@@ -267,3 +267,28 @@ func TestGroupAcceptsParentAggregate(t *testing.T) {
 		t.Fatalf("不存在的路径应被拒: %s", msg)
 	}
 }
+
+// TestGroupMemberUniform 虚拟分组按「成员分类」平权：big(100 张) 与 small(1 张) 各约一半。
+func TestGroupMemberUniform(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"categories\":[\"pc\",\"phone\"]}]}")
+	counts := map[string]int{}
+	const n = 600
+	for i := 0; i < n; i++ {
+		rec := get(t, s, "/@img/mix?json")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("?json 应 200，得到 %d", rec.Code)
+		}
+		body := rec.Body.String()
+		switch {
+		case strings.Contains(body, "/pic/pc/"):
+			counts["pc"]++
+		case strings.Contains(body, "/pic/phone/"):
+			counts["phone"]++
+		}
+	}
+	for _, m := range []string{"pc", "phone"} {
+		if counts[m] < n/3 || counts[m] > n*2/3 {
+			t.Fatalf("成员 %s 占比异常：%d/%d（%v）", m, counts[m], n, counts)
+		}
+	}
+}
