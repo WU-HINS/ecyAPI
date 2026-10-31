@@ -228,11 +228,20 @@ func TestHomeShowsGroups(t *testing.T) {
 		t.Fatalf("首页应 200，得到 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "/@img/mix") {
-		t.Fatal("首页应出现分组链接 /@img/mix")
+	// 卡片与普通分类同款：预览图直接指向分组端点（每次加载都会重新随机）
+	if !strings.Contains(body, `data-src="/@img/mix?w=480"`) {
+		t.Fatal("首页分组卡片应使用 /@img/mix?w=480 作为预览")
+	}
+	// 显示完整链接
+	if !strings.Contains(body, "http://example.com/@img/mix") {
+		t.Fatal("首页分组卡片应显示完整 URL")
 	}
 	if !strings.Contains(body, "混合合集") {
 		t.Fatal("首页应显示分组标签")
+	}
+	// 「点击图片刷新」提示也要在（与普通分类一致）
+	if !strings.Contains(body, "点击图片可刷新预览") {
+		t.Fatal("分组卡片应有刷新提示")
 	}
 }
 

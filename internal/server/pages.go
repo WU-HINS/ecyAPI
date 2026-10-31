@@ -42,8 +42,6 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	type homeData struct {
 		Title string
 		Cards []homeCard
-		// Groups 虚拟分组卡片（/@img/<name>）
-		Groups []homeCard
 		// HeroImage 首页横幅背景（取第一个栏目/分类的预览图，没有就留空用纯色）
 		HeroImage string
 		// StaticBase 看板娘资源的根路径（带版本号，可长缓存）
@@ -61,8 +59,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	s.render(w, http.StatusOK, "home.html", homeData{
 		Title:      "栗次元API - 举个栗子",
-		Cards:      cards,
-		Groups:     s.homeGroups(r.Context()),
+		Cards:      append(cards, s.homeGroups(r.Context(), r)...),
 		HeroImage:  heroImage(cards, s.sortedCategories(r.Context())),
 		StaticBase: "/@index/v" + s.staticVersion,
 		Year:       time.Now().Year(),
@@ -74,28 +71,27 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// homeGroups 把虚拟分组渲染成首页卡片：链接到 /@img/<name>，预览图取组内随机一张。
-func (s *Server) homeGroups(ctx context.Context) []homeCard {
+// homeGroups 把虚拟分组做成「和普通分类一样的卡片」：
+// 预览图直接指向 /@img/<name>?w=480（每次加载都会 302 到组内随机一张），
+// 所以页面上的「点击图片刷新」天然就是重新随机，而不是刷新同一张图。
+func (s *Server) homeGroups(ctx context.Context, r *http.Request) []homeCard {
 	snap := s.groupsSnapshot()
 	if len(snap.list) == 0 {
 		return nil
 	}
 	out := make([]homeCard, 0, len(snap.list))
 	for _, g := range snap.list {
-		preview := ""
-		if rows, err := s.st.GroupRandom(ctx, g.Categories, store.OrientationAny, 1); err == nil && len(rows) > 0 {
-			preview = rows[0].Link
+		if n, err := s.st.GroupCount(ctx, g.Categories, store.OrientationAny); err != nil || n == 0 {
+			continue // 组里一张可用图都没有就不展示
 		}
-		if preview == "" {
-			continue // 组里一张可用图都没有就不展示这张卡片
-		}
+		path := "/@img/" + g.Name
 		out = append(out, homeCard{
-			Path:       "/@img/" + g.Name,
+			Path:       path,
 			Label:      g.Label,
 			Desc:       g.Desc,
 			Kind:       "image",
-			PreviewURL: preview,
-			URL:        "/@img/" + g.Name,
+			PreviewURL: path,
+			URL:        s.absoluteURL(r, path),
 		})
 	}
 	return out
