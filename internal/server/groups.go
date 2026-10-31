@@ -197,7 +197,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, row.Link+suffix, http.StatusFound)
+	redirectRandom(w, r, row.Link+suffix)
 }
 
 // pickFromMembers 在成员分类里平权随机：先随机挑一个成员，取不到再换下一个（最多 8 个）。

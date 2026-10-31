@@ -993,6 +993,16 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// redirectRandom 输出 302 到随机结果。
+//
+// 必须禁止缓存：同一个入口每次都应给不同图片。如果 CDN/浏览器缓存了这条 302，
+// 该入口的随机性就被"冻住"——所有用户长期拿到同一张。随机性本身由服务端抽样决定，
+// 与「是否提前拉平」无关，但缓存会把它变成确定值。
+func redirectRandom(w http.ResponseWriter, r *http.Request, link string) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	http.Redirect(w, r, link, http.StatusFound)
+}
+
 // serveAllRandom 全分类随机：先从「所有已注册分类」里随机挑一个，再在该分类里随机取图。
 // 横竖按设备自动（桌面横图 / 移动竖图），可用 ?orientation= 覆盖；
 // 抽到的分类恰好没有该方向的图（或全是死链）时会换一个分类再试，
@@ -1047,7 +1057,7 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 		plainText(w, s.absoluteURL(r, picked.Link)+suffix)
 		return
 	}
-	http.Redirect(w, r, picked.Link+suffix, http.StatusFound)
+	redirectRandom(w, r, picked.Link+suffix)
 }
 
 // resolveOrientation 解析方向参数；auto 表示跟随 UA（移动端竖图、桌面横图）。
@@ -1180,7 +1190,7 @@ func (s *Server) renderLink(w http.ResponseWriter, r *http.Request, ep endpoint)
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
 	}
-	http.Redirect(w, r, row.Link+suffix, http.StatusFound)
+	redirectRandom(w, r, row.Link+suffix)
 }
 
 // baseFor 返回本次请求的对外基础地址（不含尾部斜杠）。

@@ -83,3 +83,18 @@ func TestHomeCardsUseEndpoint(t *testing.T) {
 	}
 
 }
+
+// TestRedirectRandomNoStore 随机跳转必须禁止缓存，否则 CDN 会把随机性"冻住"。
+func TestRedirectRandomNoStore(t *testing.T) {
+	s := newHopServer(t)
+	for _, entry := range []string{"/pc", "/pixiv", "/@img", "/@img/mix"} {
+		rec := get(t, s, entry)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("%s 应 302，得到 %d", entry, rec.Code)
+		}
+		cc := rec.Header().Get("Cache-Control")
+		if !strings.Contains(cc, "no-store") {
+			t.Fatalf("%s 的 302 未禁止缓存：Cache-Control=%q", entry, cc)
+		}
+	}
+}
