@@ -117,7 +117,7 @@ func readGroups(path string) (*groupSnapshot, error) {
 		snap.byName[g.Name] = g
 		snap.list = append(snap.list, g)
 	}
-	sort.Slice(snap.list, func(i, j int) bool { return snap.list[i].Name < snap.list[j].Name })
+	// 保持文件里的顺序（用户在「栏目与排序」里拖动过）；新分组追加在末尾
 	snap.hash = hex.EncodeToString(h.Sum(nil)[:4])
 	return snap, nil
 }
@@ -244,7 +244,6 @@ func (s *Server) rowsFromMembers(r *http.Request, members []string, limit int, w
 
 // saveGroups 把分组列表原子写回 groups.json 并刷新内存快照。
 func (s *Server) saveGroups(list []virtualGroup) error {
-	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	doc := groupsDoc{Groups: list}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -270,6 +269,30 @@ func (s *Server) saveGroups(list []virtualGroup) error {
 	s.groups = snap
 	s.mu.Unlock()
 	return nil
+}
+
+// reorderGroups 按给定名字顺序重排分组（未列出的保持原顺序追加在后）。
+func (s *Server) reorderGroups(names []string) error {
+	cur := s.groupsSnapshot()
+	rank := make(map[string]int, len(names))
+	for i, n := range names {
+		rank[n] = i
+	}
+	list := append([]virtualGroup(nil), cur.list...)
+	sort.SliceStable(list, func(i, j int) bool {
+		ri, iok := rank[list[i].Name]
+		rj, jok := rank[list[j].Name]
+		switch {
+		case iok && jok:
+			return ri < rj
+		case iok:
+			return true
+		case jok:
+			return false
+		}
+		return false
+	})
+	return s.saveGroups(list)
 }
 
 // handleAdminGroupUpsert 新增或更新一个虚拟分组（后台列表表单）。

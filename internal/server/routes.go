@@ -114,6 +114,8 @@ type Server struct {
 
 	// groups 虚拟分组快照（/@img/<name>）。
 	groups *groupSnapshot
+	// homeOrder 首页卡片统一顺序（栏目与虚拟分组混排），来自 data/order.json。
+	homeOrder []string
 	// staticVersion 静态资源版本号（8 位十六进制），用于 /@index/v<版本>/... 这种可长缓存的 URL。
 	staticVersion string
 
@@ -230,6 +232,9 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if err := s.loadGroups(); err != nil {
 		log.Printf("虚拟分组定义有误，已忽略：%v", err)
+	}
+	if err := s.loadHomeOrder(); err != nil {
+		log.Printf("首页顺序读取失败，已忽略：%v", err)
 	}
 	funcMap := template.FuncMap{
 		"Add": func(a, b int) int { return a + b },
@@ -402,8 +407,20 @@ func applyEndpointOrder(eps []endpoint, order []string) []endpoint {
 // reorderEndpoints 按给定路径序列整体重排栏目并持久化。
 // 未包含在 order 中的已知栏目保持原相对顺序排在后面，防丢。
 func (s *Server) reorderEndpoints(order []string) error {
+	// order 里混有虚拟分组（@img/<name>）：栏目顺序与分组顺序分别落盘，
+	// 另外把「混排后的整体顺序」写进 data/order.json 供首页使用。
+	epOrder := make([]string, 0, len(order))
+	grpOrder := make([]string, 0, len(order))
+	for _, tok := range order {
+		if strings.HasPrefix(tok, "@img/") {
+			grpOrder = append(grpOrder, strings.TrimPrefix(tok, "@img/"))
+			continue
+		}
+		epOrder = append(epOrder, strings.TrimPrefix(tok, "/"))
+	}
+
 	s.mu.Lock()
-	next := applyEndpointOrder(s.endpoints, order)
+	next := applyEndpointOrder(s.endpoints, epOrder)
 	s.endpoints = next
 	data, err := marshalEndpointsLocked(s.endpoints)
 	s.epIndex = endpointIndex(s.endpoints)
@@ -411,7 +428,19 @@ func (s *Server) reorderEndpoints(order []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(endpointsFile, data, 0o644)
+	if err := os.WriteFile(endpointsFile, data, 0o644); err != nil {
+		return err
+	}
+	if len(grpOrder) > 0 {
+		if err := s.reorderGroups(grpOrder); err != nil {
+			return err
+		}
+	}
+	canon := make([]string, 0, len(order))
+	for _, tok := range order {
+		canon = append(canon, canonToken(tok))
+	}
+	return s.saveHomeOrder(canon)
 }
 
 // removeEndpointsByCategory 删除引用了指定分类的所有栏目（PC 端或移动端命中即删），

@@ -521,6 +521,16 @@
                                 <td>{{if eq $ep.Mode "自动横竖"}}<span class="badge tag">自动横竖</span>{{else if eq $ep.Mode "双端"}}<span class="badge tag">双端</span>{{else}}单端{{end}}</td>
                             </tr>
                         {{- end}}
+                        {{- range .Groups}}
+                            <tr draggable="true" data-path="@img/{{.Name}}">
+                                <td class="grip" title="拖动排序">⋮⋮</td>
+                                <td class="idx"></td>
+                                <td><code>/@img/{{.Name}}</code></td>
+                                <td>{{.Label}}</td>
+                                <td>{{range $i, $c := .Categories}}{{if $i}} + {{end}}<code>{{$c}}</code>{{end}}</td>
+                                <td><span class="badge tag">虚拟分组</span></td>
+                            </tr>
+                        {{- end}}
                         </tbody>
                     </table>
                 </div>

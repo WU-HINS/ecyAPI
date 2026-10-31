@@ -59,7 +59,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	s.render(w, http.StatusOK, "home.html", homeData{
 		Title:      "栗次元API - 举个栗子",
-		Cards:      append(cards, s.homeGroups(r.Context(), r)...),
+		Cards:      s.orderCards(append(cards, s.homeGroups(r.Context(), r)...)),
 		HeroImage:  heroImage(cards, s.sortedCategories(r.Context())),
 		StaticBase: "/@index/v" + s.staticVersion,
 		Year:       time.Now().Year(),

@@ -328,3 +328,47 @@ func TestCategorySearchUI(t *testing.T) {
 		t.Fatal("图库分类区缺少 id=categoryTabs")
 	}
 }
+
+// TestHomeOrderWithGroups 「栏目与排序」里虚拟分组与栏目混排，顺序要落到首页卡片。
+func TestHomeOrderWithGroups(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"label\":\"混合分组\",\"categories\":[\"pc\"]}]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+	// 建一个栏目
+	msg := postAdmin(t, s, cookie, "/admin/binding", url.Values{
+		"binding_desk": {"pc"}, "binding_path": {"ep1"}, "binding_label": {"栏目一"},
+	})
+	if !strings.Contains(msg, "成功") && !strings.Contains(msg, "已创建") && !strings.Contains(msg, "栏目") {
+		t.Logf("binding 返回: %s", msg) // 文案变了也不至于误判
+	}
+
+	// 分组排在栏目之前
+	body := postAdmin(t, s, cookie, "/admin/endpoints/reorder", url.Values{
+		"order": {"@img/mix", "ep1"},
+	})
+	if !strings.Contains(body, "true") {
+		t.Fatalf("排序保存失败: %s", body)
+	}
+	// 卡片区里用 data-src 定位（页面上别处也可能出现 /ep1 字样）
+	cardPos := func(home, marker string) int {
+		return strings.Index(home, `data-src="`+marker)
+	}
+	home := get(t, s, "/").Body.String()
+	gi, ei := cardPos(home, "/@img/mix"), cardPos(home, "/ep1")
+	if gi < 0 || ei < 0 {
+		t.Fatalf("首页应同时有分组与栏目卡片（gi=%d ei=%d）", gi, ei)
+	}
+	if gi > ei {
+		t.Fatalf("分组应排在栏目之前（gi=%d ei=%d）", gi, ei)
+	}
+
+	// 换回栏目在前
+	postAdmin(t, s, cookie, "/admin/endpoints/reorder", url.Values{"order": {"ep1", "@img/mix"}})
+	home = get(t, s, "/").Body.String()
+	gi, ei = cardPos(home, "/@img/mix"), cardPos(home, "/ep1")
+	if ei > gi {
+		t.Fatalf("栏目应排在分组之前（gi=%d ei=%d）", gi, ei)
+	}
+}
