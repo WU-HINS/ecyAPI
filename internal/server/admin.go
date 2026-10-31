@@ -69,10 +69,6 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		catList = append(catList, cat{Name: t, Count: counts[t], Hide: hidden[t]})
 	}
 
-	// 栏目表格：Mode 取值 单端 / 双端 / 自动横竖。
-	type epItem struct {
-		Path, Label, Desk, Mobile, Mode string
-	}
 	s.mu.RLock()
 	epList := make([]epItem, 0, len(s.endpoints))
 	for _, ep := range s.endpoints {
@@ -97,6 +93,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Authed":       true,
 		"Tables":       catList,
 		"Endpoints":    epList,
+		"SortItems":    s.sortItems(epList),
 		"ScanWarnings": store.ScanWarnings(s.st),
 		"MaxDepth":     s.cfg.MaxDepth,
 		"SSO":          s.ssoConfig(),
@@ -109,6 +106,58 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"ICPURL":       icpURL,
 		"Logs":         logs,
 	})
+}
+
+// epItem 栏目表格的一行：Mode 取值 单端 / 双端 / 自动横竖。
+type epItem struct {
+	Path, Label, Desk, Mobile, Mode string
+}
+
+// sortItem 「栏目与排序」里的一行：一级分类（可能合并多个深层栏目）或虚拟分组。
+type sortItem struct {
+	Path    string // 归一后的路径：一级分类名，或 @img/<name>
+	Label   string
+	Members []string // 该一级分类下的栏目路径/名称（用于展示）
+	Kind    string   // 分类 / 虚拟分组 / 自动横竖 / 双端 / 单端
+	Group   bool
+}
+
+// sortItems 把栏目按一级分类归并，再追加虚拟分组，供排序表展示。
+// 与首页一致：/P/ii、/P/jj 只出一行 /P；拖这一行等于拖整个 /P 分组。
+func (s *Server) sortItems(eps []epItem) []sortItem {
+	items := make([]sortItem, 0, len(eps)+4)
+	idx := make(map[string]int, len(eps))
+	for _, ep := range eps {
+		top := topSegment(ep.Path)
+		if top == "" {
+			continue
+		}
+		if i, ok := idx[top]; ok {
+			items[i].Members = append(items[i].Members, "/"+ep.Path)
+			continue
+		}
+		kind := ep.Mode
+		if kind == "" {
+			kind = "单端"
+		}
+		idx[top] = len(items)
+		items = append(items, sortItem{
+			Path:    top,
+			Label:   ep.Label,
+			Members: []string{"/" + ep.Path},
+			Kind:    kind,
+		})
+	}
+	for _, g := range s.groupsSnapshot().list {
+		items = append(items, sortItem{
+			Path:    "@img/" + g.Name,
+			Label:   g.Label,
+			Members: g.Categories,
+			Kind:    "虚拟分组",
+			Group:   true,
+		})
+	}
+	return items
 }
 
 func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {

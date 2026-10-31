@@ -406,6 +406,34 @@ func applyEndpointOrder(eps []endpoint, order []string) []endpoint {
 
 // reorderEndpoints 按给定路径序列整体重排栏目并持久化。
 // 未包含在 order 中的已知栏目保持原相对顺序排在后面，防丢。
+// expandEndpointOrder 把「一级分类顺序」展开成完整栏目顺序：
+// 同一级下的多个栏目保持它们当前的相对顺序，整体跟着一级分类走。
+func (s *Server) expandEndpointOrder(tokens []string) []string {
+	s.mu.RLock()
+	eps := append([]endpoint(nil), s.endpoints...)
+	s.mu.RUnlock()
+	out := make([]string, 0, len(eps))
+	used := make(map[string]bool, len(eps))
+	for _, tok := range tokens {
+		tok = strings.TrimPrefix(tok, "/")
+		for _, ep := range eps {
+			if used[ep.path] {
+				continue
+			}
+			if topSegment(ep.path) == tok {
+				out = append(out, ep.path)
+				used[ep.path] = true
+			}
+		}
+	}
+	for _, ep := range eps {
+		if !used[ep.path] {
+			out = append(out, ep.path)
+		}
+	}
+	return out
+}
+
 func (s *Server) reorderEndpoints(order []string) error {
 	// order 里混有虚拟分组（@img/<name>）：栏目顺序与分组顺序分别落盘，
 	// 另外把「混排后的整体顺序」写进 data/order.json 供首页使用。
@@ -419,8 +447,10 @@ func (s *Server) reorderEndpoints(order []string) error {
 		epOrder = append(epOrder, strings.TrimPrefix(tok, "/"))
 	}
 
+	// 先在锁外把「一级分类顺序」展开成完整栏目顺序（内部要读 endpoints，不能再持写锁）
+	expanded := s.expandEndpointOrder(epOrder)
 	s.mu.Lock()
-	next := applyEndpointOrder(s.endpoints, epOrder)
+	next := applyEndpointOrder(s.endpoints, expanded)
 	s.endpoints = next
 	data, err := marshalEndpointsLocked(s.endpoints)
 	s.epIndex = endpointIndex(s.endpoints)

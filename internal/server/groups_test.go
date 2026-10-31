@@ -418,3 +418,48 @@ func TestHomeOnlyTopLevelCategories(t *testing.T) {
 		t.Fatalf("/pc/ii 应仍可访问并 302，得到 %d", rec.Code)
 	}
 }
+
+// TestSortTableNormalized 排序表按一级分类归一：/pc/ii、/pc/jj 只出一行 /pc，拖动整组生效。
+func TestSortTableNormalized(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"label\":\"混合分组\",\"categories\":[\"pc\"]}]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+	for _, p := range []struct{ path, label string }{
+		{"pc/ii", "子一"}, {"pc/jj", "子二"}, {"phone", "手机"},
+	} {
+		postAdmin(t, s, cookie, "/admin/binding", url.Values{
+			"binding_desk": {"pc"}, "binding_path": {p.path}, "binding_label": {p.label},
+		})
+	}
+
+	// 排序表：只有 pc / phone / @img/mix 三行
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if strings.Count(body, `data-path="pc"`) != 1 {
+		t.Fatal("排序表里 /pc 应只有一行")
+	}
+	if strings.Contains(body, `data-path="pc/ii"`) || strings.Contains(body, `data-path="pc/jj"`) {
+		t.Fatal("排序表不应出现深层路径行")
+	}
+	if !strings.Contains(body, `data-path="@img/mix"`) {
+		t.Fatal("排序表应包含虚拟分组行")
+	}
+
+	// 把 phone 拖到 pc 前面
+	postAdmin(t, s, cookie, "/admin/endpoints/reorder", url.Values{"order": {"phone", "pc", "@img/mix"}})
+	home := get(t, s, "/").Body.String()
+	ei := strings.Index(home, `data-src="/phone?w=480"`)
+	ci := strings.Index(home, `data-src="/pc?w=480"`)
+	if ei < 0 || ci < 0 || ei > ci {
+		t.Fatalf("首页顺序应为 phone 在 pc 之前（ei=%d ci=%d）", ei, ci)
+	}
+	// 深层栏目仍可访问
+	if rec := get(t, s, "/pc/ii"); rec.Code != http.StatusFound {
+		t.Fatalf("/pc/ii 应仍可访问，得到 %d", rec.Code)
+	}
+}

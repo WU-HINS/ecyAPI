@@ -511,24 +511,14 @@
                     <table class="tbl">
                         <thead><tr><th></th><th>#</th><th>路径</th><th>名称</th><th>分类</th><th>类型</th></tr></thead>
                         <tbody id="epsBody">
-                        {{- range $i, $ep := .Endpoints}}
-                            <tr draggable="true" data-path="{{$ep.Path}}">
+                        {{- range $i, $it := .SortItems}}
+                            <tr draggable="true" data-path="{{$it.Path}}">
                                 <td class="grip" title="拖动排序">⋮⋮</td>
                                 <td class="idx">{{$i}}</td>
-                                <td><code>/{{$ep.Path}}</code></td>
-                                <td>{{$ep.Label}}</td>
-                                <td><code>{{$ep.Desk}}</code>{{if $ep.Mobile}} → <code>{{$ep.Mobile}}</code>{{end}}</td>
-                                <td>{{if eq $ep.Mode "自动横竖"}}<span class="badge tag">自动横竖</span>{{else if eq $ep.Mode "双端"}}<span class="badge tag">双端</span>{{else}}单端{{end}}</td>
-                            </tr>
-                        {{- end}}
-                        {{- range .Groups}}
-                            <tr draggable="true" data-path="@img/{{.Name}}">
-                                <td class="grip" title="拖动排序">⋮⋮</td>
-                                <td class="idx"></td>
-                                <td><code>/@img/{{.Name}}</code></td>
-                                <td>{{.Label}}</td>
-                                <td>{{range $i, $c := .Categories}}{{if $i}} + {{end}}<code>{{$c}}</code>{{end}}</td>
-                                <td><span class="badge tag">虚拟分组</span></td>
+                                <td><code>/{{$it.Path}}</code></td>
+                                <td>{{$it.Label}}{{if gt (len $it.Members) 1}}<span class="field-desc" style="display:block">{{range $j, $m := $it.Members}}{{if $j}}·{{end}}{{$m}}{{end}}</span>{{end}}</td>
+                                <td>{{if $it.Group}}{{range $j, $m := $it.Members}}{{if $j}} + {{end}}<code>{{$m}}</code>{{end}}{{else}}{{$it.Members}}{{end}}</td>
+                                <td>{{if $it.Group}}<span class="badge tag">虚拟分组</span>{{else if eq $it.Kind "自动横竖"}}<span class="badge tag">自动横竖</span>{{else if eq $it.Kind "双端"}}<span class="badge tag">双端</span>{{else}}单端{{end}}</td>
                             </tr>
                         {{- end}}
                         </tbody>
