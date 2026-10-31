@@ -113,6 +113,9 @@ type Config struct {
 	MemHardPct int
 	// MemTargetCapPct 自适应目标的最高百分比（ECY_MEM_TARGET_CAP_PCT，默认 30）。
 	MemTargetCapPct int
+	// AggFloor 聚合单位底分（ECY_AGG_FLOOR，默认 4）：权重 = sqrt(图片数) + 底分，
+	// 底分越大，图片极少的目录越不容易被大目录挤掉（0 表示退化为纯 sqrt）。
+	AggFloor float64
 	// MemQPSThreshold 高 QPS 放宽阈值（ECY_MEM_QPS_THRESHOLD，默认 100）：
 	// QPS 超过它后按比例放宽内存目标（到 4× 阈值放宽到上限），0 表示不按 QPS 放宽。
 	MemQPSThreshold int
@@ -129,6 +132,16 @@ func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
+		}
+	}
+	return def
+}
+
+// envFloat 读取浮点环境变量（缺省/非法时用默认值）。
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			return f
 		}
 	}
 	return def
@@ -201,6 +214,7 @@ func Load() Config {
 		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 80), 70, 90),
 		MemTargetCapPct:   clampInt(envInt("ECY_MEM_TARGET_CAP_PCT", 30), 5, 90),
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
+		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 	}
 }
 

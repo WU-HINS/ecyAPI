@@ -173,6 +173,7 @@ func New(cfg config.Config) (*Server, error) {
 		SnapshotMaxAge:    time.Duration(cfg.SnapshotMaxAgeSeconds) * time.Second,
 		VerifyInterval:    time.Duration(cfg.VerifyIntervalSeconds) * time.Second,
 		ParentAggDirsOnly: cfg.ParentAggDirsOnly,
+		AggFloor:          cfg.AggFloor,
 	})
 	if err != nil {
 		return nil, err

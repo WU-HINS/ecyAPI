@@ -508,6 +508,8 @@ type Options struct {
 	// ParentAggDirsOnly 父目录聚合模式：true = 仅聚合「自身没有图片」的父目录；
 	// false（默认）= 自身有图片时也把子目录聚合进来（ECY_PARENT_AGG=with_files）。
 	ParentAggDirsOnly bool
+	// AggFloor 聚合单位底分：权重 = sqrt(图片数) + AggFloor（0 表示纯 sqrt）。
+	AggFloor float64
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
@@ -542,6 +544,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	if verify <= 0 {
 		verify = defaultVerifyInterval
 	}
+	SetFloorWeight(opt.AggFloor)
 	fs := &fileStore{
 		dir:               dir,
 		maxDepth:          maxDepth,

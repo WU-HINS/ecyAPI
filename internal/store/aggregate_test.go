@@ -274,3 +274,34 @@ func TestAggSmallDirNotStarved(t *testing.T) {
 		t.Fatalf("小目录被挤占得太狠：%d/%d", seen, n)
 	}
 }
+
+// TestAggFloorBoostsSmallDirs 底分越高，极小目录越不容易被挤掉。
+func TestAggFloorBoostsSmallDirs(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	for i := 0; i < 400; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "big", "b"+pad(i)+".png"), 4, 2)
+	}
+	writePNG(t, filepath.Join(dir, "pixiv", "tiny", "one.png"), 4, 2)
+	ctx := context.Background()
+	share := func(floor float64) float64 {
+		st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, AggFloor: floor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := 0
+		const n = 2000
+		for i := 0; i < n; i++ {
+			rows, _ := st.RandomWith(ctx, "pixiv", 1, OrientationAny)
+			if strings.Contains(rows[0].Link, "/tiny/") {
+				seen++
+			}
+		}
+		return float64(seen) / float64(n)
+	}
+	low := share(0)
+	high := share(8)
+	SetFloorWeight(0) // 复位全局默认，避免影响其它用例
+	if high <= low*1.5 {
+		t.Fatalf("底分应显著提高小目录占比：floor0=%.3f floor8=%.3f", low, high)
+	}
+}

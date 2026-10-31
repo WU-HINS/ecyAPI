@@ -25,12 +25,30 @@ type aggChild struct {
 	weight float64
 }
 
-// unitWeight 目录权重：sqrt(图片数)。
+// aggFloorWeight 每个抽样单位的「底分」：保证再怎么少的目录也不是 0 分。
+// 可由 ECY_AGG_FLOOR 调整（默认 1，相当于「再小的目录也按 1 张参与」）。
+var aggFloorWeight = 1.0
+
+// SetFloorWeight 设置单位底分（0 表示关闭，退化为纯 sqrt）。
+func SetFloorWeight(f float64) {
+	if f < 0 {
+		f = 0
+	}
+	if f > 100 {
+		f = 100
+	}
+	aggFloorWeight = f
+}
+
+// unitWeight 目录权重：sqrt(图片数) + 底分。
+//
+// 用平滑函数而不是死板的比例：即使 1 万张 vs 1 张，小目录也保有一点权重；
+// 底分让「极小但存在」的目录不会被彻底淹没，同时不改变大目录整体占优的格局。
 func unitWeight(total int) float64 {
 	if total <= 0 {
 		return 0
 	}
-	return math.Sqrt(float64(total))
+	return math.Sqrt(float64(total)) + aggFloorWeight
 }
 
 // pick 单位内部按图片数均匀取一条。
