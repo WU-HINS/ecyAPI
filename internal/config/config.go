@@ -110,6 +110,9 @@ type Config struct {
 	MemSoftPct int
 	// MemHardPct 内存上限百分比（ECY_MEM_HARD_PCT，默认 30）：自适应目标最高放宽到这里。
 	MemHardPct int
+	// MemQPSThreshold 高 QPS 放宽阈值（ECY_MEM_QPS_THRESHOLD，默认 100）：
+	// QPS 超过它后按比例放宽内存目标（到 4× 阈值放宽到上限），0 表示不按 QPS 放宽。
+	MemQPSThreshold int
 }
 
 func env(key, def string) string {
@@ -122,6 +125,16 @@ func env(key, def string) string {
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// envIntZero 与 envInt 相同，但显式写了 0 时返回 0（用于「0 = 关闭」的开关）。
+func envIntZero(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
 	}
@@ -161,18 +174,18 @@ func Load() Config {
 		// 分类层级：默认 3 段（a/b/c），上限 8 段，超出按上限处理。
 		MaxDepth: clampDepth(envInt("ECY_MAX_DEPTH", store.DefaultMaxDepth)),
 		// 图库默认展示全部（0）；>0 时随机抽样，作为超大分类的兜底。
-		GalleryMax:            clampInt(envInt("ECY_GALLERY_MAX", 0), 0, 5000),
+		GalleryMax:            clampInt(envIntZero("ECY_GALLERY_MAX", 0), 0, 5000),
 		GalleryConcurrency:    clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
 		GalleryWaitSeconds:    clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
 		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
 		StaticDir:             env("ECY_STATIC_DIR", "data/static"),
-		ActivityLogSeconds:    clampInt(envInt("ECY_ACTIVITY_LOG_SECONDS", 3), 0, 300),
+		ActivityLogSeconds:    clampInt(envIntZero("ECY_ACTIVITY_LOG_SECONDS", 3), 0, 300),
 		StaticMaxAge:          clampInt(envInt("ECY_STATIC_MAX_AGE", 7*24*3600), 60, 30*24*3600),
 		StaticSyncFrom:        env("ECY_STATIC_SYNC_FROM", ""),
 		ParentAggDirsOnly:     strings.EqualFold(env("ECY_PARENT_AGG", "with_files"), "dirs_only"),
 		VerifyIntervalSeconds: clampInt(envInt("ECY_VERIFY_INTERVAL", 3600), 5, 86400),
-		SnapshotTTLSeconds:    clampInt(envInt("ECY_SNAPSHOT_TTL", 300), 0, 86400),
+		SnapshotTTLSeconds:    clampInt(envIntZero("ECY_SNAPSHOT_TTL", 300), 0, 86400),
 		SnapshotMaxAgeSeconds: clampInt(envInt("ECY_SNAPSHOT_MAX_AGE", 30*24*3600), 0, 365*24*3600),
 		DisableLinkVerify:     isOff(os.Getenv("ECY_VERIFY_LINKS")),
 		// 预览压缩预算：未显式设置时按堆上限自适应（约 1/12，夹在 8~64MP），
@@ -183,6 +196,7 @@ func Load() Config {
 		MemoryLimit:       memLimit,
 		MemSoftPct:        clampInt(envInt("ECY_MEM_SOFT_PCT", 2), 1, 50),
 		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 30), 5, 80),
+		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
 	}
 }
 

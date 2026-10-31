@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -31,9 +32,11 @@ type activityTracker struct {
 
 	gzips atomic.Int64 // 正在生成的 gzip 数
 
-	inflight atomic.Int64 // 正在处理的 HTTP 请求数（含图片）
-	served   atomic.Int64 // 累计完成请求数（用于算速率）
-	lastSeen atomic.Int64 // 上一轮日志时的 served 值
+	inflight atomic.Int64  // 正在处理的 HTTP 请求数（含图片）
+	served   atomic.Int64  // 累计完成请求数（用于算速率）
+	lastSeen atomic.Int64  // 上一轮日志时的 served 值
+	qpsBase  atomic.Int64  // 上一轮 QPS 计算基准
+	qpsBits  atomic.Uint64 // 平滑后的 QPS（math.Float64bits）
 }
 
 // noteRequestStart 请求进入时调用，返回结束函数。
@@ -94,14 +97,35 @@ func (s *Server) activityLoop(interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for range t.C {
-		// 按索引规模刷新内存目标：图越少目标越低（下次 Tick 生效）。
+		// 按索引规模 + 近期 QPS 刷新内存目标（下次 Tick 生效）。
+		// QPS 高说明正在服务大量用户：适当放宽目标换取体验，但仍受 memguard 红线约束。
+		qps := s.tickQPS(interval)
 		if n, ok := s.totalImages(); ok {
-			s.mem.SetTarget(memguard.DefaultTarget(s.mem.Limit(), n))
+			s.mem.SetTarget(memguard.TargetFor(s.mem.Limit(), n, qps, float64(s.cfg.MemQPSThreshold)))
 		}
 		if line, ok := s.activityLine(); ok {
 			log.Print(line)
 		}
 	}
+}
+
+// tickQPS 更新并返回近期 QPS（指数平滑，避免目标抖动）。
+func (s *Server) tickQPS(interval time.Duration) float64 {
+	served := s.act.served.Load()
+	prev := s.act.qpsBase.Swap(served)
+	cur := 0.0
+	if interval > 0 {
+		cur = float64(served-prev) / interval.Seconds()
+	}
+	// EWMA：0.6 旧 + 0.4 新
+	oldBits := s.act.qpsBits.Load()
+	old := math.Float64frombits(oldBits)
+	if old == 0 {
+		old = cur
+	}
+	smoothed := old*0.6 + cur*0.4
+	s.act.qpsBits.Store(math.Float64bits(smoothed))
+	return smoothed
 }
 
 // totalImages 索引里的图片总数（用于计算自适应内存目标）。

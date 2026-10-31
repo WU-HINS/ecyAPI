@@ -45,8 +45,8 @@ func TestDefaultTarget(t *testing.T) {
 		images int
 		want   int64
 	}{
-		{2048 * mb, 0, 25 * mb},                // 2% = 41MB → 封顶 25MB
-		{100 * mb, 0, 2 * mb},                  // 2% = 2MB（限额很小时以 2% 为准）
+		{2048 * mb, 0, 2048 * mb * 2 / 100},    // 2% = 41MB > 25MB，按 2% 取
+		{512 * mb, 0, 25 * mb},                 // 2% = 10MB < 25MB → 仍取 25MB（进程要跑起来）
 		{512 * mb, 50000, 512 * mb * 30 / 100}, // 30% × 512MB
 		{256 * mb, 50000, 256 * mb * 30 / 100}, // 30% × 256MB
 	}
@@ -135,11 +135,37 @@ func TestPressureAndPermits(t *testing.T) {
 func TestSetTargetZeroFallsBack(t *testing.T) {
 	g, _ := fake(100 << 20)
 	g.SetTarget(0)
-	if got := g.Target(); got != int64(100<<20)*2/100 {
-		t.Fatalf("兜底目标应为 2%% × 限额，实际 %dMB", got>>20)
+	if got := g.Target(); got != 25<<20 {
+		t.Fatalf("兜底目标应为 25MB 下限，实际 %dMB", got>>20)
 	}
 	g.SetTarget(25 << 20)
 	if got := g.Target(); got != 25<<20 {
 		t.Fatalf("显式目标 = %dMB", got>>20)
+	}
+}
+
+// TestTargetForQPS 高 QPS 放宽目标，但不超过 30% 上限；阈值 0 表示关闭。
+func TestTargetForQPS(t *testing.T) {
+	const mb = int64(1 << 20)
+	limit := int64(512 * mb)
+	base := TargetFor(limit, 0, 0, 100)
+	if base != 25*mb {
+		t.Fatalf("base = %dMB，期望 25MB", base>>20)
+	}
+	if got := TargetFor(limit, 0, 50, 100); got != base {
+		t.Fatalf("50 QPS 不应放宽，得到 %dMB", got>>20)
+	}
+	if got := TargetFor(limit, 0, 400, 100); got != limit*30/100 {
+		t.Fatalf("400 QPS 应放宽到上限，得到 %dMB", got>>20)
+	}
+	mid := TargetFor(limit, 0, 250, 100)
+	if mid <= base || mid >= limit*30/100 {
+		t.Fatalf("250 QPS 应介于中间，得到 %dMB", mid>>20)
+	}
+	if got := TargetFor(limit, 0, 100000, 0); got != base {
+		t.Fatalf("阈值 0 时不应放宽，得到 %dMB", got>>20)
+	}
+	if got := TargetFor(limit, 50000, 0, 100); got != limit*30/100 {
+		t.Fatalf("5 万张应到上限，得到 %dMB", got>>20)
 	}
 }

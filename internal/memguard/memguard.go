@@ -106,28 +106,55 @@ func New(opt Options) *Governor {
 // Limit 容器内存限制。
 func (g *Governor) Limit() int64 { return g.limit }
 
-// DefaultTarget 计算默认内存目标：
+// DefaultTarget 计算内存目标：
 //
-//	target = min(25MB, 2% × limit)，再按索引图片数线性放宽到最多 30% × limit。
+//	base = max(25MB, 2% × limit)        // 25MB 是跑起来的最低要求
+//	target = base + (30%×limit − base) × max(索引比例, QPS 比例)
 //
-// 5 千张时约 25MB（小库不该占几十 MB）；图越多放宽越多，50k 张达到上限。
+// 索引比例 = min(图片数, 50000)/50000；QPS 比例为 0（未启用）。
 func DefaultTarget(limit int64, images int) int64 {
+	return TargetFor(limit, images, 0, 0)
+}
+
+// TargetFor 在 DefaultTarget 的基础上叠加「高 QPS 放宽」：
+// QPS 超过 threshold 后线性放宽，到 4×threshold 放宽到上限。
+// qpsThreshold <= 0 表示不按 QPS 放宽。
+func TargetFor(limit int64, images int, qps, qpsThreshold float64) int64 {
 	const base25 = 25 << 20
 	base := int64(limit * 2 / 100)
-	if base > base25 {
-		base = base25
+	if base < base25 {
+		base = base25 // 进程自身就要 25MB 才跑得动
 	}
 	ceiling := int64(limit * 30 / 100)
 	if base > ceiling {
 		base = ceiling
 	}
-	if images <= 0 {
+	if base == ceiling {
 		return base
 	}
-	if images >= 50000 {
-		return ceiling
+
+	// 索引比例
+	indexFrac := 0.0
+	if images > 0 {
+		if images >= 50000 {
+			indexFrac = 1
+		} else {
+			indexFrac = float64(images) / 50000
+		}
 	}
-	return base + (ceiling-base)*int64(images)/50000
+	// QPS 比例：threshold 起放宽，4×threshold 满
+	qpsFrac := 0.0
+	if qpsThreshold > 0 && qps > qpsThreshold {
+		qpsFrac = (qps - qpsThreshold) / (qpsThreshold * 3)
+		if qpsFrac > 1 {
+			qpsFrac = 1
+		}
+	}
+	frac := indexFrac
+	if qpsFrac > frac {
+		frac = qpsFrac
+	}
+	return base + int64(float64(ceiling-base)*frac)
 }
 
 // SetTarget 设置绝对内存目标（<=0 表示恢复按百分比推导）。
@@ -138,12 +165,12 @@ func (g *Governor) SetTarget(bytes int64) {
 	g.target.Store(bytes)
 }
 
-// Target 当前内存目标（字节）。
+// Target 当前内存目标（字节）。未显式设置时按「25MB 下限 + softPct」兜底。
 func (g *Governor) Target() int64 {
 	if t := g.target.Load(); t > 0 {
 		return t
 	}
-	return int64(float64(g.limit) * g.softPct)
+	return TargetFor(g.limit, 0, 0, 0)
 }
 
 // ceiling 内存上限（红线）：30% × limit。
@@ -225,12 +252,9 @@ func (g *Governor) Allow(need int64) bool {
 	if need <= 0 {
 		need = 1
 	}
-	// 允许超过目标一定余量，但绝不越过红线（30% 或目标本身）。
-	headroom := g.Target() + g.Target()/2 // 目标 ×1.5
-	if ceiling := g.ceiling(); headroom > ceiling {
-		headroom = ceiling
-	}
-	return g.used()+need <= headroom
+	// 准入只看红线（30%）：目标只决定「GC 多积极、预算收多少」，
+	// 不是硬性拒绝线——Go 运行时自身就有 ~20MB 常驻，用小目标硬卡会直接卡死功能。
+	return g.used()+need <= g.ceiling()
 }
 
 // RSS 当前进程常驻内存（字节），供状态日志使用。
