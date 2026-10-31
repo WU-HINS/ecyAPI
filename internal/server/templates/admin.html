@@ -337,6 +337,8 @@
                     <div class="row" style="align-items:flex-end;margin-bottom:14px">
                         <div class="field" style="max-width:280px;margin:0">
                             <label for="tableSelect">选择分类</label>
+                            <input type="text" data-filter="tableSelect" placeholder="搜索分类…"
+                                   style="margin-bottom:6px;font-size:12.5px">
                             <select id="tableSelect" onchange="loadImages()">
                                 {{- range .Tables}}
                                 <option value="{{.Name}}">{{.Name}} ({{.Count}})</option>
@@ -426,6 +428,8 @@
                     <form action="/admin/category/delete" method="post" onsubmit="return checkDeleteCategory()">
                         <div class="field" style="max-width:360px">
                             <label for="del_cat_select">选择要删除的分类</label>
+                            <input type="text" data-filter="del_cat_select" placeholder="搜索分类…"
+                                   style="margin-bottom:6px;font-size:12.5px">
                             <select id="del_cat_select" name="category">
                                 {{- range .Tables}}
                                 <option value="{{.Name}}">{{.Name}} ({{.Count}} 张图片)</option>
@@ -459,6 +463,11 @@
                                        style="width:auto;margin-top:3px" onchange="toggleAutoBinding()">
                                 <span>关闭「按设备自动分横竖」。<span style="color:var(--ink-2)">默认开启：只用一个分类，桌面端出横图、移动端出竖图；勾选后改为 PC / 移动端两个分类的经典双端绑定。</span></span>
                             </label>
+                        </div>
+                        <div class="field">
+                            <label>搜索分类（同时过滤下面两个下拉）</label>
+                            <input type="text" data-filter="binding_desk,binding_mobile" placeholder="搜索分类…"
+                                   style="font-size:12.5px">
                         </div>
                         <div class="row">
                             <div class="field">
@@ -575,6 +584,8 @@
                         <div class="row">
                             <div class="field">
                                 <label for="prewarm_category">分类</label>
+                                <input type="text" data-filter="prewarm_category" placeholder="搜索分类…"
+                                       style="margin-bottom:6px;font-size:12.5px">
                                 <select id="prewarm_category" name="category">
                                     <option value="">全部分类（不含图库隐藏分类）</option>
                                     {{- range .Tables}}<option value="{{.Name}}">{{.Name}}（{{.Count}} 张）</option>{{end}}
@@ -746,9 +757,11 @@
                             <input type="text" name="desc" value="{{$g.Desc}}"></div>
                         <div class="field">
                             <label>包含的分类</label>
-                            <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
+                            <input type="text" data-filter="gcat-{{$g.Name}}" placeholder="搜索分类…"
+                                   style="margin-bottom:6px;font-size:12.5px">
+                            <div id="gcat-{{$g.Name}}" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
                                 {{range $.PickCategories}}
-                                <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:2px 0">
+                                <label data-filter-item style="display:flex;gap:8px;align-items:center;font-weight:400;margin:2px 0">
                                     <input type="checkbox" name="categories" value="{{.Name}}" style="width:auto"{{if HasString $g.Categories .Name}} checked{{end}}>
                                     <code>{{.Name}}</code><span class="field-desc">（{{.Count}} 张）</span>
                                 </label>
@@ -786,9 +799,11 @@
                             <input type="text" name="desc" placeholder="桌面 + 4K"></div>
                         <div class="field">
                             <label>包含的分类</label>
-                            <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
+                            <input type="text" data-filter="gcat-new" placeholder="搜索分类…"
+                                   style="margin-bottom:6px;font-size:12.5px">
+                            <div id="gcat-new" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">
                                 {{range .PickCategories}}
-                                <label style="display:flex;gap:8px;align-items:center;font-weight:400;margin:2px 0">
+                                <label data-filter-item style="display:flex;gap:8px;align-items:center;font-weight:400;margin:2px 0">
                                     <input type="checkbox" name="categories" value="{{.Name}}" style="width:auto">
                                     <code>{{.Name}}</code><span class="field-desc">（{{.Count}} 张）</span>
                                 </label>
@@ -961,6 +976,26 @@
             if (name === 'cache') { refreshCache(); cacheTimer = setInterval(refreshCache, 2000); }
             else if (cacheTimer) { clearInterval(cacheTimer); cacheTimer = null; }
         }
+
+        /* 分类搜索：input[data-filter="a,b"] 过滤 #a、#b 里的 option 与 [data-filter-item] */
+        function applyFilter(input) {
+            var q = input.value.trim().toLowerCase();
+            (input.dataset.filter || '').split(',').forEach(function (id) {
+                var box = document.getElementById(id.trim());
+                if (!box) return;
+                box.querySelectorAll('option').forEach(function (o) {
+                    if (o.dataset.label === undefined) o.dataset.label = o.textContent;
+                    o.hidden = !!q && o.dataset.label.toLowerCase().indexOf(q) === -1;
+                });
+                box.querySelectorAll('[data-filter-item]').forEach(function (el) {
+                    if (el.dataset.label === undefined) el.dataset.label = el.textContent;
+                    el.style.display = (!q || el.dataset.label.toLowerCase().indexOf(q) > -1) ? '' : 'none';
+                });
+            });
+        }
+        document.querySelectorAll('input[data-filter]').forEach(function (inp) {
+            inp.addEventListener('input', function () { applyFilter(inp); });
+        });
 
         /* 登录与 SSO：复制回调地址 */
         function copySSOCallback() {

@@ -297,7 +297,9 @@ curl 'http://localhost:8080/json?category=pc&count=5'
      `POST /admin/sso/discover`、`POST /admin/sso/unbind`
    - 安全：授权码 + PKCE(S256) + state（HttpOnly cookie 校验）、JWT 校验 iss/aud/exp/nonce；
      配置保存在 `data/sso.json`（0600），client_secret 明文，注意文件权限
-8. **缓存与预热**：查看图库页/缩略图缓存占用；一键清理；按分类预热（可同时生成指定宽度的缩略图），带进度条与取消。
+8. **分类搜索**：后台各处的分类选择（图片管理、删除分类、双端绑定、预热、虚拟分组勾选）都带搜索框，
+   输入即过滤；前端图库的分类按钮上方也有搜索框，按名字过滤（纯前端，不影响链接）
+9. **缓存与预热**：查看图库页/缩略图缓存占用；一键清理；按分类预热（可同时生成指定宽度的缩略图），带进度条与取消。
    - `POST /admin/cache/clear`、`POST /admin/cache/prewarm`（字段 `category`、`width`）、`GET /admin/cache/status`、`POST /admin/cache/cancel`
    - **预热是低优先级**：最近 1 秒有请求、内存压力 >0.3、或图库正在渲染时都会自动让路；
      缩略图最多只占一半像素预算，渲染只在空闲时进行；请求空闲后自动继续（不是放弃）

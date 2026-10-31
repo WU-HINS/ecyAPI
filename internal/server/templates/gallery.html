@@ -169,9 +169,14 @@
             <p>📚 JSON 接口文档：<a href="/docs">点击查看</a></p>
         </div>
 
-        <div class="card-style category-tabs">
+        <div class="card-style">
+            <input type="search" id="catSearch" placeholder="搜索分类…（按名字过滤上面的分类按钮）"
+                   style="width:100%;padding:10px 12px;border:1px solid var(--line,#e5e5e5);border-radius:10px;font-size:14px;outline:none">
+        </div>
+
+        <div class="card-style category-tabs" id="categoryTabs">
             {{- range .Categories}}
-            <a href="?category={{.Name}}" class="category-btn {{if eq .Name $.Current}}active{{end}}">{{.Name}} ({{.Count}})</a>
+            <a href="?category={{.Name}}" class="category-btn {{if eq .Name $.Current}}active{{end}}" data-name="{{.Name}}">{{.Name}} ({{.Count}})</a>
             {{- end}}
         </div>
 
@@ -231,6 +236,19 @@
     </div>
 
     <script>
+        // 分类搜索：按名字过滤分类按钮（纯前端，不影响翻页/排序）
+        (function () {
+            var input = document.getElementById('catSearch');
+            var tabs = document.getElementById('categoryTabs');
+            if (!input || !tabs) return;
+            input.addEventListener('input', function () {
+                var q = input.value.trim().toLowerCase();
+                tabs.querySelectorAll('a.category-btn').forEach(function (a) {
+                    var name = (a.dataset.name || a.textContent).toLowerCase();
+                    a.style.display = (!q || name.indexOf(q) > -1) ? '' : 'none';
+                });
+            });
+        })();
         document.addEventListener('DOMContentLoaded', function () {
             // 图片懒加载
             var lazyImages = document.querySelectorAll('img[data-src]');

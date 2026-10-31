@@ -292,3 +292,39 @@ func TestGroupMemberUniform(t *testing.T) {
 		}
 	}
 }
+
+// TestCategorySearchUI 后台各分类选择与前端图库都要有搜索框。
+func TestCategorySearchUI(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[{\"name\":\"mix\",\"categories\":[\"pc\"]}]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	for _, target := range []string{"tableSelect", "del_cat_select", "binding_desk,binding_mobile", "prewarm_category", "gcat-new"} {
+		if !strings.Contains(body, `data-filter="`+target+`"`) {
+			t.Fatalf("后台缺少分类搜索框：%s", target)
+		}
+	}
+	if !strings.Contains(body, "function applyFilter(") {
+		t.Fatal("后台缺少分类过滤脚本")
+	}
+
+	// 前端图库
+	rec2 := get(t, s, "/img")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("图库应 200，得到 %d", rec2.Code)
+	}
+	if !strings.Contains(rec2.Body.String(), `id="catSearch"`) {
+		t.Fatal("图库缺少分类搜索框")
+	}
+	if !strings.Contains(rec2.Body.String(), `id="categoryTabs"`) {
+		t.Fatal("图库分类区缺少 id=categoryTabs")
+	}
+}
