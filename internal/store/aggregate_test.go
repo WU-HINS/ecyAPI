@@ -105,9 +105,8 @@ func TestAggregateIgnoresEmptyChildren(t *testing.T) {
 	}
 }
 
-// TestAggregateUniformPerChild 父聚合按「子分类」平权随机，不按图片数加权。
-// big 子目录 100 张、small 1 张：两者应各占约 50%。
-func TestAggregateUniformPerChild(t *testing.T) {
+// TestAggSqrtWeightByCount 单位权重 = sqrt(图片数)：100 张 vs 1 张 约 10:1（而不是 100:1）。
+func TestAggSqrtWeightByCount(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "categories")
 	for i := 0; i < 100; i++ {
 		writePNG(t, filepath.Join(dir, "pixiv", "big", "b"+pad(i)+".png"), 4, 2)
@@ -129,16 +128,17 @@ func TestAggregateUniformPerChild(t *testing.T) {
 		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
 		counts[parts[0]]++
 	}
-	// 平权：各约 50%；给足容差（2000 次的二项分布 σ≈1.1%）
-	for _, child := range []string{"big", "small"} {
-		if counts[child] < n/3 || counts[child] > n*2/3 {
-			t.Fatalf("子分类 %s 占比异常: %d/%d（%v）", child, counts[child], n, counts)
-		}
+	big, small := counts["big"], counts["small"]
+	if small < n/20 || small > n/5 { // 期望 ~9%，允许 5%~20%
+		t.Fatalf("小目录占比应约 1/11，实际 %d/%d（%v）", small, n, counts)
+	}
+	if big < n*3/4 {
+		t.Fatalf("大目录仍应占多数，实际 %d/%d", big, n)
 	}
 }
 
-// TestNestedAggUniformPerLevel 嵌套父目录逐层平权：
-// pixiv/2024/kuro(100 张) 与 pixiv/2025/x(1 张) → pixiv 先平权选 2024/2025，各约 50%。
+// TestNestedAggWeightedByCount 嵌套父目录按图片数（sqrt）加权：
+// pixiv/2024/kuro(100 张) 与 pixiv/2025/x(1 张) → 约 10:1，而不是 1:1 或 100:1。
 func TestNestedAggUniformPerLevel(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "categories")
 	for i := 0; i < 100; i++ {
@@ -165,10 +165,11 @@ func TestNestedAggUniformPerLevel(t *testing.T) {
 		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
 		counts[parts[0]]++
 	}
-	for _, branch := range []string{"2024", "2025"} {
-		if counts[branch] < n/3 || counts[branch] > n*2/3 {
-			t.Fatalf("分支 %s 占比异常：%d/%d（%v）—— 说明没按层级平权", branch, counts[branch], n, counts)
-		}
+	if counts["2025"] < n/20 || counts["2025"] > n/5 {
+		t.Fatalf("小分支应约 1/11，实际 %d/%d（%v）", counts["2025"], n, counts)
+	}
+	if counts["2024"] < n*3/4 {
+		t.Fatalf("大分支应占多数，实际 %d/%d", counts["2024"], n)
 	}
 }
 
@@ -214,7 +215,7 @@ func TestCategorySnapshotReuse(t *testing.T) {
 	}
 }
 
-// TestAggUnitsAreSecondLevel 父目录展开到二级目录平权：
+// TestAggDepthExpansion 按 ECY_MAX_DEPTH 展开：更深的目录会成为独立单位，
 // 2024 下有 5 个子目录各 1 张，2025 下 1 个子目录 100 张 —— 2024 与 2025 应各约 50%。
 func TestAggUnitsAreSecondLevel(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "categories")
@@ -242,10 +243,34 @@ func TestAggUnitsAreSecondLevel(t *testing.T) {
 		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
 		counts[parts[0]]++
 	}
-	for _, branch := range []string{"2024", "2025"} {
-		if counts[branch] < n/3 || counts[branch] > n*2/3 {
-			t.Fatalf("二级目录 %s 应约占一半，实际 %d/%d（%v）——说明被三级子目录数带偏了",
-				branch, counts[branch], n, counts)
+	// 2024 展开成 5 个 1 张的单位（权重 5），2025 是 1 个 100 张的单位（权重 10）→ 约 1:2
+	if counts["2024"] < n/5 || counts["2024"] > n/2 {
+		t.Fatalf("2024 应按深度展开后约占 1/3，实际 %d/%d（%v）", counts["2024"], n, counts)
+	}
+}
+
+// TestAggSmallDirNotStarved 极端差距下小目录仍能被随机到（1 张 vs 10000 张）。
+func TestAggSmallDirNotStarved(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	for i := 0; i < 200; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "big", "b"+pad(i)+".png"), 4, 2)
+	}
+	writePNG(t, filepath.Join(dir, "pixiv", "tiny", "one.png"), 4, 2)
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	seen := 0
+	const n = 3000
+	for i := 0; i < n; i++ {
+		rows, _ := st.RandomWith(ctx, "pixiv", 1, OrientationAny)
+		if strings.Contains(rows[0].Link, "/tiny/") {
+			seen++
 		}
+	}
+	// sqrt 加权：1 vs sqrt(200)≈14 → 约 6.7%，纯按数量则是 0.5%
+	if seen < n/40 { // 至少 2.5%
+		t.Fatalf("小目录被挤占得太狠：%d/%d", seen, n)
 	}
 }

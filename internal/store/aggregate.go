@@ -1,6 +1,10 @@
 package store
 
-import "math/rand/v2"
+import (
+	"math"
+	"math/rand/v2"
+	"sort"
+)
 
 // 父目录聚合：把子分类的图片集合按数量加权聚合，让「父目录」也能随机出图
 // （/pixiv、/json?pixiv）。两种模式（ECY_PARENT_AGG）：
@@ -9,15 +13,27 @@ import "math/rand/v2"
 //
 // 内存开销：每个父目录只保存对子分类切片（slice header）的引用，不复制图片条目。
 
-// aggChild 聚合里的一个「平权单位」：一个二级目录（父目录的直接子目录）。
-// 每个单位内部按图片数均匀；单位之间等概率。
+// aggChild 聚合里的一个抽样单位（展开到 ECY_MAX_DEPTH 后的一个目录）。
+//
+// 权重 = sqrt(图片数)：整体仍按图片数分权（大目录更容易被选中），
+// 但用平方根压缩差距——100 张 vs 1 张 的权重是 10:1 而不是 100:1，
+// 保证小目录不会被大目录挤到几乎随机不到。
 type aggChild struct {
-	slices [][]fileEntry // 该目录下的叶子分类切片（自身图片排在最前）
-	cum    []int         // 累计数量，用于单位内部按图片数定位
+	slices [][]fileEntry
+	cum    []int // 单位内部按图片数定位
 	total  int
+	weight float64
 }
 
-// pick 单位内部按图片数随机取一条。
+// unitWeight 目录权重：sqrt(图片数)。
+func unitWeight(total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return math.Sqrt(float64(total))
+}
+
+// pick 单位内部按图片数均匀取一条。
 func (c *aggChild) pick() (Row, bool) {
 	if c.total == 0 || len(c.slices) == 0 {
 		return Row{}, false
@@ -37,21 +53,23 @@ func (c *aggChild) pick() (Row, bool) {
 
 // aggBucket 一个方向（全部/横/竖）的聚合桶。
 type aggBucket struct {
-	// children 抽样单位：父目录的直接子目录（每个等概率）。
-	children []aggChild
-	// slices/cum/total 是展平视图，供按序号定位与整体列举使用（顺序稳定）。
+	children []aggChild // 抽样单位：展开到 ECY_MAX_DEPTH 的目录
+	// 单位权重累计，用于按权重挑单位
+	wcum []float64
+	wsum float64
+	// slices/cum/total 是展平视图，供按序号定位与整体列举（顺序稳定）
 	slices [][]fileEntry
 	cum    []int
 	total  int
-	// want 该桶对应的方向（抽样时保持一致）。
-	want Orientation
+	want   Orientation
 }
 
-// aggKids 一个父目录的三个方向桶。
+// aggKids 一个父目录的三个方向桶（附带直接子目录名，供更深层展开）。
 type aggKids struct {
-	all  aggBucket
-	land aggBucket
-	port aggBucket
+	all      aggBucket
+	land     aggBucket
+	port     aggBucket
+	children []string
 }
 
 func (a *aggKids) bucket(want Orientation) *aggBucket {
@@ -64,19 +82,22 @@ func (a *aggKids) bucket(want Orientation) *aggBucket {
 	return &a.all
 }
 
-// newAggKids 由子目录名构造聚合（子目录可能本身也是聚合目录）。
-func newAggKids(children []string, sets map[string]*categorySet, aggs map[string]*aggKids) *aggKids {
-	return newAggKidsWithSelf(children, sets, aggs, nil)
+// newAggKids 由子目录名构造聚合。
+func newAggKids(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, maxDepth int) *aggKids {
+	return newAggKidsWithSelf(children, sets, aggs, nil, maxDepth)
 }
 
-// newAggKidsWithSelf 与 newAggKids 相同，但把父目录自身的图片也并进聚合。
-// 「有文件聚合子目录」模式用它：/pixiv 既能取到自己的图，也能取到子目录的图。
-// 注意：自身图片作为**一个独立单位**参与平权（与每个子目录同等权重）。
-func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, self *categorySet) *aggKids {
+// newAggKidsWithSelf 与 newAggKids 相同，但把父目录自身的图片也并进聚合
+// （自身图片作为一个独立单位参与加权）。
+func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, self *categorySet, maxDepth int) *aggKids {
+	if maxDepth < 1 {
+		maxDepth = DefaultMaxDepth
+	}
 	agg := &aggKids{
-		all:  buildAggBucket(children, sets, aggs, OrientationAny, self),
-		land: buildAggBucket(children, sets, aggs, OrientationLandscape, self),
-		port: buildAggBucket(children, sets, aggs, OrientationPortrait, self),
+		children: append([]string(nil), children...),
+		all:      buildAggBucket(children, sets, aggs, OrientationAny, self, 1, maxDepth),
+		land:     buildAggBucket(children, sets, aggs, OrientationLandscape, self, 1, maxDepth),
+		port:     buildAggBucket(children, sets, aggs, OrientationPortrait, self, 1, maxDepth),
 	}
 	if agg.all.total == 0 {
 		return nil
@@ -86,16 +107,25 @@ func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs ma
 
 // buildAggBucket 构造一个方向的聚合桶。
 //
-// 口径（与 /@img 一致）：**父目录展开到二级目录**，每个二级目录等概率；
-// 二级目录内部按图片数均匀。三级及更深的层级不再拆成独立单位，
-// 而是整体算作它所属的二级目录——否则「子目录多的分支」会凭空获得更高权重。
-func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation, self *categorySet) aggBucket {
+// 展开深度由 depth 与 maxDepth（ECY_MAX_DEPTH）决定：
+//   - 还没到 maxDepth 且子目录本身是聚合 → 继续展开它的子目录
+//   - 到达 maxDepth 或子目录是普通分类 → 作为一个抽样单位
+//
+// 单位之间按 sqrt(图片数) 加权，单位内部按图片数均匀。
+func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation, self *categorySet, depth, maxDepth int) aggBucket {
 	b := aggBucket{want: want}
-	appendUnit := func(slices [][]fileEntry, cum []int, total int) {
+
+	addUnit := func(slices [][]fileEntry, cum []int, total int) {
 		if total == 0 || len(slices) == 0 {
 			return
 		}
-		b.children = append(b.children, aggChild{slices: slices, cum: cum, total: total})
+		w := unitWeight(total)
+		if w <= 0 {
+			return
+		}
+		b.children = append(b.children, aggChild{slices: slices, cum: cum, total: total, weight: w})
+		b.wsum += w
+		b.wcum = append(b.wcum, b.wsum)
 		for i, entries := range slices {
 			n := cum[i]
 			if i > 0 {
@@ -110,38 +140,53 @@ func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[st
 		}
 	}
 
-	// 父目录自身的图片：作为一个独立单位
+	// 父目录自身图片：一个独立单位
 	if self != nil {
 		if entries := self.pick(want); len(entries) > 0 {
-			appendUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
+			addUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
 		}
 	}
-	for _, child := range children {
-		if set, ok := sets[child]; ok {
-			if entries := set.pick(want); len(entries) > 0 {
-				appendUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
+
+	var walk func(names []string, d int)
+	walk = func(names []string, d int) {
+		for _, name := range names {
+			if set, ok := sets[name]; ok {
+				if entries := set.pick(want); len(entries) > 0 {
+					addUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
+				}
+				continue
 			}
-			continue
-		}
-		if a, ok := aggs[child]; ok {
+			a, ok := aggs[name]
+			if !ok {
+				continue
+			}
 			sub := a.bucket(want)
 			if sub.total == 0 {
 				continue
 			}
-			// 嵌套父目录：整体作为一个单位（不再逐层拆开）
-			appendUnit(sub.slices, sub.cum, sub.total)
+			// 还能再展开，且它确实有子目录 → 继续往下（按 ECY_MAX_DEPTH 控制展开层数）
+			if d < maxDepth && len(a.children) > 0 {
+				walk(a.children, d+1)
+				continue
+			}
+			addUnit(sub.slices, sub.cum, sub.total)
 		}
 	}
+	walk(children, depth)
 	return b
 }
 
-// pickOne 抽一条：先在二级目录之间等概率，再在所选目录内按图片数随机。
+// pickOne 抽一条：先按 sqrt(图片数) 权重挑单位，再在单位内按图片数均匀取。
 func (b *aggBucket) pickOne() (Row, bool) {
-	if len(b.children) == 0 || b.total == 0 {
+	if len(b.children) == 0 || b.wsum <= 0 {
 		return Row{}, false
 	}
-	c := &b.children[rand.IntN(len(b.children))]
-	return c.pick()
+	k := rand.Float64() * b.wsum
+	idx := sort.SearchFloat64s(b.wcum, k)
+	if idx >= len(b.children) {
+		idx = len(b.children) - 1
+	}
+	return b.children[idx].pick()
 }
 
 // locate 把全局下标映射到 (子集合, 集合内下标)。

@@ -425,7 +425,7 @@ func (f *fileStore) groupAgg(members []string) *aggKids {
 	f.groupAggMu.RUnlock()
 
 	f.mu.RLock()
-	agg := newAggKids(members, f.cache, f.aggs)
+	agg := newAggKids(members, f.cache, f.aggs, f.maxDepth)
 	f.mu.RUnlock()
 
 	f.groupAggMu.Lock()
@@ -1019,9 +1019,9 @@ func (f *fileStore) buildAgg(rel string, subdirs []string, sc *scanCtx) {
 	}
 	var agg *aggKids
 	if isCategory {
-		agg = newAggKidsWithSelf(kids, sc.sets, sc.aggs, own) // with_files：自己的图 + 子目录
+		agg = newAggKidsWithSelf(kids, sc.sets, sc.aggs, own, f.maxDepth) // with_files：自己的图 + 子目录
 	} else {
-		agg = newAggKids(kids, sc.sets, sc.aggs)
+		agg = newAggKids(kids, sc.sets, sc.aggs, f.maxDepth)
 	}
 	if agg != nil {
 		sc.aggs[rel] = agg
