@@ -261,6 +261,24 @@
         {{- end}}
     </section>
 
+    {{- if .Groups}}
+    <section class="cards" aria-label="虚拟分组">
+        {{- range .Groups}}
+        <div class="card">
+            <div class="thumb">
+                <img data-src="{{.PreviewURL}}?w=480" alt="{{.Label}}" loading="lazy" decoding="async">
+                <a href="{{.URL}}" class="tag">{{.Label}}</a>
+            </div>
+            <div class="card-body">
+                <span class="url">{{.URL}}</span>
+                <p class="desc">{{.Desc}}</p>
+                <p class="hint">👆点击图片可刷新预览</p>
+            </div>
+        </div>
+        {{- end}}
+    </section>
+    {{- end}}
+
     {{- if .Logs}}
     <section class="logs">
         <h2>改动日志</h2>
