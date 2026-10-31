@@ -632,6 +632,16 @@ docker compose up -d
 ```
 
 ## CI 与发版
+### 压测工作流（.github/workflows/bench.yml）
+
+- **触发**：push 到 main 自动跑；发版时通过 `workflow_call` 被 release 工作流复用
+- **做什么**：造 1000 分类 / 5 万张数据集（`tools/mkbench`，硬链接秒级生成）→ 启动服务 →
+  等 `/readyz`（扫描中请求会 503）→ 用 `tools/loadgen` 跑 `/json`、`/c000`、`/@img`、`/img` 四个场景 →
+  `tools/bench_report.py` 生成 Markdown → 上传 `bench-report` artifact
+- **发版说明自动带压测结果**：release 工作流的 `bench` job 直接 `uses` 这个 reusable workflow，
+  release job `needs: bench` 并下载 `bench-report`，把表格拼进 GitHub Release 说明
+
+这样「版本描述里的数字」永远来自当次代码的实测，不会与实现脱节。
 
 | 工作流 | 触发 | 行为 |
 | --- | --- | --- |
