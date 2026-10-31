@@ -213,3 +213,39 @@ func TestCategorySnapshotReuse(t *testing.T) {
 		t.Fatalf("新分类计数 = %d", got)
 	}
 }
+
+// TestAggUnitsAreSecondLevel 父目录展开到二级目录平权：
+// 2024 下有 5 个子目录各 1 张，2025 下 1 个子目录 100 张 —— 2024 与 2025 应各约 50%。
+func TestAggUnitsAreSecondLevel(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	for i := 0; i < 5; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "2024", "leaf"+pad(i), "a.png"), 4, 2)
+	}
+	for i := 0; i < 100; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "2025", "only", "b"+pad(i)+".png"), 4, 2)
+	}
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if n, _ := st.CountWith(ctx, "pixiv", OrientationAny); n != 105 {
+		t.Fatalf("父聚合总数应为 105，实际 %d", n)
+	}
+	counts := map[string]int{}
+	const n = 2000
+	for i := 0; i < n; i++ {
+		rows, err := st.RandomWith(ctx, "pixiv", 1, OrientationAny)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("取图失败: %v", err)
+		}
+		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
+		counts[parts[0]]++
+	}
+	for _, branch := range []string{"2024", "2025"} {
+		if counts[branch] < n/3 || counts[branch] > n*2/3 {
+			t.Fatalf("二级目录 %s 应约占一半，实际 %d/%d（%v）——说明被三级子目录数带偏了",
+				branch, counts[branch], n, counts)
+		}
+	}
+}
