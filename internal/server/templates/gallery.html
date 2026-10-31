@@ -176,7 +176,7 @@
 
         <div class="card-style category-tabs" id="categoryTabs">
             {{- range .Categories}}
-            <a href="{{.Href}}" class="category-btn {{if and (not .Group) (eq .Name $.Current)}}active{{end}}" data-name="{{.Name}}">{{.Name}} ({{.Count}}){{if .Group}}<span title="虚拟分组" style="opacity:.6"> ·组</span>{{end}}</a>
+            <a href="?category={{.Name}}" class="category-btn {{if eq .Name $.Current}}active{{end}}" data-name="{{.Name}}">{{.Name}} ({{.Count}})</a>
             {{- end}}
         </div>
 

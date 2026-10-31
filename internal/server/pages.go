@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -233,23 +232,10 @@ func (s *Server) buildGalleryPage(ctx context.Context, current string, cats []st
 	type cat struct {
 		Name  string
 		Count int
-		Href  string // 分类走 ?category=，虚拟分组直接跳 /@img/<name>
-		Group bool
 	}
-	catList := make([]cat, 0, len(cats)+4)
+	catList := make([]cat, 0, len(cats))
 	for _, c := range cats {
-		catList = append(catList, cat{Name: c, Count: counts[c], Href: "?category=" + url.QueryEscape(c)})
-	}
-	// 虚拟分组也出现在分类栏（排在分类之后），点进去就是该分组的随机跳转
-	for _, g := range s.groupsSnapshot().list {
-		if s.galleryHiddenSet()[g.Name] {
-			continue
-		}
-		n, err := s.st.GroupCount(ctx, g.Categories, store.OrientationAny)
-		if err != nil || n == 0 {
-			continue
-		}
-		catList = append(catList, cat{Name: g.Label, Count: n, Href: "/@img/" + g.Name, Group: true})
+		catList = append(catList, cat{Name: c, Count: counts[c]})
 	}
 	data := map[string]any{
 		"Current":    current,
