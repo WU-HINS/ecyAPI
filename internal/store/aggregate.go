@@ -40,6 +40,10 @@ func SetFloorWeight(f float64) {
 	aggFloorWeight = f
 }
 
+// UnitWeight 对外暴露的权重函数：sqrt(图片数) + 底分。
+// /@img 与虚拟分组的「分类加权」也用它，保证全站一个口径。
+func UnitWeight(total int) float64 { return unitWeight(total) }
+
 // unitWeight 目录权重：sqrt(图片数) + 底分。
 //
 // 用平滑函数而不是死板的比例：即使 1 万张 vs 1 张，小目录也保有一点权重；

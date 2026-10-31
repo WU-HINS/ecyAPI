@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html/template"
 	"log"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -1124,16 +1123,23 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 		suffix = "?w=" + url.QueryEscape(v)
 	}
 
-	start := rand.IntN(len(cats))
+	// 分类之间按 sqrt(图片数)+底分 加权（5 万张的大分类更容易被选中，
+	// 但 100 张的小分类仍有份额），与父目录聚合同一套函数。
+	counts := s.countsFor(r.Context(), cats)
+	tried := make(map[string]bool, 8)
 	var picked store.Row
 	found := false
-	// 最多试 8 个（或全部分类），够避开空分类，又不会在百万分类时扫太久。
+	// 最多试 8 个（或全部分类），够避开空分类/无该方向的分类。
 	tries := len(cats)
 	if tries > 8 {
 		tries = 8
 	}
 	for i := 0; i < tries; i++ {
-		cat := cats[(start+i)%len(cats)]
+		cat, ok := weightedPick(cats, counts, tried)
+		if !ok {
+			break
+		}
+		tried[cat] = true
 		if row, ok := s.pickVerified(r, cat, want); ok {
 			picked, found = row, true
 			break

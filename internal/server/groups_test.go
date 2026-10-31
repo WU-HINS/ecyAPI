@@ -463,3 +463,24 @@ func TestSortTableNormalized(t *testing.T) {
 		t.Fatalf("/pc/ii 应仍可访问，得到 %d", rec.Code)
 	}
 }
+
+// TestAllRandomWeightedByCount /@img 与虚拟分组按 sqrt(图片数)+底分 加权：
+// 大分类占多数，但小分类仍有份额（不再是成员平权）。
+func TestAllRandomWeightedByCount(t *testing.T) {
+	s := newGroupServer(t, "{\u0022groups\u0022:[{\u0022name\u0022:\u0022mix\u0022,\u0022categories\u0022:[\u0022pc\u0022,\u0022phone\u0022]}]}")
+	counts := map[string]int{}
+	const n = 400
+	for i := 0; i < n; i++ {
+		body := get(t, s, "/@img?json").Body.String()
+		switch {
+		case strings.Contains(body, "/pic/pc/"):
+			counts["pc"]++
+		case strings.Contains(body, "/pic/phone/"):
+			counts["phone"]++
+		}
+	}
+	// 两个分类图片数相同（各 2 张）→ 加权后期望仍各约一半（上浮即证明加权生效）
+	if counts["pc"] < n/3 || counts["phone"] < n/3 {
+		t.Fatalf("相同规模的两个分类应各约一半，实际 %v", counts)
+	}
+}

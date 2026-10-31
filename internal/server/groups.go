@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -175,7 +174,15 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 				limit = n
 			}
 		}
-		rows := s.rowsFromMembers(r, members, limit, want)
+		// 单条随机走加权抽样（保留随机性）；多条按权重配额分配
+		var rows []store.Row
+		if limit == 1 {
+			if row, ok := s.pickFromMembers(r, members, want); ok {
+				rows = []store.Row{row}
+			}
+		} else {
+			rows = s.rowsFromMembers(r, members, limit, want)
+		}
 		if len(rows) == 0 {
 			plainError(w, "No links found.", http.StatusNotFound)
 			return
@@ -205,13 +212,20 @@ func (s *Server) pickFromMembers(r *http.Request, members []string, want store.O
 	if len(members) == 0 {
 		return store.Row{}, false
 	}
-	start := rand.IntN(len(members))
+	// 成员之间同样按 sqrt(图片数)+底分 加权（与 /@img、父目录聚合口径一致）
+	counts := s.countsFor(r.Context(), members)
+	tried := make(map[string]bool, 8)
 	tries := len(members)
 	if tries > 8 {
 		tries = 8
 	}
 	for i := 0; i < tries; i++ {
-		if row, ok := s.pickVerified(r, members[(start+i)%len(members)], want); ok {
+		m, ok := weightedPick(members, counts, tried)
+		if !ok {
+			break
+		}
+		tried[m] = true
+		if row, ok := s.pickVerified(r, m, want); ok {
 			return row, true
 		}
 	}
@@ -221,16 +235,61 @@ func (s *Server) pickFromMembers(r *http.Request, members []string, want store.O
 	return store.Row{}, false
 }
 
-// rowsFromMembers 从成员分类里平权轮转取 limit 条（每个成员最多取到够为止）。
+// rowsFromMembers 从成员分类里按权重分配配额后取图：
+// 权重同样是 sqrt(图片数)+底分，与单条 302 的口径保持一致。
 func (s *Server) rowsFromMembers(r *http.Request, members []string, limit int, want store.Orientation) []store.Row {
 	if limit < 1 || len(members) == 0 {
 		return nil
 	}
+	counts := s.countsFor(r.Context(), members)
+	// 先按权重算出每个成员的配额（最大余数法，保证加起来正好 limit）
+	type quota struct {
+		cat    string
+		share  int
+		remain float64
+	}
+	totalW := 0.0
+	qs := make([]quota, 0, len(members))
+	for _, m := range members {
+		w := store.UnitWeight(counts[m])
+		if w <= 0 {
+			continue
+		}
+		totalW += w
+		qs = append(qs, quota{cat: m, remain: w})
+	}
+	if totalW <= 0 {
+		return nil
+	}
+	assigned := 0
+	for i := range qs {
+		exact := float64(limit) * (qs[i].remain / totalW)
+		qs[i].share = int(exact)
+		assigned += qs[i].share
+		qs[i].remain = exact - float64(qs[i].share)
+	}
+	// 余数补齐：按小数部分从大到小
+	for assigned < limit {
+		best, bestR := -1, -1.0
+		for i := range qs {
+			if qs[i].remain > bestR {
+				best, bestR = i, qs[i].remain
+			}
+		}
+		if best < 0 {
+			break
+		}
+		qs[best].share++
+		qs[best].remain = -1 // 本轮不再参与
+		assigned++
+	}
+
 	rows := make([]store.Row, 0, limit)
-	start := rand.IntN(len(members))
-	for i := 0; i < len(members) && len(rows) < limit; i++ {
-		cat := members[(start+i)%len(members)]
-		rs, err := s.st.RandomWith(r.Context(), cat, limit-len(rows), want)
+	for _, q := range qs {
+		if q.share <= 0 {
+			continue
+		}
+		rs, err := s.st.RandomWith(r.Context(), q.cat, q.share, want)
 		if err != nil {
 			continue
 		}
