@@ -6,11 +6,15 @@ package server
 // 还是「刚好撞上某个请求」。空闲且内存不高时不输出，避免刷屏。
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"ecyapi/internal/memguard"
+	"ecyapi/internal/store"
 )
 
 // activityTracker 热路径只做原子加减，不拿锁。
@@ -90,10 +94,29 @@ func (s *Server) activityLoop(interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for range t.C {
+		// 按索引规模刷新内存目标：图越少目标越低（下次 Tick 生效）。
+		if n, ok := s.totalImages(); ok {
+			s.mem.SetTarget(memguard.DefaultTarget(s.mem.Limit(), n))
+		}
 		if line, ok := s.activityLine(); ok {
 			log.Print(line)
 		}
 	}
+}
+
+// totalImages 索引里的图片总数（用于计算自适应内存目标）。
+func (s *Server) totalImages() (int, bool) {
+	cats, err := s.st.Categories(context.Background())
+	if err != nil {
+		return 0, false
+	}
+	total := 0
+	for _, c := range cats {
+		if n, err := s.st.CountWith(context.Background(), c, store.OrientationAny); err == nil {
+			total += n
+		}
+	}
+	return total, true
 }
 
 // activityLine 组装一行状态；没有活跃任务且内存不高时返回 false（不输出）。
@@ -168,8 +191,8 @@ func (s *Server) activityLine() (string, bool) {
 		parts = append(parts, "无活跃任务")
 	}
 
-	return fmt.Sprintf("活跃任务：%s｜堆 %.0f/%.0fMB（%.0f%%）RSS %.0fMB 压力 %.2f",
+	return fmt.Sprintf("活跃任务：%s｜堆 %.0f/%.0fMB（%.0f%%）目标 %dMB RSS %.0fMB 压力 %.2f",
 		strings.Join(parts, "｜"),
 		float64(s.mem.Heap())/1048576, float64(s.mem.Limit())/1048576, ratio*100,
-		float64(s.mem.RSS())/1048576, s.mem.Pressure()), true
+		s.mem.Target()>>20, float64(s.mem.RSS())/1048576, s.mem.Pressure()), true
 }

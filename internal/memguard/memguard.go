@@ -49,8 +49,12 @@ func (l Level) String() string {
 // Governor 运行时内存调节器。
 type Governor struct {
 	limit   int64   // 容器内存限制（字节）
-	softPct float64 // 软目标，默认 0.75
-	hardPct float64 // 红线，默认 0.90
+	softPct float64 // 软目标百分比（未设置绝对目标时使用）
+	hardPct float64 // 红线百分比（上限，默认 30%）
+
+	// target 绝对内存目标（字节）。0 表示沿用 softPct*limit。
+	// 由 SetTarget 按索引规模动态更新：图越少目标越低，最多放宽到 hardPct*limit。
+	target atomic.Int64
 
 	level       atomic.Int32
 	ratioBits   atomic.Uint64 // 最近一次占用比例（math.Float64bits）
@@ -102,6 +106,55 @@ func New(opt Options) *Governor {
 // Limit 容器内存限制。
 func (g *Governor) Limit() int64 { return g.limit }
 
+// DefaultTarget 计算默认内存目标：
+//
+//	target = min(25MB, 2% × limit)，再按索引图片数线性放宽到最多 30% × limit。
+//
+// 5 千张时约 25MB（小库不该占几十 MB）；图越多放宽越多，50k 张达到上限。
+func DefaultTarget(limit int64, images int) int64 {
+	const base25 = 25 << 20
+	base := int64(limit * 2 / 100)
+	if base > base25 {
+		base = base25
+	}
+	ceiling := int64(limit * 30 / 100)
+	if base > ceiling {
+		base = ceiling
+	}
+	if images <= 0 {
+		return base
+	}
+	if images >= 50000 {
+		return ceiling
+	}
+	return base + (ceiling-base)*int64(images)/50000
+}
+
+// SetTarget 设置绝对内存目标（<=0 表示恢复按百分比推导）。
+func (g *Governor) SetTarget(bytes int64) {
+	if bytes < 0 {
+		bytes = 0
+	}
+	g.target.Store(bytes)
+}
+
+// Target 当前内存目标（字节）。
+func (g *Governor) Target() int64 {
+	if t := g.target.Load(); t > 0 {
+		return t
+	}
+	return int64(float64(g.limit) * g.softPct)
+}
+
+// ceiling 内存上限（红线）：30% × limit。
+func (g *Governor) ceiling() int64 {
+	c := int64(float64(g.limit) * g.hardPct)
+	if t := g.Target(); t > c {
+		return t
+	}
+	return c
+}
+
 // Level 当前压力档位。
 func (g *Governor) Level() Level { return Level(g.level.Load()) }
 
@@ -116,8 +169,14 @@ func (g *Governor) RecentlyActive(d time.Duration) bool {
 // Pressure 返回软目标到红线之间的压力系数：0 = 未超过软目标，1 = 已到红线。
 // 上层用它按比例收紧并发/预算，而不是等跨档才动作。
 func (g *Governor) Pressure() float64 {
-	r := g.Ratio()
-	p := (r - g.softPct) / (g.hardPct - g.softPct)
+	// 压力按「当前占用 vs 目标 vs 上限」算：目标以下为 0，到上限为 1。
+	used := float64(g.used())
+	target := float64(g.Target())
+	ceil := float64(g.ceiling())
+	if used <= target || ceil <= target {
+		return 0
+	}
+	p := (used - target) / (ceil - target)
 	if p < 0 {
 		return 0
 	}
@@ -166,9 +225,12 @@ func (g *Governor) Allow(need int64) bool {
 	if need <= 0 {
 		need = 1
 	}
-	rss := g.readRSS()
-	budget := int64(float64(g.limit) * g.hardPct)
-	return rss+need <= budget
+	// 允许超过目标一定余量，但绝不越过红线（30% 或目标本身）。
+	headroom := g.Target() + g.Target()/2 // 目标 ×1.5
+	if ceiling := g.ceiling(); headroom > ceiling {
+		headroom = ceiling
+	}
+	return g.used()+need <= headroom
 }
 
 // RSS 当前进程常驻内存（字节），供状态日志使用。
@@ -177,56 +239,72 @@ func (g *Governor) RSS() int64 { return g.readRSS() }
 // Heap 当前 Go 堆占用（字节）。
 func (g *Governor) Heap() int64 { return g.readHeap() }
 
-// Ratio 当前占用比例（RSS 与堆取较大者 / 限制）。
-func (g *Governor) Ratio() float64 {
+// used 当前占用：RSS 与堆取较大者。
+func (g *Governor) used() int64 {
 	rss, heap := g.readRSS(), g.readHeap()
-	used := rss
-	if heap > used {
-		used = heap
+	if heap > rss {
+		return heap
 	}
-	return float64(used) / float64(g.limit)
+	return rss
+}
+
+// Ratio 当前占用比例（占用 / 限制）。
+func (g *Governor) Ratio() float64 {
+	return float64(g.used()) / float64(g.limit)
+}
+
+// TargetRatio 当前占用相对目标的比值（1.0 = 正好达标）。
+func (g *Governor) TargetRatio() float64 {
+	t := g.Target()
+	if t <= 0 {
+		return 0
+	}
+	return float64(g.used()) / float64(t)
 }
 
 // Tick 执行一次调节（Run 每 5 秒调用；测试可直接调用）。
 func (g *Governor) Tick() {
-	ratio := g.Ratio()
+	used := g.used()
+	target := g.Target()
+	ceil := g.ceiling()
+	ratio := float64(used) / float64(g.limit)
 	g.ratioBits.Store(math.Float64bits(ratio))
 	prev := g.Level()
 	next := prev
 
 	switch {
-	case ratio >= g.hardPct:
+	case used >= ceil:
 		next = Critical
-	case ratio >= g.softPct+0.05: // 带 5 个百分点的回滞，避免在阈值附近抖动
-		if prev == Critical {
+	case used >= target+target/10: // 超过目标 10% 起进入 warn（带一点回滞）
+		if prev == Critical && used >= target {
 			next = Critical
 		} else {
 			next = Warn
 		}
-	case ratio < g.softPct:
+	case used < target:
 		next = Normal
 	}
 
 	if next != prev || !g.appliedOnce {
 		g.appliedOnce = true
 		g.level.Store(int32(next))
-		log.Printf("内存压力: %s（占用 %.0f%% / 预算 %d MB）", next, ratio*100, g.limit>>20)
+		log.Printf("内存压力: %s（占用 %d/%d MB，目标 %d MB，上限 %d MB）",
+			next, used>>20, g.limit>>20, target>>20, ceil>>20)
 		switch next {
 		case Critical:
-			// 红线：紧急回收——软限压到 50%，GOGC 压到 15，并且每 5 秒就想归还一次。
-			g.apply(g.limit*50/100, 15)
+			// 触到上限：把软限压到目标以下，GOGC 15，并每 5 秒归还一次。
+			g.apply(target*90/100, 15)
 			g.maybeFreeOS(5 * time.Second)
 		case Warn:
-			// 偏高：软限压到 65%，GOGC 40。
-			g.apply(g.limit*65/100, 40)
+			// 超过目标：软限设为目标，GOGC 30。
+			g.apply(target, 30)
 		default:
-			// 正常：软限 70%，让 RSS 稳定在限制的 ~75%。
-			g.apply(g.limit*70/100, 50)
+			// 达标：软限留 10% 余量，避免目标附近频繁 GC。
+			g.apply(target+target/10, 50)
 		}
 	}
 
-	// 压力越大，归还越频繁（但都有下限，避免 GC/IO 抖动）：
-	//   p≥0.5 → 每 15s；p≥0.8 → 每 8s；到红线由上面 Critical 分支按 5s 处理。
+	// 压力越大，归还越频繁（但都有下限，避免 GC/IO 抖动）。
 	p := g.Pressure()
 	switch {
 	case p >= 0.8:
@@ -235,10 +313,10 @@ func (g *Governor) Tick() {
 		g.maybeFreeOS(15 * time.Second)
 	}
 
-	// 空闲回收：30 秒没有请求、且有明显堆占用时，最多每分钟归还一次。
+	// 空闲回收：30 秒没有请求、且堆超过目标的一半时归还（小目标下也积极归还）。
 	if g.Level() == Normal {
 		idle := time.Since(time.Unix(0, g.lastReq.Load())) > 30*time.Second
-		if idle && g.readHeap() > 64<<20 {
+		if idle && g.readHeap() > target/2 {
 			g.maybeFreeOS(60 * time.Second)
 		}
 	}

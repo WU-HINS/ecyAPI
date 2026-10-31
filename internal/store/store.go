@@ -339,6 +339,16 @@ type fileStore struct {
 	// stop 关闭后后台循环（刷新/快照）退出，供测试与优雅关闭使用。
 	stop     chan struct{}
 	stopOnce sync.Once
+
+	// groupAggCache 虚拟分组聚合视图的缓存（按代次失效），避免每个请求重建。
+	groupAggMu    sync.RWMutex
+	groupAggCache *groupAggEntry
+}
+
+// groupAggEntry 一代索引下各虚拟分组的聚合视图。
+type groupAggEntry struct {
+	gen uint64
+	m   map[string]*aggKids
 }
 
 // Close 停止后台刷新与快照循环。可重复调用。
@@ -387,14 +397,36 @@ func (f *fileStore) Aggregates(ctx context.Context) []string {
 }
 
 // groupAgg 由成员分类合成聚合视图（虚拟分组用）。
-// 成员可以是普通分类、父目录聚合，或两者混用；不存在的成员会被跳过。
+//
+// 虚拟分组本身不维护索引：它只是「若干分类切片」的组合，这里按
+// (代次, 成员列表) 缓存构造结果，索引没变就直接复用，避免每个请求重建。
 func (f *fileStore) groupAgg(members []string) *aggKids {
 	if len(members) == 0 {
 		return nil
 	}
+	key := strings.Join(members, "\x00")
+	gen := f.gen.Load()
+
+	f.groupAggMu.RLock()
+	if c := f.groupAggCache; c != nil && c.gen == gen {
+		if a, ok := c.m[key]; ok {
+			f.groupAggMu.RUnlock()
+			return a
+		}
+	}
+	f.groupAggMu.RUnlock()
+
 	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return newAggKids(members, f.cache, f.aggs)
+	agg := newAggKids(members, f.cache, f.aggs)
+	f.mu.RUnlock()
+
+	f.groupAggMu.Lock()
+	if f.groupAggCache == nil || f.groupAggCache.gen != gen {
+		f.groupAggCache = &groupAggEntry{gen: gen, m: make(map[string]*aggKids, 4)}
+	}
+	f.groupAggCache.m[key] = agg
+	f.groupAggMu.Unlock()
+	return agg
 }
 
 // GroupCount 虚拟分组的图片数。

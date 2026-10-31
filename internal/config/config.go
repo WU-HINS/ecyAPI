@@ -105,9 +105,10 @@ type Config struct {
 	// MemoryLimit 内存预算（字节）：容器 cgroup 限制，或显式 ECY_MEMORY_LIMIT。
 	// 运行时由 memguard 按「软目标 75% / 红线 90%」动态调节 GOMEMLIMIT。
 	MemoryLimit int64
-	// MemSoftPct 软目标百分比（ECY_MEM_SOFT_PCT，默认 75）。
+	// MemSoftPct 内存目标百分比（ECY_MEM_SOFT_PCT，默认 2）：目标 = min(25MB, 2% × 限额)，
+	// 再按索引图片数放宽；未设置绝对目标时用它兜底。
 	MemSoftPct int
-	// MemHardPct 红线百分比（ECY_MEM_HARD_PCT，默认 90）。
+	// MemHardPct 内存上限百分比（ECY_MEM_HARD_PCT，默认 30）：自适应目标最高放宽到这里。
 	MemHardPct int
 }
 
@@ -180,8 +181,8 @@ func Load() Config {
 		// 缩略图缓存条数：默认 2 万，避免浏览大图库时反复重压同一批图。
 		PreviewCacheFiles: clampInt(envInt("ECY_PREVIEW_CACHE_FILES", 20000), 100, 1000000),
 		MemoryLimit:       memLimit,
-		MemSoftPct:        clampInt(envInt("ECY_MEM_SOFT_PCT", 75), 40, 90),
-		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 90), 60, 99),
+		MemSoftPct:        clampInt(envInt("ECY_MEM_SOFT_PCT", 2), 1, 50),
+		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 30), 5, 80),
 	}
 }
 

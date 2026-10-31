@@ -3,200 +3,143 @@ package memguard
 import (
 	"sync"
 	"testing"
-	"time"
 )
 
-// fake 构造一个可注入读数的 Governor，用于验证分档与调节。
-func fake(limit int64) (*Governor, *struct {
-	mu       sync.Mutex
-	rss      int64
-	heap     int64
-	applied  int64
-	gcPct    int
-	freeN    int
-	lastFree time.Time
-}) {
-	type state = struct {
-		mu       sync.Mutex
-		rss      int64
-		heap     int64
-		applied  int64
-		gcPct    int
-		freeN    int
-		lastFree time.Time
-	}
-	st := &state{}
-	g := New(Options{LimitBytes: limit, SoftPct: 0.75, HardPct: 0.90})
+type fakeState struct {
+	mu      sync.Mutex
+	rss     int64
+	heap    int64
+	applied int64
+	gcPct   int
+	freeN   int
+}
+
+// fake 构造一个可注入读数的 Governor。
+func fake(limit int64) (*Governor, *fakeState) {
+	st := &fakeState{}
+	g := New(Options{LimitBytes: limit, SoftPct: 0.02, HardPct: 0.30})
 	g.readRSS = func() int64 { st.mu.Lock(); defer st.mu.Unlock(); return st.rss }
 	g.readHeap = func() int64 { st.mu.Lock(); defer st.mu.Unlock(); return st.heap }
 	g.apply = func(l int64, p int) { st.mu.Lock(); st.applied, st.gcPct = l, p; st.mu.Unlock() }
-	g.freeOS = func() { st.mu.Lock(); st.freeN++; st.lastFree = time.Now(); st.mu.Unlock() }
+	g.freeOS = func() { st.mu.Lock(); st.freeN++; st.mu.Unlock() }
 	return g, st
 }
 
-// TestGovernorLevels 验证 75% 软目标 / 90% 红线的分档与调节参数。
+func setRSS(st *fakeState, v int64) {
+	st.mu.Lock()
+	st.rss = v
+	st.mu.Unlock()
+}
+
+func applied(st *fakeState) (int64, int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.applied, st.gcPct
+}
+
+// TestDefaultTarget 目标口径：min(25MB, 2% × 限额) 起步，按图片数放宽，上限 30%。
+func TestDefaultTarget(t *testing.T) {
+	const mb = int64(1 << 20)
+	cases := []struct {
+		limit  int64
+		images int
+		want   int64
+	}{
+		{2048 * mb, 0, 25 * mb},                // 2% = 41MB → 封顶 25MB
+		{100 * mb, 0, 2 * mb},                  // 2% = 2MB（限额很小时以 2% 为准）
+		{512 * mb, 50000, 512 * mb * 30 / 100}, // 30% × 512MB
+		{256 * mb, 50000, 256 * mb * 30 / 100}, // 30% × 256MB
+	}
+	for _, c := range cases {
+		if got := DefaultTarget(c.limit, c.images); got != c.want {
+			t.Fatalf("DefaultTarget(%dMB, %d) = %dMB，期望 %dMB", c.limit>>20, c.images, got>>20, c.want>>20)
+		}
+	}
+	// 单调不减
+	prev := int64(0)
+	for _, n := range []int{0, 1000, 5000, 20000, 50000} {
+		v := DefaultTarget(512*mb, n)
+		if v < prev {
+			t.Fatalf("目标应随图片数单调不减：n=%d 得到 %dMB < 之前 %dMB", n, v>>20, prev>>20)
+		}
+		prev = v
+	}
+}
+
+// TestGovernorLevels 目标驱动的分档：达标 / 超标 / 触顶。
 func TestGovernorLevels(t *testing.T) {
-	const limit = 100 << 20
-	g, st := fake(limit)
-
-	// 50%：正常档，GOMEMLIMIT=70%，GOGC=50
-	st.mu.Lock()
-	st.rss = 50 << 20
-	st.mu.Unlock()
-	g.Tick()
-	if g.Level() != Normal {
-		t.Fatalf("50%% 应为 Normal，得到 %v", g.Level())
-	}
-	st.mu.Lock()
-	gotLimit, gotGC := st.applied, st.gcPct
-	st.mu.Unlock()
-	if gotLimit != limit*70/100 || gotGC != 50 {
-		t.Fatalf("Normal 档调节 = %d/%d，期望 %d/50", gotLimit, gotGC, limit*70/100)
-	}
-
-	// 82%：Warn（>75+5 回滞），压到 65%/40
-	st.mu.Lock()
-	st.rss = 82 << 20
-	st.mu.Unlock()
-	g.Tick()
-	if g.Level() != Warn {
-		t.Fatalf("82%% 应为 Warn，得到 %v", g.Level())
-	}
-	st.mu.Lock()
-	gotLimit, gotGC = st.applied, st.gcPct
-	st.mu.Unlock()
-	if gotLimit != limit*65/100 || gotGC != 40 {
-		t.Fatalf("Warn 档调节 = %d/%d", gotLimit, gotGC)
-	}
-
-	// 回滞：从 Critical 掉到 82% 仍应保持 Critical
-	st.mu.Lock()
-	st.rss = 95 << 20
-	st.mu.Unlock()
-	g.Tick()
-	if g.Level() != Critical {
-		t.Fatalf("95%% 应为 Critical")
-	}
-	st.mu.Lock()
-	gotLimit, gotGC = st.applied, st.gcPct
-	st.mu.Unlock()
-	if gotLimit != limit*50/100 || gotGC != 15 {
-		t.Fatalf("Critical 档调节 = %d/%d", gotLimit, gotGC)
-	}
-
-	st.mu.Lock()
-	st.rss = 82 << 20
-	st.mu.Unlock()
-	g.Tick()
-	if g.Level() != Critical {
-		t.Fatalf("回滞：82%% 时仍应为 Critical，得到 %v", g.Level())
-	}
-
-	// 降回 60%：回到 Normal
-	st.mu.Lock()
-	st.rss = 60 << 20
-	st.mu.Unlock()
-	g.Tick()
-	if g.Level() != Normal {
-		t.Fatalf("60%% 应回到 Normal，得到 %v", g.Level())
-	}
-}
-
-// TestGovernorFreeOSThrottle 归还内存必须节流，避免频繁 GC/IO。
-func TestGovernorFreeOSThrottle(t *testing.T) {
-	const limit = 100 << 20
-	g, st := fake(limit)
-	st.mu.Lock()
-	st.rss = 95 << 20
-	st.mu.Unlock()
-	g.Tick() // 进入 Critical 触发一次
-	st.mu.Lock()
-	n := st.freeN
-	st.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("进入 Critical 应归还一次，得到 %d", n)
-	}
-	// 保持在 Critical 反复 Tick，不应重复归还（30s 节流）
-	for i := 0; i < 5; i++ {
-		g.Tick()
-	}
-	st.mu.Lock()
-	n = st.freeN
-	st.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("节流失效：FreeOSMemory 被调用 %d 次", n)
-	}
-}
-
-// TestGovernorIdleReclaim 空闲且堆较大时归还一次，且不频繁。
-func TestGovernorIdleReclaim(t *testing.T) {
 	const limit = 512 << 20
 	g, st := fake(limit)
-	st.mu.Lock()
-	st.rss, st.heap = 200<<20, 200<<20
-	st.mu.Unlock()
-	g.Tick() // 首次：Normal，不空闲，不归还
-	st.mu.Lock()
-	if st.freeN != 0 {
-		t.Fatalf("忙碌时不应归还，得到 %d", st.freeN)
-	}
-	st.mu.Unlock()
+	g.SetTarget(25 << 20) // 目标 25MB，上限 30% = 153MB
 
-	// 伪造 40 秒无请求
-	g.lastReq.Store(time.Now().Add(-40 * time.Second).UnixNano())
+	setRSS(st, 20<<20)
 	g.Tick()
-	st.mu.Lock()
-	n := st.freeN
-	st.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("空闲时应归还一次，得到 %d", n)
+	if g.Level() != Normal {
+		t.Fatalf("20MB 应为 Normal，得到 %v", g.Level())
 	}
-	// 立刻再 Tick：仍应节流
+	if lim, gc := applied(st); lim != (25<<20)+(25<<20)/10 || gc != 50 {
+		t.Fatalf("Normal 调节 = %d/%d", lim, gc)
+	}
+
+	setRSS(st, 40<<20)
 	g.Tick()
-	st.mu.Lock()
-	if st.freeN != 1 {
-		t.Fatalf("应节流，FreeOSMemory 次数 %d", st.freeN)
+	if g.Level() != Warn {
+		t.Fatalf("40MB 应为 Warn，得到 %v", g.Level())
 	}
-	st.mu.Unlock()
+	if lim, gc := applied(st); lim != 25<<20 || gc != 30 {
+		t.Fatalf("Warn 调节 = %d/%d", lim, gc)
+	}
+
+	setRSS(st, 160<<20)
+	g.Tick()
+	if g.Level() != Critical {
+		t.Fatalf("160MB 应为 Critical，得到 %v", g.Level())
+	}
+	if lim, gc := applied(st); lim != (25<<20)*90/100 || gc != 15 {
+		t.Fatalf("Critical 调节 = %d/%d", lim, gc)
+	}
+
+	setRSS(st, 10<<20)
+	g.Tick()
+	if g.Level() != Normal {
+		t.Fatalf("回落应 Normal，得到 %v", g.Level())
+	}
 }
 
-// TestProgressiveControl 越接近红线，许可与预算收紧得越狠。
-func TestProgressiveControl(t *testing.T) {
-	const limit = 100 << 20
-	g, st := fake(limit)
-	cases := []struct {
-		rssMB    int64
-		pressure float64
-		permits  int
-		scaled   int // ScaleMP(32) 的结果
-	}{
-		{50, 0, 4, 32},  // 远低于软目标
-		{75, 0, 4, 32},  // 正好软目标
-		{825, 0, 4, 32}, // 占位，下面单独断言
+// TestPressureAndPermits 压力从目标到上限线性增长。
+func TestPressureAndPermits(t *testing.T) {
+	g, st := fake(512 << 20)
+	g.SetTarget(25 << 20)
+
+	setRSS(st, 10<<20)
+	if p := g.Pressure(); p != 0 {
+		t.Fatalf("目标以下压力应为 0，得到 %v", p)
 	}
-	_ = cases
-	for _, rssMB := range []int64{50, 75, 80, 82, 85, 88, 90, 95} {
-		st.mu.Lock()
-		st.rss = rssMB << 20
-		st.heap = 0
-		st.mu.Unlock()
-		p := g.Pressure()
-		if rssMB <= 75 && p != 0 {
-			t.Fatalf("rss=%dMB 压力应为 0，得到 %.2f", rssMB, p)
-		}
-		if rssMB >= 90 && p != 1 {
-			t.Fatalf("rss=%dMB 压力应为 1，得到 %.2f", rssMB, p)
-		}
-		permits := g.Permits()
-		scaled := g.ScaleMP(32)
-		t.Logf("rss=%dMB pressure=%.2f permits=%d scaledMP=%d", rssMB, p, permits, scaled)
-		if rssMB >= 90 && (permits != 0 || scaled != 0) {
-			t.Fatalf("到红线应禁止新的大分配：permits=%d scaled=%d", permits, scaled)
-		}
-		if rssMB == 82 {
-			if permits > 3 || scaled >= 32 {
-				t.Fatalf("82%% 时应收紧：permits=%d scaled=%d", permits, scaled)
-			}
-		}
+	if n := g.Permits(); n != 4 {
+		t.Fatalf("低压力应允许 4 并发，得到 %d", n)
+	}
+	if !g.Allow(8 << 20) {
+		t.Fatal("目标一半以内应允许分配")
+	}
+
+	setRSS(st, 160<<20)
+	if p := g.Pressure(); p < 0.99 {
+		t.Fatalf("触顶压力应≈1，得到 %v", p)
+	}
+	if n := g.Permits(); n != 0 {
+		t.Fatalf("触顶应禁止大操作，得到 %d", n)
+	}
+}
+
+// TestSetTargetZeroFallsBack 未设置目标时按百分比兜底。
+func TestSetTargetZeroFallsBack(t *testing.T) {
+	g, _ := fake(100 << 20)
+	g.SetTarget(0)
+	if got := g.Target(); got != int64(100<<20)*2/100 {
+		t.Fatalf("兜底目标应为 2%% × 限额，实际 %dMB", got>>20)
+	}
+	g.SetTarget(25 << 20)
+	if got := g.Target(); got != 25<<20 {
+		t.Fatalf("显式目标 = %dMB", got>>20)
 	}
 }
