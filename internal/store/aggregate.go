@@ -9,11 +9,22 @@ import "math/rand/v2"
 //
 // 内存开销：每个父目录只保存对子分类切片（slice header）的引用，不复制图片条目。
 
+// aggChild 聚合里的一个「平权单位」：要么是一个叶子分类的切片，要么是一个嵌套聚合并。
+type aggChild struct {
+	entries []fileEntry // 叶子分类在该方向上的图片
+	agg     *aggKids    // 子目录本身也是聚合（父目录套父目录）
+}
+
 // aggBucket 一个方向（全部/横/竖）的聚合桶。
 type aggBucket struct {
-	slices [][]fileEntry // 子集合在指定方向上的切片
-	cum    []int         // 累计数量，用于二分定位
+	// children 抽样用的层级结构：每个子节点等概率，嵌套聚合并递归下去。
+	children []aggChild
+	// slices/cum/total 是展平视图，供按序号定位与整体列举使用（顺序稳定）。
+	slices [][]fileEntry
+	cum    []int
 	total  int
+	// want 该桶对应的方向（递归抽样时保持一致）。
+	want Orientation
 }
 
 // aggKids 一个父目录的三个方向桶。
@@ -33,7 +44,7 @@ func (a *aggKids) bucket(want Orientation) *aggBucket {
 	return &a.all
 }
 
-// newAggKids 由子目录名构造聚合（子目录可能本身也是聚合目录，已展开为叶子）。
+// newAggKids 由子目录名构造聚合（子目录可能本身也是聚合目录）。
 func newAggKids(children []string, sets map[string]*categorySet, aggs map[string]*aggKids) *aggKids {
 	return newAggKidsWithSelf(children, sets, aggs, nil)
 }
@@ -52,11 +63,14 @@ func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs ma
 	return agg
 }
 
+// buildAggBucket 构造一个方向的聚合桶：
+//   - children 保留层级（子分类 / 子聚合），抽样时逐层平权；
+//   - slices/cum 是展平结果，供按序号定位与列举（顺序 = 父自身图片在前，随后按子目录顺序）。
 func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation, self *categorySet) aggBucket {
-	var b aggBucket
-	// 父目录自己的图片排在前面，保证聚合里的序号稳定、可二分。
+	b := aggBucket{want: want}
 	if self != nil {
 		if entries := self.pick(want); len(entries) > 0 {
+			b.children = append(b.children, aggChild{entries: entries})
 			b.slices = append(b.slices, entries)
 			b.total += len(entries)
 			b.cum = append(b.cum, b.total)
@@ -68,17 +82,23 @@ func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[st
 			if len(entries) == 0 {
 				continue
 			}
+			b.children = append(b.children, aggChild{entries: entries})
 			b.slices = append(b.slices, entries)
 			b.total += len(entries)
 			b.cum = append(b.cum, b.total)
 			continue
 		}
 		if a, ok := aggs[child]; ok {
-			src := a.bucket(want)
-			for i, entries := range src.slices {
-				n := src.cum[i]
+			sub := a.bucket(want)
+			if sub.total == 0 {
+				continue
+			}
+			// 嵌套父目录：抽样时作为一个平权单位递归下去，展平时仍把叶子切片摊开
+			b.children = append(b.children, aggChild{agg: a})
+			for i, entries := range sub.slices {
+				n := sub.cum[i]
 				if i > 0 {
-					n -= src.cum[i-1]
+					n -= sub.cum[i-1]
 				}
 				if n == 0 {
 					continue
@@ -90,6 +110,21 @@ func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[st
 		}
 	}
 	return b
+}
+
+// pickOne 递归抽一条：每一层都在子节点之间等概率，直到落在叶子分类里再随机取图。
+func (b *aggBucket) pickOne() (Row, bool) {
+	if len(b.children) == 0 || b.total == 0 {
+		return Row{}, false
+	}
+	c := b.children[rand.IntN(len(b.children))]
+	if c.agg != nil {
+		return c.agg.bucket(b.want).pickOne()
+	}
+	if len(c.entries) == 0 {
+		return Row{}, false
+	}
+	return c.entries[rand.IntN(len(c.entries))].row(), true
 }
 
 // locate 把全局下标映射到 (子集合, 集合内下标)。
@@ -112,11 +147,12 @@ func (b *aggBucket) locate(k int) (int, int) {
 
 // randomRows 从聚合桶里随机取 limit 条（不放回）。
 //
-// 抽样口径是「子分类平权」：先等概率选中一个子集合（子分类），再在它内部等概率取一条。
-// 这样父目录下 5 万张的大子目录不会把 100 张的小子目录淹没——
-// 与 /@img（分类之间平权）保持一致。
+// 抽样口径是「逐层平权」：每一层都在子节点之间等概率，嵌套父目录递归下去，
+// 直到落在叶子分类里再随机取图。这样
+//   - 5 万张的大子目录不会把 100 张的小子目录淹没；
+//   - 子目录多的分支也不会因为「叶子多」就压过子目录少的分支。
 func (b *aggBucket) randomRows(limit int) []Row {
-	if b.total == 0 || limit < 1 || len(b.slices) == 0 {
+	if b.total == 0 || limit < 1 || len(b.children) == 0 {
 		return nil
 	}
 	if limit > b.total {
@@ -129,17 +165,15 @@ func (b *aggBucket) randomRows(limit int) []Row {
 		maxTries = 500
 	}
 	for tries := 0; len(rows) < limit && tries < maxTries; tries++ {
-		s := b.slices[rand.IntN(len(b.slices))]
-		if len(s) == 0 {
+		row, ok := b.pickOne()
+		if !ok {
 			continue
 		}
-		e := s[rand.IntN(len(s))]
-		// 用 link（含分类路径）去重：不同子目录里可能有同名文件
-		if _, dup := seen[e.link]; dup {
+		if _, dup := seen[row.Link]; dup {
 			continue
 		}
-		seen[e.link] = struct{}{}
-		rows = append(rows, e.row())
+		seen[row.Link] = struct{}{}
+		rows = append(rows, row)
 	}
 	return rows
 }

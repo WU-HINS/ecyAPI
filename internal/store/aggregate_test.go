@@ -135,3 +135,38 @@ func TestAggregateUniformPerChild(t *testing.T) {
 		}
 	}
 }
+
+// TestNestedAggUniformPerLevel 嵌套父目录逐层平权：
+// pixiv/2024/kuro(100 张) 与 pixiv/2025/x(1 张) → pixiv 先平权选 2024/2025，各约 50%。
+func TestNestedAggUniformPerLevel(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "categories")
+	for i := 0; i < 100; i++ {
+		writePNG(t, filepath.Join(dir, "pixiv", "2024", "kuro", "k"+pad(i)+".png"), 4, 2)
+	}
+	writePNG(t, filepath.Join(dir, "pixiv", "2025", "x", "one.png"), 4, 2)
+
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if n, _ := st.CountWith(ctx, "pixiv", OrientationAny); n != 101 {
+		t.Fatalf("父聚合总数应为 101，实际 %d", n)
+	}
+	counts := map[string]int{}
+	const n = 2000
+	for i := 0; i < n; i++ {
+		rows, err := st.RandomWith(ctx, "pixiv", 1, OrientationAny)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("取图失败: %v", err)
+		}
+		// /pic/pixiv/2024/kuro/k12.png → 取第二段（2024 / 2025）
+		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
+		counts[parts[0]]++
+	}
+	for _, branch := range []string{"2024", "2025"} {
+		if counts[branch] < n/3 || counts[branch] > n*2/3 {
+			t.Fatalf("分支 %s 占比异常：%d/%d（%v）—— 说明没按层级平权", branch, counts[branch], n, counts)
+		}
+	}
+}
