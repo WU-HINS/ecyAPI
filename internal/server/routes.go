@@ -218,8 +218,11 @@ func New(cfg config.Config) (*Server, error) {
 	s.staticVersion = s.staticAssetVersion()
 
 	if cfg.MemoryLimit > 0 {
-		log.Printf("内存预算：%d MB（软目标 %d%%、红线 %d%%；GOMEMLIMIT 由 memguard 动态调节）",
-			cfg.MemoryLimit>>20, cfg.MemSoftPct, cfg.MemHardPct)
+		base := memguard.TargetFor(cfg.MemoryLimit, 0, 0, 0)
+		capMB := s.mem.TargetCap() >> 20
+		log.Printf("内存策略：限额 %dMB｜目标 max(25MB, %d%%) = %dMB，按 max(索引, QPS) 放宽至上限 %dMB｜降级红线 %d%% = %dMB｜QPS 放宽阈值 %d（0=关）",
+			cfg.MemoryLimit>>20, cfg.MemSoftPct, base>>20, capMB, cfg.MemHardPct,
+			int64(float64(cfg.MemoryLimit)*float64(cfg.MemHardPct)/100)>>20, cfg.MemQPSThreshold)
 	}
 	s.baseURL = cfg.BaseURL
 	s.slogan, s.share, s.icp = defaultSlogan, defaultShare, defaultICP

@@ -1,6 +1,10 @@
 package memguard
 
 import (
+	"bytes"
+	"log"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -167,5 +171,27 @@ func TestTargetForQPS(t *testing.T) {
 	}
 	if got := TargetFor(limit, 50000, 0, 100); got != limit*30/100 {
 		t.Fatalf("5 万张应到上限，得到 %dMB", got>>20)
+	}
+}
+
+// TestSetTargetLogged 目标变化要留痕：显著变化记一条，微调不刷屏。
+func TestSetTargetLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	g, _ := fake(512 << 20)
+	g.SetTarget(25 << 20)
+	buf.Reset()
+
+	g.SetTargetLogged(146<<20, "索引 50000 张")
+	if !strings.Contains(buf.String(), "内存目标调整") || !strings.Contains(buf.String(), "索引 50000 张") {
+		t.Fatalf("目标显著变化应记日志，实际 %q", buf.String())
+	}
+
+	buf.Reset()
+	g.SetTargetLogged(146<<20+1<<20, "微调")
+	if buf.Len() != 0 {
+		t.Fatalf("小幅变化不应刷屏，实际 %q", buf.String())
 	}
 }

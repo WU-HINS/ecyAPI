@@ -101,7 +101,8 @@ func (s *Server) activityLoop(interval time.Duration) {
 		// QPS 高说明正在服务大量用户：适当放宽目标换取体验，但仍受 memguard 红线约束。
 		qps := s.tickQPS(interval)
 		if n, ok := s.totalImages(); ok {
-			s.mem.SetTarget(memguard.TargetFor(s.mem.Limit(), n, qps, float64(s.cfg.MemQPSThreshold)))
+			target := memguard.TargetFor(s.mem.Limit(), n, qps, float64(s.cfg.MemQPSThreshold))
+			s.mem.SetTargetLogged(target, s.targetReason(n, qps))
 		}
 		if line, ok := s.activityLine(); ok {
 			log.Print(line)
@@ -126,6 +127,17 @@ func (s *Server) tickQPS(interval time.Duration) float64 {
 	smoothed := old*0.6 + cur*0.4
 	s.act.qpsBits.Store(math.Float64bits(smoothed))
 	return smoothed
+}
+
+// targetReason 说明这次目标是按什么算出来的（写进日志便于事后对账）。
+func (s *Server) targetReason(images int, qps float64) string {
+	parts := []string{fmt.Sprintf("索引 %d 张", images)}
+	if th := float64(s.cfg.MemQPSThreshold); th > 0 && qps > th {
+		parts = append(parts, fmt.Sprintf("QPS 放宽 %.0f>%.0f", qps, th))
+	} else if th == 0 {
+		parts = append(parts, "QPS 放宽已关闭")
+	}
+	return strings.Join(parts, "，")
 }
 
 // totalImages 索引里的图片总数（用于计算自适应内存目标）。

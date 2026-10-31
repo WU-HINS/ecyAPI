@@ -57,6 +57,10 @@ type Governor struct {
 	// 由 SetTarget 按索引规模动态更新：图越少目标越低，最多放宽到 hardPct*limit。
 	target atomic.Int64
 
+	// 最近一次实际应用的参数（日志用）
+	appliedLim atomic.Int64
+	appliedGCp atomic.Int32
+
 	level       atomic.Int32
 	ratioBits   atomic.Uint64 // 最近一次占用比例（math.Float64bits）
 	lastReq     atomic.Int64  // 最近一次请求时间（UnixNano），用于判断空闲
@@ -101,6 +105,8 @@ func New(opt Options) *Governor {
 	g.readRSS = readRSS
 	g.readHeap = readHeap
 	g.apply = func(limit int64, gcPercent int) {
+		g.appliedLim.Store(limit)
+		g.appliedGCp.Store(int32(gcPercent))
 		debug.SetMemoryLimit(limit)
 		debug.SetGCPercent(gcPercent)
 	}
@@ -108,6 +114,10 @@ func New(opt Options) *Governor {
 	g.NoteRequest() // 启动即视为活跃，避免刚启动就触发回收
 	return g
 }
+
+// appliedLimit / appliedGC 最近一次实际应用的 GOMEMLIMIT 与 GOGC（日志用）。
+func (g *Governor) appliedLimit() int64 { return g.appliedLim.Load() }
+func (g *Governor) appliedGC() int      { return int(g.appliedGCp.Load()) }
 
 // Limit 容器内存限制。
 func (g *Governor) Limit() int64 { return g.limit }
@@ -171,6 +181,35 @@ func (g *Governor) SetTarget(bytes int64) {
 	g.target.Store(bytes)
 }
 
+// SetTargetLogged 设置目标并在「变化足够大」时打日志。
+// 内存策略是被运维盯着的：目标从 25MB 放宽到 146MB 这种事必须留痕，
+// 但每 3 秒重算一次不能每次都刷，所以只在变化超过 max(4MB, 5%) 时记录。
+func (g *Governor) SetTargetLogged(bytes int64, reason string) {
+	if bytes < 0 {
+		bytes = 0
+	}
+	old := g.Target()
+	if bytes > 0 && old > 0 {
+		delta := bytes - old
+		if delta < 0 {
+			delta = -delta
+		}
+		min := int64(4 << 20)
+		if old/20 > min {
+			min = old / 20 // 5%
+		}
+		if delta < min {
+			g.target.Store(bytes)
+			return
+		}
+		log.Printf("内存目标调整：%dMB → %dMB（%s；上限 %dMB）",
+			old>>20, bytes>>20, reason, g.targetCap()>>20)
+	} else if bytes > 0 {
+		log.Printf("内存目标：%dMB（%s；上限 %dMB）", bytes>>20, reason, g.targetCap()>>20)
+	}
+	g.target.Store(bytes)
+}
+
 // Target 当前内存目标（字节）。未显式设置时按「25MB 下限 + softPct」兜底。
 func (g *Governor) Target() int64 {
 	if t := g.target.Load(); t > 0 {
@@ -185,6 +224,9 @@ func (g *Governor) Target() int64 {
 func (g *Governor) ceiling() int64 {
 	return int64(float64(g.limit) * g.hardPct)
 }
+
+// TargetCap 自适应目标的最高值（对外暴露，启动日志用）。
+func (g *Governor) TargetCap() int64 { return g.targetCap() }
 
 // targetCap 自适应目标的最高值（默认 30% × limit）。
 func (g *Governor) targetCap() int64 {
@@ -329,11 +371,10 @@ func (g *Governor) Tick() {
 	if next != prev || !g.appliedOnce {
 		g.appliedOnce = true
 		g.level.Store(int32(next))
-		log.Printf("内存压力: %s（占用 %d/%d MB，目标 %d MB，上限 %d MB）",
-			next, used>>20, g.limit>>20, target>>20, ceil>>20)
+		// 先落参数，日志里才能带上真实的 GOMEMLIMIT/GOGC。
 		switch next {
 		case Critical:
-			// 触到上限：把软限压到目标以下，GOGC 15，并每 5 秒归还一次。
+			// 触到红线：软限压到目标以下，GOGC 15，并每 5 秒归还一次。
 			g.apply(target*90/100, 15)
 			g.maybeFreeOS(5 * time.Second)
 		case Warn:
@@ -343,6 +384,8 @@ func (g *Governor) Tick() {
 			// 达标：软限留 10% 余量，避免目标附近频繁 GC。
 			g.apply(target+target/10, 50)
 		}
+		log.Printf("内存策略：%s｜占用 %dMB（目标 %dMB，红线 %dMB，限额 %dMB）｜GOMEMLIMIT=%dMB GOGC=%d",
+			next, used>>20, target>>20, ceil>>20, g.limit>>20, g.appliedLimit()>>20, g.appliedGC())
 	}
 
 	// 压力越大，归还越频繁（但都有下限，避免 GC/IO 抖动）。
