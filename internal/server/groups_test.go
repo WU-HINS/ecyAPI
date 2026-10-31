@@ -228,13 +228,9 @@ func TestHomeShowsGroups(t *testing.T) {
 		t.Fatalf("首页应 200，得到 %d", rec.Code)
 	}
 	body := rec.Body.String()
-	// 预览已在服务端拉平：data-src 直接是 /pic/... 图片，不再先吃一次 302
-	if !strings.Contains(body, `data-src="/pic/`) {
-		t.Fatal("首页卡片预览应已是直达图片（服务端提前拉平 302）")
-	}
-	// 点图刷新仍走入口重新随机
-	if !strings.Contains(body, `data-endpoint="/@img/mix"`) {
-		t.Fatal("首页分组卡片应带 data-endpoint=/@img/mix")
+	// 卡片与普通分类同款：预览图直接指向分组端点（每次加载都会重新随机）
+	if !strings.Contains(body, `data-src="/@img/mix?w=480"`) {
+		t.Fatal("首页分组卡片应使用 /@img/mix?w=480 作为预览")
 	}
 	// 显示完整链接
 	if !strings.Contains(body, "http://example.com/@img/mix") {

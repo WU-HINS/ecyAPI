@@ -248,7 +248,7 @@
                 {{- if eq .Kind "video"}}
                 <video muted loop playsinline preload="metadata" data-src="{{.PreviewURL}}"></video>
                 {{- else}}
-                <img data-src="{{.PreviewURL}}?w=480" data-endpoint="{{.Endpoint}}" alt="{{.Label}}" loading="lazy" decoding="async">
+                <img data-src="{{.PreviewURL}}?w=480" alt="{{.Label}}" loading="lazy" decoding="async">
                 {{- end}}
                 <a href="{{.PreviewURL}}" target="_blank" class="tag">{{.Label}}</a>
             </div>
@@ -295,11 +295,9 @@
                 if (e.target.closest('a')) return;
                 var media = thumb.querySelector('img, video');
                 if (!media) return;
-                // 卡片预览已经在服务端拉平成直达图片；点图想「换一张」时，
-                // 走一次入口（/分类 或 /@img/<name>）重新随机，只在这一下产生 302。
-                var ep = media.dataset.endpoint;
-                var base = ep || media.dataset.src || media.getAttribute('src');
+                var base = media.dataset.src || media.getAttribute('src');
                 if (!base) return;
+                media.dataset.src = base;
                 media.src = base + (base.indexOf('?') > -1 ? '&' : '?') + '_t=' + Date.now();
                 if (media.tagName === 'VIDEO') media.play().catch(function () {});
             });

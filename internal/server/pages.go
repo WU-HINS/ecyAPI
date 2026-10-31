@@ -18,23 +18,9 @@ import (
 // homeCard 主页分类卡片。
 type homeCard struct {
 	Path, Label, Desc, Kind string
-	// PreviewURL 已经**在服务端拉平**：直接指向 /pic/... 的图片地址，
-	// 首页 <img> 不再先吃一次 302 跳转。
-	PreviewURL string
-	// Endpoint 点图刷新时用的 302 入口（/分类、/@img/<name>），每次点都重新随机。
-	Endpoint string
-	URL      string // 展示用的完整接口地址（含对外域名）
-	Extra    []string
-}
-
-// resolvePreview 把「302 入口」提前解析成一张具体图片，供首页直接用。
-// 解析不出（分类为空/全是死链）返回空串，卡片会退回旧行为（直接指向入口）。
-func (s *Server) resolvePreview(r *http.Request, path string) string {
-	rows, err := s.st.RandomWith(r.Context(), path, 1, store.OrientationAny)
-	if err != nil || len(rows) == 0 {
-		return ""
-	}
-	return rows[0].Link
+	PreviewURL              string
+	URL                     string // 展示用的完整接口地址（含对外域名）
+	Extra                   []string
 }
 
 // renderHome 渲染 API 发布主页。
@@ -44,19 +30,13 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	cards := make([]homeCard, 0, len(endpoints))
 	for _, ep := range endpoints {
-		endpoint := "/" + ep.path
-		preview := s.resolvePreview(r, ep.path)
-		if preview == "" {
-			preview = endpoint // 没有图时退回入口，保持旧行为
-		}
 		cards = append(cards, homeCard{
 			Path:       ep.path,
 			Label:      ep.label,
 			Desc:       ep.desc,
 			Kind:       ep.kind,
-			PreviewURL: preview,
-			Endpoint:   endpoint,
-			URL:        s.absoluteURL(r, endpoint),
+			PreviewURL: "/" + ep.path,
+			URL:        s.absoluteURL(r, "/"+ep.path),
 		})
 	}
 	type homeData struct {
@@ -80,7 +60,7 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "home.html", homeData{
 		Title:      "栗次元API - 举个栗子",
 		Cards:      append(cards, s.homeGroups(r.Context(), r)...),
-		HeroImage:  s.heroImage(r, cards, s.sortedCategories(r.Context())),
+		HeroImage:  heroImage(cards, s.sortedCategories(r.Context())),
 		StaticBase: "/@index/v" + s.staticVersion,
 		Year:       time.Now().Year(),
 		Slogan:     slogan,
@@ -105,39 +85,28 @@ func (s *Server) homeGroups(ctx context.Context, r *http.Request) []homeCard {
 			continue // 组里一张可用图都没有就不展示
 		}
 		path := "/@img/" + g.Name
-		preview := ""
-		if rows, err := s.st.GroupRandom(ctx, g.Categories, store.OrientationAny, 1); err == nil && len(rows) > 0 {
-			preview = rows[0].Link
-		}
-		if preview == "" {
-			preview = path
-		}
 		out = append(out, homeCard{
 			Path:       path,
 			Label:      g.Label,
 			Desc:       g.Desc,
 			Kind:       "image",
-			PreviewURL: preview,
-			Endpoint:   path,
+			PreviewURL: path,
 			URL:        s.absoluteURL(r, path),
 		})
 	}
 	return out
 }
 
-// heroImage 取首页横幅背景：优先用卡片里已经拉平好的直达图片；
-// 没有栏目就现场解析第一个分类的一张图。总之不能返回 302 入口——
-// 之前这里写死 /fj，既 404 又多一跳。
-func (s *Server) heroImage(r *http.Request, cards []homeCard, cats []string) string {
+// heroImage 取第一个可用栏目作为首页横幅背景；没有栏目时退回第一个分类。
+// 之前这里写死了 /fj，部署到没有该分类的实例上会一直 404。
+func heroImage(cards []homeCard, cats []string) string {
 	for _, c := range cards {
-		if strings.HasPrefix(c.PreviewURL, "/pic/") {
+		if c.PreviewURL != "" {
 			return c.PreviewURL
 		}
 	}
 	if len(cats) > 0 {
-		if p := s.resolvePreview(r, cats[0]); p != "" {
-			return p
-		}
+		return "/" + cats[0]
 	}
 	return ""
 }
