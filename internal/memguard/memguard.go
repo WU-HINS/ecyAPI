@@ -171,6 +171,12 @@ func (g *Governor) Allow(need int64) bool {
 	return rss+need <= budget
 }
 
+// RSS 当前进程常驻内存（字节），供状态日志使用。
+func (g *Governor) RSS() int64 { return g.readRSS() }
+
+// Heap 当前 Go 堆占用（字节）。
+func (g *Governor) Heap() int64 { return g.readHeap() }
+
 // Ratio 当前占用比例（RSS 与堆取较大者 / 限制）。
 func (g *Governor) Ratio() float64 {
 	rss, heap := g.readRSS(), g.readHeap()

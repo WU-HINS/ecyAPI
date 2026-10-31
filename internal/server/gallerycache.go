@@ -86,6 +86,8 @@ func (s *Server) writeGalleryCache(cachePath string, body []byte) {
 
 // compressGalleryCache 把已落盘的 HTML 流式压缩成 .gz（BestSpeed）。
 func (s *Server) compressGalleryCache(cachePath string) {
+	done := s.beginGzip()
+	defer done()
 	src, err := os.Open(cachePath)
 	if err != nil {
 		return

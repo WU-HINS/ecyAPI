@@ -328,6 +328,8 @@ type fileStore struct {
 	gen atomic.Uint64
 	// scanning 是否有扫描在进行（供后台预热让路、健康检查展示）。
 	scanning atomic.Bool
+	// scanStarted 本轮扫描开始时间（unix nano），用于区分「首扫/大扫」与「3 秒一次的增量刷新」。
+	scanStarted atomic.Int64
 	// scannedOnce 首次扫描是否已完成（首次扫描会分批发布部分结果）。
 	scannedOnce atomic.Bool
 	// dirty 自上次写快照以来索引是否有变化。
@@ -346,6 +348,18 @@ func (f *fileStore) Close() {
 
 // Scanning 是否正在扫描磁盘。
 func (f *fileStore) Scanning() bool { return f.scanning.Load() }
+
+// ScanningFor 扫描已持续多久；没在扫描返回 0。
+func (f *fileStore) ScanningFor() time.Duration {
+	if !f.scanning.Load() {
+		return 0
+	}
+	start := f.scanStarted.Load()
+	if start == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, start))
+}
 
 // Generation 返回当前索引代次。
 func (f *fileStore) Generation() uint64 { return f.gen.Load() }
@@ -517,6 +531,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	}
 
 	// 2) 首次扫描放后台：大库全量扫描可能几十秒，不能让进程一直不监听。
+	fs.scanStarted.Store(time.Now().UnixNano())
 	fs.scanning.Store(true)
 	scanDone := make(chan error, 1)
 	go func() {
@@ -585,6 +600,7 @@ func (f *fileStore) refreshLoop() {
 			return
 		}
 		f.reloadMu.Lock()
+		f.scanStarted.Store(time.Now().UnixNano())
 		f.scanning.Store(true)
 		err := f.scan()
 		f.scanning.Store(false)
@@ -1121,6 +1137,7 @@ func (f *fileStore) reload() error {
 	f.reloadMu.Lock()
 	defer f.reloadMu.Unlock()
 	f.forceVerify = true
+	f.scanStarted.Store(time.Now().UnixNano())
 	f.scanning.Store(true)
 	err := f.scan()
 	f.scanning.Store(false)

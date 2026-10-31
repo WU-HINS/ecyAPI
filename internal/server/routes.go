@@ -116,6 +116,8 @@ type Server struct {
 	groups *groupSnapshot
 	// homeOrder 首页卡片统一顺序（栏目与虚拟分组混排），来自 data/order.json。
 	homeOrder []string
+	// act 活跃任务计数（每 N 秒输出一行状态日志）。
+	act activityTracker
 	// staticVersion 静态资源版本号（8 位十六进制），用于 /@index/v<版本>/... 这种可长缓存的 URL。
 	staticVersion string
 
@@ -253,6 +255,9 @@ func New(cfg config.Config) (*Server, error) {
 	go s.sweepSessionsLoop()
 	go s.previewWorker()
 	go s.mem.Run(time.Second)
+	if s.cfg.ActivityLogSeconds > 0 {
+		go s.activityLoop(time.Duration(s.cfg.ActivityLogSeconds) * time.Second)
+	}
 
 	tpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
@@ -990,6 +995,8 @@ func (s *Server) logMiddleware(next http.Handler) http.Handler {
 		if !strings.HasPrefix(r.URL.Path, "/admin") {
 			s.mem.NoteRequest()
 		}
+		// 统计在途请求与完成速率（活跃任务日志用）
+		defer s.noteRequestStart()()
 		if strings.HasPrefix(r.URL.Path, "/pic/") {
 			next.ServeHTTP(w, r)
 			return

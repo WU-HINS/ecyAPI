@@ -125,7 +125,9 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		s.handlePic(w, r)
 		return
 	}
+	done := s.beginPreview(int64(cfg.Width)*int64(cfg.Height), width)
 	data, _, err := compressPreview(path, width)
+	done()
 	s.previewGate.release(units)
 	if err != nil {
 		// 压缩失败（坏图/视频等不支持格式）不缓存错误，回退原图。

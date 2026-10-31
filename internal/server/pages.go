@@ -234,6 +234,8 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 // buildGalleryPage 渲染并落盘指定分类的图库页（供请求路径与后台预热共用）。
 func (s *Server) buildGalleryPage(ctx context.Context, current string, cats []string) ([]byte, error) {
+	done := s.beginRender(current)
+	defer done()
 	counts := s.categoryCountMap(ctx)
 	total, err := s.st.CountWith(ctx, current, store.OrientationAny)
 	if err != nil {
