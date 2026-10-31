@@ -48,3 +48,31 @@ func TestActivityLine(t *testing.T) {
 	}
 	doneR()
 }
+
+// TestAccessCurveEvaluate 访问曲线：持续流量按均值评估，尖峰不会被立刻全额放宽。
+func TestAccessCurveEvaluate(t *testing.T) {
+	var c accessCurve
+	// 持续 1000 QPS 五档
+	for i := 0; i < 10; i++ {
+		c.push(1000)
+	}
+	if got := c.eval(1000); got < 900 || got > 1100 {
+		t.Fatalf("稳定流量评估应≈1000，得到 %.0f", got)
+	}
+	// 单档尖峰 10000：评估值应高于稳定值但远低于尖峰值
+	c.push(10000)
+	ev := c.eval(10000)
+	if ev <= 1000 {
+		t.Fatalf("尖峰后评估应上升，得到 %.0f", ev)
+	}
+	if ev >= 10000 {
+		t.Fatalf("尖峰不应全额计入，得到 %.0f", ev)
+	}
+	// 回落：连续低流量后评估应降下来
+	for i := 0; i < 10; i++ {
+		c.push(0)
+	}
+	if got := c.eval(0); got > 1000 {
+		t.Fatalf("流量回落后评估应下降，得到 %.0f", got)
+	}
+}

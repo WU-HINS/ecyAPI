@@ -96,8 +96,8 @@ func New(opt Options) *Governor {
 	if g.softPct <= 0 || g.softPct >= 1 {
 		g.softPct = 0.75
 	}
-	if g.hardPct <= 0 || g.hardPct > 1 {
-		g.hardPct = 0.85
+	if g.hardPct < hardPctMin || g.hardPct > hardPctMax {
+		g.hardPct = 0.80
 	}
 	if g.capPct <= 0 || g.capPct > 1 {
 		g.capPct = 0.30
@@ -218,11 +218,39 @@ func (g *Governor) Target() int64 {
 	return TargetFor(g.limit, 0, 0, 0)
 }
 
-// ceiling 降级红线（触发 Critical 的占用线）。
-// 注意：它不是「目标上限」——目标最高只到 targetCapPct（30%），
-// 而红线要留出足够空间，否则正常运行（如 CI 里带 race 的进程）会被误判为触顶。
+// 红线取值区间：低于 70% 容易误伤，高于 90% 系统已经开始 OOM；
+// 再加 ±5% 的回滞，绝对上限 95%（超过必然被 OOM killer 干掉）。
+const (
+	hardPctMin  = 0.70
+	hardPctMax  = 0.90
+	hardPctAbso = 0.95
+	hysteresis  = 0.05
+)
+
+// ceiling 降级红线（触发 Critical 的占用线），取值夹在 70%~90%。
 func (g *Governor) ceiling() int64 {
-	return int64(float64(g.limit) * g.hardPct)
+	p := g.hardPct
+	if p < hardPctMin {
+		p = hardPctMin
+	}
+	if p > hardPctMax {
+		p = hardPctMax
+	}
+	return int64(float64(g.limit) * p)
+}
+
+// absoluteMax 绝对上限（95%）：超过这里就不再允许任何大分配。
+func (g *Governor) absoluteMax() int64 {
+	return int64(float64(g.limit) * hardPctAbso)
+}
+
+// exitLine 回滞下限：占用回落到这里才解除 Critical（红线 -5%）。
+func (g *Governor) exitLine() int64 {
+	l := int64(float64(g.ceiling()) - float64(g.limit)*hysteresis)
+	if l < 0 {
+		return 0
+	}
+	return l
 }
 
 // TargetCap 自适应目标的最高值（对外暴露，启动日志用）。
@@ -311,9 +339,9 @@ func (g *Governor) Allow(need int64) bool {
 	if need <= 0 {
 		need = 1
 	}
-	// 准入只看红线（30%）：目标只决定「GC 多积极、预算收多少」，
-	// 不是硬性拒绝线——Go 运行时自身就有 ~20MB 常驻，用小目标硬卡会直接卡死功能。
-	return g.used()+need <= g.ceiling()
+	// 准入看到 95% 绝对上限：目标是调节旋钮不是拒绝线（Go 自身常驻 ~20MB），
+	// 但绝不允许把进程推到 90% 以上——那里系统会开始 OOM。
+	return g.used()+need <= g.absoluteMax()
 }
 
 // RSS 当前进程常驻内存（字节），供状态日志使用。
@@ -355,15 +383,20 @@ func (g *Governor) Tick() {
 	prev := g.Level()
 	next := prev
 
+	// 红线 70%~90%（+回滞 5%，绝对上限 95%）：
+	//   used ≥ 红线            → critical
+	//   红线-5% ≤ used < 红线   → 保持原档（避免在红线附近抖动）
+	//   目标×1.1 ≤ used        → warn
+	//   used < 目标            → normal
 	switch {
+	case used >= g.absoluteMax():
+		next = Critical
 	case used >= ceil:
 		next = Critical
-	case used >= target+target/10: // 超过目标 10% 起进入 warn（带一点回滞）
-		if prev == Critical && used >= target {
-			next = Critical
-		} else {
-			next = Warn
-		}
+	case prev == Critical && used >= g.exitLine():
+		next = Critical // 回滞：还没掉到红线-5% 以下，维持 critical
+	case used >= target+target/10:
+		next = Warn
 	case used < target:
 		next = Normal
 	}

@@ -21,7 +21,7 @@ type fakeState struct {
 // fake 构造一个可注入读数的 Governor。
 func fake(limit int64) (*Governor, *fakeState) {
 	st := &fakeState{}
-	g := New(Options{LimitBytes: limit, SoftPct: 0.02, HardPct: 0.30})
+	g := New(Options{LimitBytes: limit, SoftPct: 0.02, HardPct: 0.80, TargetCap: 0.30})
 	g.readRSS = func() int64 { st.mu.Lock(); defer st.mu.Unlock(); return st.rss }
 	g.readHeap = func() int64 { st.mu.Lock(); defer st.mu.Unlock(); return st.heap }
 	g.apply = func(l int64, p int) { st.mu.Lock(); st.applied, st.gcPct = l, p; st.mu.Unlock() }
@@ -94,10 +94,10 @@ func TestGovernorLevels(t *testing.T) {
 		t.Fatalf("Warn 调节 = %d/%d", lim, gc)
 	}
 
-	setRSS(st, 160<<20)
+	setRSS(st, 420<<20)
 	g.Tick()
 	if g.Level() != Critical {
-		t.Fatalf("160MB 应为 Critical，得到 %v", g.Level())
+		t.Fatalf("420MB 应为 Critical，得到 %v", g.Level())
 	}
 	if lim, gc := applied(st); lim != (25<<20)*90/100 || gc != 15 {
 		t.Fatalf("Critical 调节 = %d/%d", lim, gc)
@@ -126,7 +126,7 @@ func TestPressureAndPermits(t *testing.T) {
 		t.Fatal("目标一半以内应允许分配")
 	}
 
-	setRSS(st, 160<<20)
+	setRSS(st, 420<<20)
 	if p := g.Pressure(); p < 0.99 {
 		t.Fatalf("触顶压力应≈1，得到 %v", p)
 	}

@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,7 +37,10 @@ type activityTracker struct {
 	served   atomic.Int64  // 累计完成请求数（用于算速率）
 	lastSeen atomic.Int64  // 上一轮日志时的 served 值
 	qpsBase  atomic.Int64  // 上一轮 QPS 计算基准
-	qpsBits  atomic.Uint64 // 平滑后的 QPS（math.Float64bits）
+	qpsBits  atomic.Uint64 // 当前 QPS（math.Float64bits）
+	qpsEval  atomic.Uint64 // 访问曲线评估出的 QPS
+	curveMu  sync.Mutex
+	curve    accessCurve
 }
 
 // noteRequestStart 请求进入时调用，返回结束函数。
@@ -110,7 +114,60 @@ func (s *Server) activityLoop(interval time.Duration) {
 	}
 }
 
-// tickQPS 更新并返回近期 QPS（指数平滑，避免目标抖动）。
+// accessCurve 访问曲线：记录最近 40 个采样档（3 秒/档 ≈ 2 分钟）的 QPS，
+// 用来评估「这是不是一波持续流量」，而不是被单个瞬间的尖峰带跑。
+type accessCurve struct {
+	hist [40]float64
+	idx  int
+	n    int
+}
+
+func (c *accessCurve) push(qps float64) {
+	c.hist[c.idx] = qps
+	c.idx = (c.idx + 1) % len(c.hist)
+	if c.n < len(c.hist) {
+		c.n++
+	}
+}
+
+// eval 评估 QPS：最近 5 档（15 秒）均值与当前值各占一半，
+// 再与近期峰值（最近 20 档）取较大者的一半，避免瞬时尖峰直接放宽目标、也避免流量刚起就不放宽。
+func (c *accessCurve) eval(cur float64) float64 {
+	if c.n == 0 {
+		return cur
+	}
+	var sum float64
+	cnt := 5
+	if cnt > c.n {
+		cnt = c.n
+	}
+	for i := 1; i <= cnt; i++ {
+		sum += c.hist[(c.idx-i+len(c.hist))%len(c.hist)]
+	}
+	avg := sum / float64(cnt)
+
+	peak := 0.0
+	pc := 20
+	if pc > c.n {
+		pc = c.n
+	}
+	for i := 1; i <= pc; i++ {
+		if v := c.hist[(c.idx-i+len(c.hist))%len(c.hist)]; v > peak {
+			peak = v
+		}
+	}
+	// 评估值 = max(近 15 秒均值, 当前值的 50%)：
+	// 持续流量按均值算（稳定），单档尖峰只按一半计入（不因瞬时抖动就放宽），
+	// 流量回落后均值自然降下来，不会被历史峰值粘住。
+	evaluated := avg
+	if half := cur * 0.5; half > evaluated {
+		evaluated = half
+	}
+	_ = peak
+	return evaluated
+}
+
+// tickQPS 采样当前 QPS 并给出「评估值」（基于访问曲线，用于放宽内存目标）。
 func (s *Server) tickQPS(interval time.Duration) float64 {
 	served := s.act.served.Load()
 	prev := s.act.qpsBase.Swap(served)
@@ -118,15 +175,13 @@ func (s *Server) tickQPS(interval time.Duration) float64 {
 	if interval > 0 {
 		cur = float64(served-prev) / interval.Seconds()
 	}
-	// EWMA：0.6 旧 + 0.4 新
-	oldBits := s.act.qpsBits.Load()
-	old := math.Float64frombits(oldBits)
-	if old == 0 {
-		old = cur
-	}
-	smoothed := old*0.6 + cur*0.4
-	s.act.qpsBits.Store(math.Float64bits(smoothed))
-	return smoothed
+	s.act.curveMu.Lock()
+	s.act.curve.push(cur)
+	evaluated := s.act.curve.eval(cur)
+	s.act.curveMu.Unlock()
+	s.act.qpsBits.Store(math.Float64bits(cur))
+	s.act.qpsEval.Store(math.Float64bits(evaluated))
+	return evaluated
 }
 
 // targetReason 说明这次目标是按什么算出来的（写进日志便于事后对账）。
@@ -222,6 +277,10 @@ func (s *Server) activityLine() (string, bool) {
 	// 请求量：即使全是缓存命中，也要能看出「是不是正好赶上流量」
 	if inflight > 0 || window > 0 {
 		parts = append(parts, fmt.Sprintf("请求 处理中 %d、近 3 秒完成 %d", inflight, window))
+	}
+	// 访问曲线评估值：目标放宽看的是它，不是瞬时 QPS
+	if ev := math.Float64frombits(a.qpsEval.Load()); ev > 0 {
+		parts = append(parts, fmt.Sprintf("QPS 评估 %.0f", ev))
 	}
 	if len(parts) == 0 {
 		parts = append(parts, "无活跃任务")
