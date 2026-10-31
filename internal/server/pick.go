@@ -15,21 +15,24 @@ import (
 )
 
 // weightTable 预计算的权重表（只读，按代次缓存）。
+//
+// 权重用与 keys 平行的切片存（不用 map）：5 万分类时 map 约多占 2~3MB，
+// 而跳过已试项最多发生 8 次，线扫切片完全够用。
 type weightTable struct {
-	gen  uint64
-	keys []string
-	cum  []float64
-	sum  float64
-	w    map[string]float64 // key → 权重（跳过已试项时用）
+	gen     uint64
+	keys    []string
+	cum     []float64
+	weights []float64
+	sum     float64
 }
 
 // buildWeightTable 构造权重表。
 func buildWeightTable(keys []string, counts map[string]int, gen uint64) *weightTable {
 	t := &weightTable{
-		gen:  gen,
-		keys: make([]string, 0, len(keys)),
-		cum:  make([]float64, 0, len(keys)),
-		w:    make(map[string]float64, len(keys)),
+		gen:     gen,
+		keys:    make([]string, 0, len(keys)),
+		cum:     make([]float64, 0, len(keys)),
+		weights: make([]float64, 0, len(keys)),
 	}
 	for _, k := range keys {
 		w := store.UnitWeight(counts[k])
@@ -39,7 +42,7 @@ func buildWeightTable(keys []string, counts map[string]int, gen uint64) *weightT
 		t.sum += w
 		t.cum = append(t.cum, t.sum)
 		t.keys = append(t.keys, k)
-		t.w[k] = w
+		t.weights = append(t.weights, w)
 	}
 	return t
 }
@@ -58,9 +61,9 @@ func (t *weightTable) pick(tried map[string]bool) (string, bool) {
 		return t.keys[i], true
 	}
 	total := 0.0
-	for _, k := range t.keys {
+	for i, k := range t.keys {
 		if !tried[k] {
-			total += t.w[k]
+			total += t.weights[i]
 		}
 	}
 	if total <= 0 {
@@ -68,12 +71,12 @@ func (t *weightTable) pick(tried map[string]bool) (string, bool) {
 	}
 	r := rand.Float64() * total
 	last := ""
-	for _, k := range t.keys {
+	for i, k := range t.keys {
 		if tried[k] {
 			continue
 		}
 		last = k
-		r -= t.w[k]
+		r -= t.weights[i]
 		if r <= 0 {
 			return k, true
 		}
