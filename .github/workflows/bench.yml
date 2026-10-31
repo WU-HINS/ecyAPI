@@ -1,0 +1,73 @@
+name: Bench
+
+# 压测工作流：push 到 main 自动跑；发版工作流通过 workflow_call 复用，
+# 发版说明里的压测结果直接取自这里，保证「版本描述里的数字」和当次代码一致。
+on:
+  push:
+    branches: [main]
+  workflow_call:
+    outputs:
+      summary:
+        description: 压测摘要（Markdown）
+        value: ${{ jobs.bench.outputs.summary }}
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: 压测（1000 分类 / 5 万张）
+    runs-on: ubuntu-latest
+    outputs:
+      summary: ${{ steps.report.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 构建服务端与压测端
+        run: |
+          go build -o /tmp/ecyapi ./cmd/server
+          go build -o /tmp/lg ./tools/loadgen
+
+      - name: 生成数据集（1000 分类 / 50000 张）
+        run: go run ./tools/mkbench -dir bench/categories -cats 1000 -files 50
+
+      - name: 启动服务并压测
+        run: |
+          ECY_ADDR=127.0.0.1:18080 ECY_DATA_DIR="$PWD/bench/categories" \
+          ECY_ADMIN_PASSWORD=bench ECY_ACCESS_LOG=off ECY_STARTUP_WAIT=30 \
+          ECY_MEMORY_LIMIT=512000000 /tmp/ecyapi > bench/server.log 2>&1 &
+          PID=$!
+          # 必须等 /readyz（扫描完成后才 200）：扫描中请求会拿到 503，
+          # 直接压测会把「还在扫盘」当成失败率。
+          for i in $(seq 600); do
+            curl -sf -o /dev/null http://127.0.0.1:18080/readyz && break
+            sleep 0.2
+          done
+          curl -sf -o /dev/null http://127.0.0.1:18080/readyz || { cat bench/server.log; exit 1; }
+
+          mkdir -p bench
+          : > bench/results.jsonl
+          U=http://127.0.0.1:18080
+          LG_NOREDIRECT=0 LG_GZIP=0 /tmp/lg "$U/json?c000" 100 6s -json >> bench/results.jsonl
+          LG_NOREDIRECT=1 LG_GZIP=0 /tmp/lg "$U/c000"      100 6s -json >> bench/results.jsonl
+          LG_NOREDIRECT=1 LG_GZIP=0 /tmp/lg "$U/@img"      100 6s -json >> bench/results.jsonl
+          LG_NOREDIRECT=0 LG_GZIP=1 /tmp/lg "$U/img"        50 6s -json >> bench/results.jsonl
+
+          RSS=$(awk '/VmRSS/{printf "%.1f", $2/1024}' /proc/$PID/status || echo '?')
+          HWM=$(awk '/VmHWM/{printf "%.1f", $2/1024}' /proc/$PID/status || echo '?')
+          printf '{"rss_mb":"%s","peak_mb":"%s"}\n' "$RSS" "$HWM" >> bench/results.jsonl
+          kill $PID || true
+
+      - name: 生成报告
+        id: report
+        run: python3 tools/bench_report.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: bench/bench.md
+          retention-days: 30

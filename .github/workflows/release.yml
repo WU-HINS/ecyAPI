@@ -41,6 +41,10 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+  bench:
+    name: 压测（供发版说明引用）
+    uses: ./.github/workflows/bench.yml
+
   assets:
     name: 下载看板娘素材
     needs: validate
@@ -141,7 +145,7 @@ jobs:
 
   release:
     name: 创建 GitHub Release
-    needs: [validate, binaries]
+    needs: [validate, binaries, bench]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -156,6 +160,12 @@ jobs:
         with:
           name: ecyapi-assets
           path: assets-artifact
+
+      # 压测结果由 bench 工作流（同一个 reusable workflow）产出，直接并进发版说明
+      - uses: actions/download-artifact@v4
+        with:
+          name: bench-report
+          path: bench-artifact
 
       - name: 附上独立素材包
         run: |
@@ -179,7 +189,9 @@ jobs:
           素材包：ecyapi-$V-static-assets.tar.gz（给已有部署补素材用）
           Docker：ghcr.io/${{ github.repository }}:$V（多架构清单，镜像内已含素材）
 
-          校验：sha256sum -c SHA256SUMS.txt"
+          校验：sha256sum -c SHA256SUMS.txt
+
+          $(cat bench-artifact/bench.md 2>/dev/null || echo '（本次未取到压测结果）')"
           if [ "${{ inputs.prerelease }}" = "true" ]; then
             gh release create "$V" dist/* --repo "${{ github.repository }}" --target "${{ github.sha }}" \
               --title "$V" --notes "$NOTES" --prerelease
