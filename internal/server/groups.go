@@ -177,7 +177,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		// 单条随机走加权抽样（保留随机性）；多条按权重配额分配
 		var rows []store.Row
 		if limit == 1 {
-			if row, ok := s.pickFromMembers(r, members, want); ok {
+			if row, ok := s.pickFromMembers(r, name, members, want); ok {
 				rows = []store.Row{row}
 			}
 		} else {
@@ -199,7 +199,7 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
-	row, ok := s.pickFromMembers(r, members, want)
+	row, ok := s.pickFromMembers(r, name, members, want)
 	if !ok {
 		plainError(w, "No links found.", http.StatusNotFound)
 		return
@@ -208,19 +208,19 @@ func (s *Server) handleGroup(w http.ResponseWriter, r *http.Request, name string
 }
 
 // pickFromMembers 在成员分类里平权随机：先随机挑一个成员，取不到再换下一个（最多 8 个）。
-func (s *Server) pickFromMembers(r *http.Request, members []string, want store.Orientation) (store.Row, bool) {
+func (s *Server) pickFromMembers(r *http.Request, groupName string, members []string, want store.Orientation) (store.Row, bool) {
 	if len(members) == 0 {
 		return store.Row{}, false
 	}
 	// 成员之间同样按 sqrt(图片数)+底分 加权（与 /@img、父目录聚合口径一致）
-	counts := s.countsFor(r.Context(), members)
+	table := s.groupWeightTable(groupName, members)
 	tried := make(map[string]bool, 8)
 	tries := len(members)
 	if tries > 8 {
 		tries = 8
 	}
 	for i := 0; i < tries; i++ {
-		m, ok := weightedPick(members, counts, tried)
+		m, ok := table.pick(tried)
 		if !ok {
 			break
 		}
@@ -230,7 +230,7 @@ func (s *Server) pickFromMembers(r *http.Request, members []string, want store.O
 		}
 	}
 	if want != store.OrientationAny {
-		return s.pickFromMembers(r, members, store.OrientationAny)
+		return s.pickFromMembers(r, groupName, members, store.OrientationAny)
 	}
 	return store.Row{}, false
 }

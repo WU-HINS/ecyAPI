@@ -116,6 +116,11 @@ type Server struct {
 	homeOrder []string
 	// act 活跃任务计数（每 N 秒输出一行状态日志）。
 	act activityTracker
+	// 加权随机权重表缓存（/@img 与虚拟分组），按代次 + 隐藏版本/分组定义失效。
+	wAll       *weightTable
+	wAllHidden int64
+	wGroups    map[string]*weightTable
+	wGroupSig  string
 	// hiddenVersion/hiddenCache 图库隐藏集合的版本与缓存（列表不变就复用）。
 	hiddenVersion int64
 	hiddenVer     int64
@@ -1125,7 +1130,7 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 
 	// 分类之间按 sqrt(图片数)+底分 加权（5 万张的大分类更容易被选中，
 	// 但 100 张的小分类仍有份额），与父目录聚合同一套函数。
-	counts := s.countsFor(r.Context(), cats)
+	table := s.allWeightTable(cats)
 	tried := make(map[string]bool, 8)
 	var picked store.Row
 	found := false
@@ -1135,7 +1140,7 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 		tries = 8
 	}
 	for i := 0; i < tries; i++ {
-		cat, ok := weightedPick(cats, counts, tried)
+		cat, ok := table.pick(tried)
 		if !ok {
 			break
 		}
