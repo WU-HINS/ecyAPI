@@ -564,12 +564,24 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		ok, err := fs.loadSnapshot(opt.SnapshotMaxAge)
 		if err != nil {
 			log.Printf("快照不可用，改为全量扫描：%v", err)
-		} else if ok {
+		} else if ok && fs.loadedCategories() > 0 {
 			log.Printf("已从磁盘快照恢复 %d 个分类（保存于 %s 前），跳过启动扫描",
 				fs.loadedCategories(), time.Since(snapshotTime(fs.snapshotPath())).Round(time.Minute))
 			go fs.refreshLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
 			return fs, nil
+		} else if ok {
+			// 快照里 0 个分类：多半是在数据目录还空着的时候写下的。
+			// 这种情况下不能「跳过启动扫描」，否则会对着空索引对外服务（全部 404）。
+			log.Printf("快照为空，忽略并改为全量扫描")
+			// 快照加载会把 scannedOnce 置真、并写入空的 dirs/cache：
+			// 必须整体复位，否则后面的 scan 会按「增量」跑，检测不到任何变化。
+			fs.cache = map[string]*categorySet{}
+			fs.aggs = map[string]*aggKids{}
+			fs.oriMeta = map[string]map[string]orientMeta{}
+			fs.dirs = map[string]*dirState{}
+			fs.scannedOnce.Store(false)
+			_ = os.Remove(fs.snapshotPath())
 		}
 	}
 
