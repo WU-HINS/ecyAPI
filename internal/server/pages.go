@@ -28,15 +28,29 @@ func (s *Server) renderHome(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	endpoints := append([]endpoint(nil), s.endpoints...)
 	s.mu.RUnlock()
+	// 首页只展示「一级分类」：/P/ii 这类深层路径归一到 /P，
+	// 同一级下的多个栏目合并成一张卡片（点进去 /P 会由父聚合随机出图）。
+	// 图库页 /img 仍按完整路径列分类，不受影响。
 	cards := make([]homeCard, 0, len(endpoints))
+	seenTop := make(map[string]bool, len(endpoints))
 	for _, ep := range endpoints {
+		top := topSegment(ep.path)
+		if top == "" || seenTop[top] {
+			continue
+		}
+		seenTop[top] = true
+		// 深层栏目：卡片路径/标题都用一级分类名，描述沿用第一个栏目
+		path, label := ep.path, ep.label
+		if top != ep.path {
+			path, label = top, top
+		}
 		cards = append(cards, homeCard{
-			Path:       ep.path,
-			Label:      ep.label,
+			Path:       path,
+			Label:      label,
 			Desc:       ep.desc,
 			Kind:       ep.kind,
-			PreviewURL: "/" + ep.path,
-			URL:        s.absoluteURL(r, "/"+ep.path),
+			PreviewURL: "/" + path,
+			URL:        s.absoluteURL(r, "/"+path),
 		})
 	}
 	type homeData struct {
@@ -95,6 +109,18 @@ func (s *Server) homeGroups(ctx context.Context, r *http.Request) []homeCard {
 		})
 	}
 	return out
+}
+
+// topSegment 取路径的第一段（一级分类）："/P/ii" → "P"，"P" → "P"。
+func topSegment(path string) string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return ""
+	}
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		return path[:i]
+	}
+	return path
 }
 
 // heroImage 取第一个可用栏目作为首页横幅背景；没有栏目时退回第一个分类。

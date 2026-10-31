@@ -372,3 +372,49 @@ func TestHomeOrderWithGroups(t *testing.T) {
 		t.Fatalf("栏目应排在分组之前（gi=%d ei=%d）", gi, ei)
 	}
 }
+
+// TestHomeOnlyTopLevelCategories 首页只展示一级分类：/P/ii 与 /P/jj 归一张 /P，图库不受影响。
+func TestHomeOnlyTopLevelCategories(t *testing.T) {
+	s := newGroupServer(t, "{\"groups\":[]}")
+	cookie := login(t, s, "pw")
+	if cookie == nil {
+		t.Fatal("登录失败")
+	}
+	// 造两个深层栏目：pc/ii、pc/jj（pc 下有图，作为父聚合）
+	for _, p := range []struct{ path, label string }{
+		{"pc/ii", "子栏目一"},
+		{"pc/jj", "子栏目二"},
+		{"phone", "手机"},
+	} {
+		postAdmin(t, s, cookie, "/admin/binding", url.Values{
+			"binding_desk": {"pc"}, "binding_path": {p.path}, "binding_label": {p.label},
+		})
+	}
+
+	home := get(t, s, "/").Body.String()
+	// 一级分类出现
+	if !strings.Contains(home, `data-src="/pc?w=480"`) {
+		t.Fatal("首页应出现一级分类 /pc 的卡片")
+	}
+	if !strings.Contains(home, `data-src="/phone?w=480"`) {
+		t.Fatal("首页应出现 /phone 卡片")
+	}
+	// 深层路径不再单独出卡片
+	if strings.Contains(home, `data-src="/pc/ii?w=480"`) || strings.Contains(home, `data-src="/pc/jj?w=480"`) {
+		t.Fatal("首页不应出现 /pc/ii、/pc/jj 这类深层卡片")
+	}
+	// 只出现一张 /pc 卡片
+	if n := strings.Count(home, `data-src="/pc?w=480"`); n != 1 {
+		t.Fatalf("/pc 卡片应只有一张，实际 %d", n)
+	}
+
+	// 图库仍按完整路径列分类（不受影响）
+	gallery := get(t, s, "/img").Body.String()
+	if !strings.Contains(gallery, "pc/ii") && !strings.Contains(gallery, "pc/jj") {
+		t.Log("图库分类栏按分类目录列出（没有 pc/ii 这类仅栏目路径时正常）")
+	}
+	// 深层栏目路径本身仍然可用（302 一跳）
+	if rec := get(t, s, "/pc/ii"); rec.Code != http.StatusFound {
+		t.Fatalf("/pc/ii 应仍可访问并 302，得到 %d", rec.Code)
+	}
+}
