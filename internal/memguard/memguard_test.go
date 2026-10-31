@@ -85,19 +85,19 @@ func TestGovernorLevels(t *testing.T) {
 		t.Fatalf("Normal 调节 = %d/%d", lim, gc)
 	}
 
-	setRSS(st, 40<<20)
+	setRSS(st, 380<<20) // 74%：落在降级区间 70%~80%
 	g.Tick()
 	if g.Level() != Warn {
-		t.Fatalf("40MB 应为 Warn，得到 %v", g.Level())
+		t.Fatalf("380MB 应为 Warn，得到 %v", g.Level())
 	}
 	if lim, gc := applied(st); lim != 25<<20 || gc != 30 {
 		t.Fatalf("Warn 调节 = %d/%d", lim, gc)
 	}
 
-	setRSS(st, 420<<20)
+	setRSS(st, 440<<20)
 	g.Tick()
 	if g.Level() != Critical {
-		t.Fatalf("420MB 应为 Critical，得到 %v", g.Level())
+		t.Fatalf("440MB 应为 Critical，得到 %v", g.Level())
 	}
 	if lim, gc := applied(st); lim != (25<<20)*90/100 || gc != 15 {
 		t.Fatalf("Critical 调节 = %d/%d", lim, gc)
@@ -112,12 +112,12 @@ func TestGovernorLevels(t *testing.T) {
 
 // TestPressureAndPermits 压力从目标到上限线性增长。
 func TestPressureAndPermits(t *testing.T) {
-	g, st := fake(512 << 20)
+	g, st := fake(512 << 20) // 降级区间 70%~85%（默认 bandEnd 0.85）
 	g.SetTarget(25 << 20)
 
-	setRSS(st, 10<<20)
+	setRSS(st, 300<<20) // 58%：区间起点以下
 	if p := g.Pressure(); p != 0 {
-		t.Fatalf("目标以下压力应为 0，得到 %v", p)
+		t.Fatalf("70%% 以下压力应为 0，得到 %v", p)
 	}
 	if n := g.Permits(); n != 4 {
 		t.Fatalf("低压力应允许 4 并发，得到 %d", n)
@@ -126,12 +126,19 @@ func TestPressureAndPermits(t *testing.T) {
 		t.Fatal("目标一半以内应允许分配")
 	}
 
-	setRSS(st, 420<<20)
+	setRSS(st, 440<<20) // 86%：越过区间终点
 	if p := g.Pressure(); p < 0.99 {
-		t.Fatalf("触顶压力应≈1，得到 %v", p)
+		t.Fatalf("越过区间终点压力应≈1，得到 %v", p)
 	}
+
 	if n := g.Permits(); n != 0 {
-		t.Fatalf("触顶应禁止大操作，得到 %d", n)
+		t.Fatalf("越过区间终点应禁止大操作，得到 %d", n)
+	}
+
+	// 区间内应给出 0~1 之间的连续压力
+	setRSS(st, 390<<20) // 76%
+	if p := g.Pressure(); p <= 0.05 || p >= 0.95 {
+		t.Fatalf("区间内压力应连续变化，得到 %v", p)
 	}
 }
 

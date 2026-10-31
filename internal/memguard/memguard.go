@@ -96,8 +96,8 @@ func New(opt Options) *Governor {
 	if g.softPct <= 0 || g.softPct >= 1 {
 		g.softPct = 0.75
 	}
-	if g.hardPct < hardPctMin || g.hardPct > hardPctMax {
-		g.hardPct = 0.80
+	if g.hardPct < bandStartPct || g.hardPct > bandEndMax {
+		g.hardPct = 0.85 // 区间终点默认 85%（70% 起算，逐步收紧）
 	}
 	if g.capPct <= 0 || g.capPct > 1 {
 		g.capPct = 0.30
@@ -218,25 +218,30 @@ func (g *Governor) Target() int64 {
 	return TargetFor(g.limit, 0, 0, 0)
 }
 
-// 红线取值区间：低于 70% 容易误伤，高于 90% 系统已经开始 OOM；
-// 再加 ±5% 的回滞，绝对上限 95%（超过必然被 OOM killer 干掉）。
+// 降级区间：70% 起逐步收紧并发与后台策略，90% 到顶（系统再往上就开始 OOM）。
+// 区间内不是二值切换，而是按进度 0→1 线性收缩。
 const (
-	hardPctMin  = 0.70
-	hardPctMax  = 0.90
-	hardPctAbso = 0.95
-	hysteresis  = 0.05
+	bandStartPct = 0.70 // 降级区间起点
+	bandEndMax   = 0.90 // 降级区间终点上限
+	hardPctAbso  = 0.95 // 绝对上限：到这儿只能命中缓存
+	hysteresis   = 0.05 // 回滞：掉到 红线-5% 才解除 critical
 )
 
-// ceiling 降级红线（触发 Critical 的占用线），取值夹在 70%~90%。
+// ceiling 降级区间终点（critical 触发线），夹在 70%~90%。
 func (g *Governor) ceiling() int64 {
+	return int64(float64(g.limit) * g.bandEnd())
+}
+
+// bandEnd 降级区间终点比例。
+func (g *Governor) bandEnd() float64 {
 	p := g.hardPct
-	if p < hardPctMin {
-		p = hardPctMin
+	if p < bandStartPct {
+		p = bandStartPct
 	}
-	if p > hardPctMax {
-		p = hardPctMax
+	if p > bandEndMax {
+		p = bandEndMax
 	}
-	return int64(float64(g.limit) * p)
+	return p
 }
 
 // absoluteMax 绝对上限（95%）：超过这里就不再允许任何大分配。
@@ -283,14 +288,15 @@ func (g *Governor) RecentlyActive(d time.Duration) bool {
 // Pressure 返回软目标到红线之间的压力系数：0 = 未超过软目标，1 = 已到红线。
 // 上层用它按比例收紧并发/预算，而不是等跨档才动作。
 func (g *Governor) Pressure() float64 {
-	// 压力按「当前占用 vs 目标 vs 上限」算：目标以下为 0，到上限为 1。
-	used := float64(g.used())
-	target := float64(g.Target())
-	ceil := float64(g.ceiling())
-	if used <= target || ceil <= target {
-		return 0
+	// 降级区间进度：70% 起为 0，区间终点（默认 80%~90%）为 1。
+	// 用它线性收紧并发与后台策略（不是到点才降级）。
+	ratio := g.Ratio()
+	start := bandStartPct
+	end := g.bandEnd()
+	if end <= start {
+		return 1
 	}
-	p := (used - target) / (ceil - target)
+	p := (ratio - start) / (end - start)
 	if p < 0 {
 		return 0
 	}
@@ -383,22 +389,27 @@ func (g *Governor) Tick() {
 	prev := g.Level()
 	next := prev
 
-	// 红线 70%~90%（+回滞 5%，绝对上限 95%）：
-	//   used ≥ 红线            → critical
-	//   红线-5% ≤ used < 红线   → 保持原档（避免在红线附近抖动）
-	//   目标×1.1 ≤ used        → warn
-	//   used < 目标            → normal
+	// 降级区间 70%~90%：区间内是「连续降级」，档位只表示大致阶段。
+	//   used ≥ 95%（绝对上限）   → critical（只能命中缓存）
+	//   used ≥ 区间终点           → critical
+	//   used ≥ 区间终点-5%        → 保持 critical（回滞，避免抖动）
+	//   used ≥ 70%（区间内）      → warn（并发/后台已经开始收紧）
+	//   used < 70%                → normal
+	bandStart := int64(float64(g.limit) * bandStartPct)
 	switch {
 	case used >= g.absoluteMax():
 		next = Critical
 	case used >= ceil:
 		next = Critical
 	case prev == Critical && used >= g.exitLine():
-		next = Critical // 回滞：还没掉到红线-5% 以下，维持 critical
-	case used >= target+target/10:
+		next = Critical
+	case used >= bandStart:
 		next = Warn
-	case used < target:
+	default:
 		next = Normal
+	}
+	if next == Normal && used >= target && target > 0 {
+		next = Normal // 目标只影响 GC 强度，不改变档位
 	}
 
 	if next != prev || !g.appliedOnce {
@@ -407,18 +418,19 @@ func (g *Governor) Tick() {
 		// 先落参数，日志里才能带上真实的 GOMEMLIMIT/GOGC。
 		switch next {
 		case Critical:
-			// 触到红线：软限压到目标以下，GOGC 15，并每 5 秒归还一次。
+			// 区间终点/绝对上限：软限压到目标以下，GOGC 15，并每 5 秒归还一次。
 			g.apply(target*90/100, 15)
 			g.maybeFreeOS(5 * time.Second)
 		case Warn:
-			// 超过目标：软限设为目标，GOGC 30。
+			// 落在降级区间：软限设为目标，GOGC 30，按进度收紧并发与后台。
 			g.apply(target, 30)
 		default:
 			// 达标：软限留 10% 余量，避免目标附近频繁 GC。
 			g.apply(target+target/10, 50)
 		}
-		log.Printf("内存策略：%s｜占用 %dMB（目标 %dMB，红线 %dMB，限额 %dMB）｜GOMEMLIMIT=%dMB GOGC=%d",
-			next, used>>20, target>>20, ceil>>20, g.limit>>20, g.appliedLimit()>>20, g.appliedGC())
+		log.Printf("内存策略：%s｜占用 %dMB（目标 %dMB，降级区间 %d%%~%d%%，限额 %dMB，降级进度 %.0f%%）｜GOMEMLIMIT=%dMB GOGC=%d",
+			next, used>>20, target>>20, int(bandStartPct*100), int(g.bandEnd()*100), g.limit>>20,
+			g.Pressure()*100, g.appliedLimit()>>20, g.appliedGC())
 	}
 
 	// 压力越大，归还越频繁（但都有下限，避免 GC/IO 抖动）。
