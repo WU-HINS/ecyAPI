@@ -113,6 +113,9 @@ type Config struct {
 	MemHardPct int
 	// MemTargetCapPct 自适应目标的最高百分比（ECY_MEM_TARGET_CAP_PCT，默认 30）。
 	MemTargetCapPct int
+	// AggDepthDecay 嵌套每深一层的权重衰减（ECY_AGG_DEPTH_DECAY，默认 0.7）：
+	// 抵消「拆得越细权重越高」的倾向，1 表示不衰减。
+	AggDepthDecay float64
 	// AggFloor 聚合单位底分（ECY_AGG_FLOOR，默认 4）：权重 = sqrt(图片数) + 底分，
 	// 底分越大，图片极少的目录越不容易被大目录挤掉（0 表示退化为纯 sqrt）。
 	AggFloor float64
@@ -215,6 +218,7 @@ func Load() Config {
 		MemTargetCapPct:   clampInt(envInt("ECY_MEM_TARGET_CAP_PCT", 30), 5, 90),
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
+		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),
 	}
 }
 

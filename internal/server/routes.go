@@ -178,6 +178,7 @@ func New(cfg config.Config) (*Server, error) {
 		VerifyInterval:    time.Duration(cfg.VerifyIntervalSeconds) * time.Second,
 		ParentAggDirsOnly: cfg.ParentAggDirsOnly,
 		AggFloor:          cfg.AggFloor,
+		AggDepthDecay:     cfg.AggDepthDecay,
 	})
 	if err != nil {
 		return nil, err

@@ -217,22 +217,21 @@ func TestCategorySnapshotReuse(t *testing.T) {
 
 // TestAggDepthExpansion 按 ECY_MAX_DEPTH 展开：更深的目录会成为独立单位，
 // 2024 下有 5 个子目录各 1 张，2025 下 1 个子目录 100 张 —— 2024 与 2025 应各约 50%。
-func TestAggUnitsAreSecondLevel(t *testing.T) {
+// TestAggFairnessAcrossSplits 公平性：图片总数相同，拆成更多子目录不应获得额外权重。
+// pixiv/2024/{5 个目录各 1 张} vs pixiv/2025/only{5 张} → 两分支各约 50%。
+func TestAggFairnessAcrossSplits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "categories")
 	for i := 0; i < 5; i++ {
 		writePNG(t, filepath.Join(dir, "pixiv", "2024", "leaf"+pad(i), "a.png"), 4, 2)
 	}
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 5; i++ {
 		writePNG(t, filepath.Join(dir, "pixiv", "2025", "only", "b"+pad(i)+".png"), 4, 2)
 	}
-	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0})
+	st, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, AggFloor: 4, AggDepthDecay: 0.7})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if n, _ := st.CountWith(ctx, "pixiv", OrientationAny); n != 105 {
-		t.Fatalf("父聚合总数应为 105，实际 %d", n)
-	}
 	counts := map[string]int{}
 	const n = 2000
 	for i := 0; i < n; i++ {
@@ -243,9 +242,8 @@ func TestAggUnitsAreSecondLevel(t *testing.T) {
 		parts := strings.Split(strings.TrimPrefix(rows[0].Link, "/pic/pixiv/"), "/")
 		counts[parts[0]]++
 	}
-	// 2024 展开成 5 个 1 张的单位（权重 5），2025 是 1 个 100 张的单位（权重 10）→ 约 1:2
-	if counts["2024"] < n/5 || counts["2024"] > n/2 {
-		t.Fatalf("2024 应按深度展开后约占 1/3，实际 %d/%d（%v）", counts["2024"], n, counts)
+	if counts["2024"] < n*38/100 || counts["2024"] > n*62/100 {
+		t.Fatalf("拆分不应带来权重优势，实际 %v", counts)
 	}
 }
 

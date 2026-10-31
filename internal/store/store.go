@@ -510,6 +510,8 @@ type Options struct {
 	ParentAggDirsOnly bool
 	// AggFloor 聚合单位底分：权重 = sqrt(图片数) + AggFloor（0 表示纯 sqrt）。
 	AggFloor float64
+	// AggDepthDecay 每深入一层的权重衰减（默认 0.7，1 表示不衰减）。
+	AggDepthDecay float64
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
@@ -545,6 +547,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		verify = defaultVerifyInterval
 	}
 	SetFloorWeight(opt.AggFloor)
+	SetDepthDecay(opt.AggDepthDecay)
 	fs := &fileStore{
 		dir:               dir,
 		maxDepth:          maxDepth,

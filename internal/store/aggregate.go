@@ -25,6 +25,30 @@ type aggChild struct {
 	weight float64
 }
 
+// aggDepthDecay 每深入一层的权重衰减：越深的目录拆分出的单位越多，
+// 用衰减抵消「拆得越细权重越高」的倾向（默认 0.7，即每层打七折）。
+var aggDepthDecay = 0.7
+
+// SetDepthDecay 设置层级衰减（1 表示不衰减，<1 更深层更轻）。
+func SetDepthDecay(d float64) {
+	if d <= 0 || d > 1 {
+		d = 1
+	}
+	aggDepthDecay = d
+}
+
+// depthFactor 第 level 层单位的衰减系数（level 从 1 开始）。
+func depthFactor(level int, decay float64) float64 {
+	if level <= 1 || decay >= 1 {
+		return 1
+	}
+	f := 1.0
+	for i := 1; i < level; i++ {
+		f *= decay
+	}
+	return f
+}
+
 // aggFloorWeight 每个抽样单位的「底分」：保证再怎么少的目录也不是 0 分。
 // 可由 ECY_AGG_FLOOR 调整（默认 1，相当于「再小的目录也按 1 张参与」）。
 var aggFloorWeight = 1.0
@@ -129,72 +153,115 @@ func newAggKidsWithSelf(children []string, sets map[string]*categorySet, aggs ma
 
 // buildAggBucket 构造一个方向的聚合桶。
 //
-// 展开深度由 depth 与 maxDepth（ECY_MAX_DEPTH）决定：
-//   - 还没到 maxDepth 且子目录本身是聚合 → 继续展开它的子目录
-//   - 到达 maxDepth 或子目录是普通分类 → 作为一个抽样单位
+// 公平性设计（消除「拆成多个子目录就能多拿权重」的优势）：
+//  1. 先按 ECY_MAX_DEPTH 把每个二级目录展开成若干「单位」（到深度上限或叶子为止）
+//  2. 每个二级目录作为一个整体拿权重：sqrt(该分支图片总数) + 底分
+//  3. 该权重再按 sqrt(各单位图片数) 的比例分给内部单位
 //
-// 单位之间按 sqrt(图片数) 加权，单位内部按图片数均匀。
+// 这样 pixiv/2024{a..e 各 1 张}（5 张，拆成 5 个目录）与 pixiv/2025/only（5 张，1 个目录）
+// 总量相同 → 权重相同（各约 50%），不会因为目录拆得细就更吃香；
+// 而 100 张的分支仍然明显重于 1 张的分支。
 func buildAggBucket(children []string, sets map[string]*categorySet, aggs map[string]*aggKids, want Orientation, self *categorySet, depth, maxDepth int) aggBucket {
 	b := aggBucket{want: want}
 
-	addUnit := func(slices [][]fileEntry, cum []int, total int) {
-		if total == 0 || len(slices) == 0 {
+	type unit struct {
+		slices [][]fileEntry
+		cum    []int
+		total  int
+		level  int // 相对分支根的层级（0 = 分支根自己）
+	}
+	type branch struct {
+		units []unit
+		total int
+	}
+
+	addBranch := func(br branch) {
+		if br.total == 0 || len(br.units) == 0 {
 			return
 		}
-		w := unitWeight(total)
-		if w <= 0 {
+		bw := unitWeight(br.total)
+		if bw <= 0 {
 			return
 		}
-		b.children = append(b.children, aggChild{slices: slices, cum: cum, total: total, weight: w})
-		b.wsum += w
-		b.wcum = append(b.wcum, b.wsum)
-		for i, entries := range slices {
-			n := cum[i]
-			if i > 0 {
-				n -= cum[i-1]
+		// 分支内按 sqrt(单位图片数) 分配，并按层级做衰减：
+		// 越深的单位权重越低（decay^(level)），抑制「把目录拆深一层来多拿权重」的动机。
+		sumSqrt := 0.0
+		weights := make([]float64, len(br.units))
+		for i, u := range br.units {
+			w := math.Sqrt(float64(u.total))
+			if aggDepthDecay > 0 && aggDepthDecay < 1 && u.level > 0 {
+				w *= math.Pow(aggDepthDecay, float64(u.level))
 			}
-			if n == 0 {
+			weights[i] = w
+			sumSqrt += w
+		}
+		for i, u := range br.units {
+			w := bw
+			if sumSqrt > 0 {
+				w = bw * weights[i] / sumSqrt
+			}
+			if w <= 0 {
 				continue
 			}
-			b.slices = append(b.slices, entries)
-			b.total += n
-			b.cum = append(b.cum, b.total)
+			b.children = append(b.children, aggChild{slices: u.slices, cum: u.cum, total: u.total, weight: w})
+			b.wsum += w
+			b.wcum = append(b.wcum, b.wsum)
+			for i, entries := range u.slices {
+				n := u.cum[i]
+				if i > 0 {
+					n -= u.cum[i-1]
+				}
+				if n == 0 {
+					continue
+				}
+				b.slices = append(b.slices, entries)
+				b.total += n
+				b.cum = append(b.cum, b.total)
+			}
 		}
 	}
 
-	// 父目录自身图片：一个独立单位
+	// 父目录自身图片：单独一个分支
 	if self != nil {
 		if entries := self.pick(want); len(entries) > 0 {
-			addUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
+			addBranch(branch{units: []unit{{slices: [][]fileEntry{entries}, cum: []int{len(entries)}, total: len(entries)}}, total: len(entries)})
 		}
 	}
 
-	var walk func(names []string, d int)
-	walk = func(names []string, d int) {
-		for _, name := range names {
-			if set, ok := sets[name]; ok {
-				if entries := set.pick(want); len(entries) > 0 {
-					addUnit([][]fileEntry{entries}, []int{len(entries)}, len(entries))
-				}
-				continue
+	// collect 把一个目录（可能自身是聚合）展开成单位列表
+	var collect func(name string, d int, lvl int, out *branch)
+	collect = func(name string, d int, lvl int, out *branch) {
+		if set, ok := sets[name]; ok {
+			if entries := set.pick(want); len(entries) > 0 {
+				out.units = append(out.units, unit{slices: [][]fileEntry{entries}, cum: []int{len(entries)}, total: len(entries), level: lvl})
+				out.total += len(entries)
 			}
-			a, ok := aggs[name]
-			if !ok {
-				continue
-			}
-			sub := a.bucket(want)
-			if sub.total == 0 {
-				continue
-			}
-			// 还能再展开，且它确实有子目录 → 继续往下（按 ECY_MAX_DEPTH 控制展开层数）
-			if d < maxDepth && len(a.children) > 0 {
-				walk(a.children, d+1)
-				continue
-			}
-			addUnit(sub.slices, sub.cum, sub.total)
+			return
 		}
+		a, ok := aggs[name]
+		if !ok {
+			return
+		}
+		sub := a.bucket(want)
+		if sub.total == 0 {
+			return
+		}
+		if d < maxDepth && len(a.children) > 0 {
+			for _, child := range a.children {
+				collect(child, d+1, lvl+1, out)
+			}
+			return
+		}
+		// 到深度上限：整个子树作为一个单位
+		out.units = append(out.units, unit{slices: sub.slices, cum: sub.cum, total: sub.total, level: lvl})
+		out.total += sub.total
 	}
-	walk(children, depth)
+
+	for _, child := range children {
+		br := branch{}
+		collect(child, depth, 0, &br)
+		addBranch(br)
+	}
 	return b
 }
 
