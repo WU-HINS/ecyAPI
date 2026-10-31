@@ -41,6 +41,9 @@ func newGalleryServer(t *testing.T, n int, mutate func(*config.Config)) *Server 
 	if mutate != nil {
 		mutate(&cfg)
 	}
+	// 测试进程（尤其 -race）自身 RSS 会被算进内存压力，这里给一个大限额，
+	// 让压力≈0，避免「预热因内存压力让路」这类与用例无关的抖动。
+	cfg.MemoryLimit = 4 << 30
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)

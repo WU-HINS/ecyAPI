@@ -50,7 +50,8 @@ func (l Level) String() string {
 type Governor struct {
 	limit   int64   // 容器内存限制（字节）
 	softPct float64 // 软目标百分比（未设置绝对目标时使用）
-	hardPct float64 // 红线百分比（上限，默认 30%）
+	hardPct float64 // 红线百分比（降级触发线，默认 85%）
+	capPct  float64 // 自适应目标的最高比例（默认 30%）
 
 	// target 绝对内存目标（字节）。0 表示沿用 softPct*limit。
 	// 由 SetTarget 按索引规模动态更新：图越少目标越低，最多放宽到 hardPct*limit。
@@ -72,8 +73,9 @@ type Governor struct {
 // Options 构造参数。
 type Options struct {
 	LimitBytes int64   // 容器限制；<=0 表示未知
-	SoftPct    float64 // 软目标百分比（0.75）
-	HardPct    float64 // 红线百分比（0.90）
+	SoftPct    float64 // 软目标百分比（未设置绝对目标时兜底）
+	HardPct    float64 // 降级红线百分比（0.85）
+	TargetCap  float64 // 自适应目标上限百分比（0.30）
 }
 
 // New 创建调节器。
@@ -82,6 +84,7 @@ func New(opt Options) *Governor {
 		limit:   opt.LimitBytes,
 		softPct: opt.SoftPct,
 		hardPct: opt.HardPct,
+		capPct:  opt.TargetCap,
 	}
 	if g.limit <= 0 {
 		g.limit = 512 << 20
@@ -89,8 +92,11 @@ func New(opt Options) *Governor {
 	if g.softPct <= 0 || g.softPct >= 1 {
 		g.softPct = 0.75
 	}
-	if g.hardPct <= g.softPct || g.hardPct > 1 {
-		g.hardPct = 0.90
+	if g.hardPct <= 0 || g.hardPct > 1 {
+		g.hardPct = 0.85
+	}
+	if g.capPct <= 0 || g.capPct > 1 {
+		g.capPct = 0.30
 	}
 	g.readRSS = readRSS
 	g.readHeap = readHeap
@@ -125,7 +131,7 @@ func TargetFor(limit int64, images int, qps, qpsThreshold float64) int64 {
 	if base < base25 {
 		base = base25 // 进程自身就要 25MB 才跑得动
 	}
-	ceiling := int64(limit * 30 / 100)
+	ceiling := int64(float64(limit) * 0.30)
 	if base > ceiling {
 		base = ceiling
 	}
@@ -173,13 +179,24 @@ func (g *Governor) Target() int64 {
 	return TargetFor(g.limit, 0, 0, 0)
 }
 
-// ceiling 内存上限（红线）：30% × limit。
+// ceiling 降级红线（触发 Critical 的占用线）。
+// 注意：它不是「目标上限」——目标最高只到 targetCapPct（30%），
+// 而红线要留出足够空间，否则正常运行（如 CI 里带 race 的进程）会被误判为触顶。
 func (g *Governor) ceiling() int64 {
-	c := int64(float64(g.limit) * g.hardPct)
-	if t := g.Target(); t > c {
-		return t
-	}
+	return int64(float64(g.limit) * g.hardPct)
+}
+
+// targetCap 自适应目标的最高值（默认 30% × limit）。
+func (g *Governor) targetCap() int64 {
+	c := int64(float64(g.limit) * g.targetCapPct())
 	return c
+}
+
+func (g *Governor) targetCapPct() float64 {
+	if g.capPct <= 0 || g.capPct > 1 {
+		return 0.30
+	}
+	return g.capPct
 }
 
 // Level 当前压力档位。

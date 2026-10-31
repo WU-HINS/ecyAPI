@@ -191,7 +191,8 @@ func New(cfg config.Config) (*Server, error) {
 		mem: memguard.New(memguard.Options{
 			LimitBytes: cfg.MemoryLimit,
 			SoftPct:    float64(cfg.MemSoftPct) / 100,
-			HardPct:    float64(cfg.MemHardPct) / 100,
+			HardPct:    float64(cfg.MemHardPct) / 100,      // 降级红线（默认 85%）
+			TargetCap:  float64(cfg.MemTargetCapPct) / 100, // 自适应目标上限（默认 30%）
 		}),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),

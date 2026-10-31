@@ -108,8 +108,10 @@ type Config struct {
 	// MemSoftPct 内存目标百分比（ECY_MEM_SOFT_PCT，默认 2）：目标 = min(25MB, 2% × 限额)，
 	// 再按索引图片数放宽；未设置绝对目标时用它兜底。
 	MemSoftPct int
-	// MemHardPct 内存上限百分比（ECY_MEM_HARD_PCT，默认 30）：自适应目标最高放宽到这里。
+	// MemHardPct 降级红线百分比（ECY_MEM_HARD_PCT，默认 85）：占用到这里触发 Critical 降级。
 	MemHardPct int
+	// MemTargetCapPct 自适应目标的最高百分比（ECY_MEM_TARGET_CAP_PCT，默认 30）。
+	MemTargetCapPct int
 	// MemQPSThreshold 高 QPS 放宽阈值（ECY_MEM_QPS_THRESHOLD，默认 100）：
 	// QPS 超过它后按比例放宽内存目标（到 4× 阈值放宽到上限），0 表示不按 QPS 放宽。
 	MemQPSThreshold int
@@ -195,7 +197,8 @@ func Load() Config {
 		PreviewCacheFiles: clampInt(envInt("ECY_PREVIEW_CACHE_FILES", 20000), 100, 1000000),
 		MemoryLimit:       memLimit,
 		MemSoftPct:        clampInt(envInt("ECY_MEM_SOFT_PCT", 2), 1, 50),
-		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 30), 5, 80),
+		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 85), 30, 99),
+		MemTargetCapPct:   clampInt(envInt("ECY_MEM_TARGET_CAP_PCT", 30), 5, 90),
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
 	}
 }
