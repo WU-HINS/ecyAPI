@@ -574,6 +574,12 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		} else if ok && fs.loadedCategories() > 0 {
 			log.Printf("已从磁盘快照恢复 %d 个分类（保存于 %s 前），跳过启动扫描",
 				fs.loadedCategories(), time.Since(snapshotTime(fs.snapshotPath())).Round(time.Minute))
+			if ok, n := fs.VerifyCompactIndex(); ok {
+				log.Printf("紧凑索引校验通过：%d 条（%s）", n, filepath.Base(CompactIndexPath(fs.dir)))
+			} else {
+				log.Printf("紧凑索引缺失或与内存不一致，后台重建")
+				go fs.refreshCompactIndex()
+			}
 			go fs.refreshLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
 			return fs, nil

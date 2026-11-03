@@ -100,6 +100,8 @@ func (f *fileStore) saveSnapshot() error {
 		return err
 	}
 	f.dirty.Store(false)
+	// 快照写好后顺带刷新紧凑索引（同一代数据，格式不同）
+	f.refreshCompactIndex()
 	return nil
 }
 

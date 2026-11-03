@@ -75,9 +75,4 @@ func oriFlag(o Orientation) uint8 {
 	}
 }
 
-// CompactIndexPath 紧凑索引的默认落盘位置。
-func CompactIndexPath(dataDir string) string {
-	return filepath.Join(dataDir, "index.bin")
-}
-
 var _ = time.Now
