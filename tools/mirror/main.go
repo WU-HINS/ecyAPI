@@ -40,6 +40,8 @@ func main() {
 		exts      = flag.String("ext", ".png,.jpg,.jpeg,.webp,.gif,.avif,.mp4,.webm", "只同步这些后缀（* 表示全部）")
 		dryRun    = flag.Bool("dry-run", false, "只打印计划，不落盘")
 		interval  = flag.Duration("interval", 0, "常驻同步间隔（0 = 只跑一次，例如 5m）")
+		mode      = flag.String("mode", "mirror", "mirror = 下载到本地；index = 只建云端索引（不下载原图）")
+		out       = flag.String("out", "index.web.bin", "-mode=index 时的输出文件")
 	)
 	flag.Parse()
 
@@ -87,6 +89,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if strings.EqualFold(*mode, "index") {
+		log.Printf("只建索引（不下载原图）：%s → %s", src.Describe(), *out)
+		n, err := remote.BuildIndexFromSource(ctx, src, *out, remote.IndexOptions{
+			MaxDepth: *maxDepth, Extensions: extsList, Logger: log.Default(),
+		})
+		if err != nil {
+			log.Fatalf("建索引失败: %v", err)
+		}
+		log.Printf("完成：%d 条", n)
+		return
+	}
 
 	run := func() {
 		log.Printf("开始同步：%s → %s", src.Describe(), *dest)
