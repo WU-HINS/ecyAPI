@@ -350,6 +350,9 @@ type fileStore struct {
 	groupAggMu    sync.RWMutex
 	groupAggCache *groupAggEntry
 
+	// compact 紧凑索引读路径（ECY_INDEX_MODE=compact 时启用）。
+	compact *compactState
+
 	// 分类名与计数的代次快照（Categories/Counts 复用，避免每次请求重排 5 万个名字）。
 	snapMu     sync.RWMutex
 	snapGen    uint64
@@ -516,6 +519,9 @@ type Options struct {
 	AggFloor float64
 	// AggDepthDecay 每深入一层的权重衰减（默认 0.7，1 表示不衰减）。
 	AggDepthDecay float64
+	// CompactRead 读路径走紧凑索引（ECY_INDEX_MODE=compact）。
+	// 非聚合分类直接查 mmap 索引；聚合仍走内存聚合桶。
+	CompactRead bool
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
 	// 用于发现「同名文件被原地替换」；库越大该值应越大（每次都要 stat 全部文件）。
 	VerifyInterval time.Duration
@@ -579,6 +585,9 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 			} else {
 				log.Printf("紧凑索引缺失或与内存不一致，后台重建")
 				go fs.refreshCompactIndex()
+			}
+			if opt.CompactRead {
+				fs.openCompact()
 			}
 			go fs.refreshLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
@@ -1330,6 +1339,12 @@ func (f *fileStore) CountWith(ctx context.Context, category string, want Orienta
 	if agg := f.aggFor(category); agg != nil {
 		return agg.bucket(want).total, nil
 	}
+	if cs := f.compactReady(); cs != nil {
+		if cc, ok := cs.cats.get(category); ok {
+			return cc.count(want), nil
+		}
+		return 0, ErrNotFound
+	}
 	set, ok := f.categorySet(category)
 	if !ok {
 		return 0, ErrNotFound
@@ -1350,6 +1365,17 @@ func (f *fileStore) RandomWith(ctx context.Context, category string, limit int, 
 	// 聚合优先：父目录（含自身图片 + 子目录）走聚合桶。
 	if agg := f.aggFor(category); agg != nil {
 		rows := agg.bucket(want).randomRows(limit)
+		if len(rows) == 0 {
+			return nil, ErrNotFound
+		}
+		return rows, nil
+	}
+	if cs := f.compactReady(); cs != nil {
+		cc, ok := cs.cats.get(category)
+		if !ok {
+			return nil, ErrNotFound
+		}
+		rows := cc.random(cs.ix, want, limit)
 		if len(rows) == 0 {
 			return nil, ErrNotFound
 		}
@@ -1412,6 +1438,16 @@ func (f *fileStore) ByIndexWith(ctx context.Context, category string, index int,
 	}
 	if agg := f.aggFor(category); agg != nil {
 		if row, ok := agg.bucket(want).rowAt(index - 1); ok {
+			return row, nil
+		}
+		return Row{}, ErrNotFound
+	}
+	if cs := f.compactReady(); cs != nil {
+		cc, ok := cs.cats.get(category)
+		if !ok {
+			return Row{}, ErrNotFound
+		}
+		if row, ok := cc.byIndex(cs.ix, want, index); ok {
 			return row, nil
 		}
 		return Row{}, ErrNotFound
