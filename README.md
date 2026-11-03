@@ -341,6 +341,32 @@ CDN 命中后源站零压力；内容变了 ETag 会变，配合 `If-None-Match`
 
 实测 1000 次：`/@img` → big 260 / small 256 / pixiv 484（四个叶子分类各约 25%）；`/pixiv` → a 475 / b 525。
 
+## 百万级部署（ECY_INDEX_MODE=compact + 云端 /@web）
+
+```
+# 1) 云端建索引（不下载原图）
+ecyapi-mirror -mode=index -url https://openlist/dav -user u -pass p \
+              -max-depth 3 -out /srv/ecyapi/index.web.bin
+
+# 2) 启动服务：本地走紧凑索引，云端挂 /@web
+ECY_DATA_DIR=/srv/ecyapi/data/categories \
+ECY_INDEX_MODE=compact \
+ECY_WEB_INDEX=/srv/ecyapi/index.web.bin \
+ECY_WEB_KIND=webdav ECY_WEB_URL=https://openlist/dav ECY_WEB_USER=u ECY_WEB_PASS=p \
+ECY_THUMB_MAX_GB=4 \
+./ecyapi
+```
+
+| 能力 | 说明 |
+| --- | --- |
+| 本地 | index.bin（扫描生成），原图 sendfile |
+| 云端 | index.web.bin（listing 生成），/@web/pic 代理流式，不 302 到外部 |
+| 内存 | 条目全在 mmap；5 万条堆 6.8MB，20 万张 RSS 81.8→42.8MB |
+| 方向 | 首次访问读头判定并回写 1 字节，之后走方向过滤 |
+| 缩略图 | ECY_THUMB_MAX_GB 封顶，按 mtime 冷热淘汰 |
+
+实测：100 万条索引文件 41MB（mmap，不计入堆），查询 0.8µs。
+
 ## 内存目标（自适应）
 
 目标不是固定百分比，而是「25MB 起步 → 按负载与索引规模放宽 → 最多 30%」：
