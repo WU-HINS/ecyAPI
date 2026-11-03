@@ -160,7 +160,7 @@ func (s *Server) webServeFile(w http.ResponseWriter, r *http.Request, rest strin
 	_, _ = io.Copy(w, rc)
 }
 
-func (s *Server) webPick(w http.ResponseWriter, r *http.Request, cat string) bool {
+func (s *Server) webPick(w http.ResponseWriter, r *http.Request, cat string, forceJSON bool) bool {
 	cc, ok := s.web.get(cat)
 	if !ok {
 		return false
@@ -182,7 +182,7 @@ func (s *Server) webPick(w http.ResponseWriter, r *http.Request, cat string) boo
 	if !ok {
 		return false
 	}
-	if _, hasJSON := r.URL.Query()["json"]; hasJSON {
+	if _, hasJSON := r.URL.Query()["json"]; hasJSON || forceJSON {
 		plainText(w, s.absoluteURL(r, link))
 		return true
 	}
@@ -191,7 +191,7 @@ func (s *Server) webPick(w http.ResponseWriter, r *http.Request, cat string) boo
 }
 
 func (s *Server) webRandom(w http.ResponseWriter, r *http.Request, cat string) {
-	if s.webPick(w, r, cat) {
+	if s.webPick(w, r, cat, false) {
 		return
 	}
 	plainError(w, "No links found.", http.StatusNotFound)
@@ -204,7 +204,7 @@ func (s *Server) webRandomAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := 0; i < 8; i++ {
-		if s.webPick(w, r, cats[rand.IntN(len(cats))].Name) {
+		if s.webPick(w, r, cats[rand.IntN(len(cats))].Name, false) {
 			return
 		}
 	}
@@ -225,7 +225,7 @@ func (s *Server) webJSON(w http.ResponseWriter, r *http.Request) {
 		s.webRandomAll(w, r)
 		return
 	}
-	if s.webPick(w, r, cat) {
+	if s.webPick(w, r, cat, true) {
 		return
 	}
 	plainError(w, "No such category.", http.StatusNotFound)
