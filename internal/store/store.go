@@ -1250,6 +1250,10 @@ func (f *fileStore) Verify(ctx context.Context, category, name string) bool {
 	if name == "" || strings.ContainsAny(name, "/\\") || !f.validCategory(category) {
 		return false
 	}
+	// compact 模式：索引就是权威，不再每次请求 stat（50 万张时这是最大的热点开销）
+	if f.compactReady() != nil {
+		return true
+	}
 	path := filepath.Join(f.dir, filepath.FromSlash(category), name)
 	if _, err := os.Stat(path); err == nil {
 		return true
@@ -1313,18 +1317,7 @@ func (f *fileStore) Counts(ctx context.Context) map[string]int {
 func (f *fileStore) catSnapshot() ([]string, map[string]int) {
 	// compact 模式：分类与计数直接来自索引（内存里不再有条目数组）
 	if cs := f.compactReady(); cs != nil {
-		names := make([]string, 0, 64)
-		counts := make(map[string]int, 64)
-		for _, c := range cs.ix.Categories() {
-			names = append(names, c.Name)
-			counts[c.Name] = c.Count
-		}
-		sort.Strings(names)
-		// 父目录也算可用分类（聚合路径）
-		for _, c := range cs.ix.Categories() {
-			_ = c
-		}
-		return names, counts
+		return cs.snapshot()
 	}
 	gen := f.gen.Load()
 	f.snapMu.RLock()

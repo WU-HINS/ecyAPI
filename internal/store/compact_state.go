@@ -7,6 +7,8 @@ package store
 
 import (
 	"log"
+	"sort"
+	"sync"
 
 	"ecyapi/internal/index"
 )
@@ -15,6 +17,10 @@ type compactState struct {
 	ix   *index.Index
 	cats *compactCache
 	gen  uint64
+	// catsSnapshot 分类名+计数的缓存（与索引同代次），避免每个请求重新遍历 1000 个分类。
+	snapOnce sync.Once
+	names    []string
+	counts   map[string]int
 }
 
 // openCompact 打开紧凑索引（失败只记日志，读路径继续走内存）。
@@ -52,4 +58,19 @@ func (f *fileStore) closeCompact() {
 		_ = f.compact.ix.Close()
 		f.compact = nil
 	}
+}
+
+// snapshot 返回（并缓存）分类名与计数。
+func (c *compactState) snapshot() ([]string, map[string]int) {
+	c.snapOnce.Do(func() {
+		all := c.ix.Categories()
+		c.names = make([]string, 0, len(all))
+		c.counts = make(map[string]int, len(all))
+		for _, cat := range all {
+			c.names = append(c.names, cat.Name)
+			c.counts[cat.Name] = cat.Count
+		}
+		sort.Strings(c.names)
+	})
+	return c.names, c.counts
 }
