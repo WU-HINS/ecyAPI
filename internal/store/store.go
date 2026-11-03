@@ -237,6 +237,10 @@ type fileEntry struct {
 	link string
 	w, h int
 	ori  Orientation
+	// size / modNano 供紧凑索引使用（判重、增量、LRU 分层都依赖它）。
+	// 0 表示未知（例如从旧快照恢复的条目），使用方需要按「未知」处理。
+	size    int64
+	modNano int64
 }
 
 // Row 转换：对外统一填充方向字段。
@@ -1110,7 +1114,10 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 	}
 
 	for i, ie := range imgs {
-		entry := fileEntry{name: ie.name, link: "/pic/" + rel + "/" + ie.name, ori: OrientationUnknown}
+		entry := fileEntry{
+			name: ie.name, link: "/pic/" + rel + "/" + ie.name, ori: OrientationUnknown,
+			size: ie.size, modNano: ie.mod,
+		}
 		m := oldMeta[ie.name]
 		if results != nil && ie.need {
 			m = results[i]

@@ -25,6 +25,8 @@ const snapshotVersion = 1
 
 type snapFile struct {
 	Name string `json:"n"`
+	Size int64  `json:"s,omitempty"`
+	Mod  int64  `json:"m,omitempty"`
 	Link string `json:"l"`
 	W    int    `json:"w"`
 	H    int    `json:"h"`
@@ -61,7 +63,7 @@ func (f *fileStore) saveSnapshot() error {
 		if set := f.cache[rel]; set != nil {
 			files := make([]snapFile, len(set.all))
 			for i, e := range set.all {
-				files[i] = snapFile{Name: e.name, Link: e.link, W: e.w, H: e.h, Ori: int(e.ori)}
+				files[i] = snapFile{Name: e.name, Link: e.link, W: e.w, H: e.h, Ori: int(e.ori), Size: e.size, Mod: e.modNano}
 			}
 			sd.Files = files
 		}
@@ -139,7 +141,10 @@ func (f *fileStore) loadSnapshot(maxAge time.Duration) (bool, error) {
 		if len(sd.Files) > 0 {
 			set := &categorySet{}
 			for _, x := range sd.Files {
-				set.add(fileEntry{name: x.Name, link: x.Link, w: x.W, h: x.H, ori: Orientation(x.Ori)})
+				set.add(fileEntry{
+					name: x.Name, link: x.Link, w: x.W, h: x.H, ori: Orientation(x.Ori),
+					size: x.Size, modNano: x.Mod,
+				})
 			}
 			set.sort()
 			d.set = set
