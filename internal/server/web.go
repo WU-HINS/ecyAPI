@@ -9,6 +9,8 @@ package server
 //   - /@web/json?{分类}  → 云端 JSON；/@web → 全部云端分类随机
 
 import (
+	"bytes"
+	"image"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -139,9 +141,21 @@ func (s *Server) webServeFile(w http.ResponseWriter, r *http.Request, rest strin
 	}
 	defer rc.Close()
 
+	// 惰性方向判定：只读文件头（≤64KB），判定成功后把 1 字节写回索引，
+	// 下次请求就能命中方向过滤，不再重复解码。
+	head := make([]byte, 64<<10)
+	n, _ := io.ReadFull(rc, head)
+	head = head[:n]
+	s.learnOrientation(s.web, cc.cat, name, head)
+
 	w.Header().Set("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400")
 	if ct := webContentType(name); ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+	if len(head) > 0 {
+		if _, err := w.Write(head); err != nil {
+			return
+		}
 	}
 	_, _ = io.Copy(w, rc)
 }
@@ -242,4 +256,46 @@ func webContentType(name string) string {
 func isMobileUA(r *http.Request) bool {
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
 	return strings.Contains(ua, "mobile") || strings.Contains(ua, "android") || strings.Contains(ua, "iphone")
+}
+
+// learnOrientation 从文件头判定方向并回写索引（惰性 + 持久化）。
+func (s *Server) learnOrientation(b *webBackend, cat index.Category, name string, head []byte) {
+	rec, pos, ok := b.ix.LookupPos(cat, name)
+	if !ok {
+		return
+	}
+	if rec.Flags&0x3 != index.OriUnknown {
+		return // 已经判定过
+	}
+	if len(head) < 32 {
+		return
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(head))
+	if err != nil {
+		return
+	}
+	flags := rec.Flags &^ 0x3
+	switch {
+	case cfg.Width > cfg.Height:
+		flags |= index.OriLand
+	case cfg.Height > cfg.Width:
+		flags |= index.OriPort
+	default:
+		flags |= index.OriLand // 方图按横图处理
+	}
+	if err := b.ix.SetFlags(cat, pos, flags); err != nil {
+		return
+	}
+	b.invalidate(cat.Name) // 方向变了，缓存的位置数组要重建
+}
+
+// invalidate 丢弃某分类的缓存（方向回写后调用）。
+func (b *webBackend) invalidate(name string) {
+	delete(b.mu, name)
+	for i, k := range b.keys {
+		if k == name {
+			b.keys = append(b.keys[:i], b.keys[i+1:]...)
+			break
+		}
+	}
 }

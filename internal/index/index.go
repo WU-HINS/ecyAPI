@@ -293,6 +293,44 @@ func (ix *Index) Lookup(c Category, name string) (Record, bool) {
 	return Record{}, false
 }
 
+// LookupPos 与 Lookup 相同，但额外返回记录在分类内的位置（供回写用）。
+func (ix *Index) LookupPos(c Category, name string) (Record, int, bool) {
+	h := Hash(name)
+	lo, hi := c.first, c.first+c.Count
+	for lo < hi {
+		mid := (lo + hi) / 2
+		r := ix.data[ix.recOff+mid*recSize:]
+		mh := binary.LittleEndian.Uint64(r[0:])
+		switch {
+		case mh < h:
+			lo = mid + 1
+		case mh > h:
+			hi = mid
+		default:
+			start := mid
+			for start > c.first {
+				pr := ix.data[ix.recOff+(start-1)*recSize:]
+				if binary.LittleEndian.Uint64(pr[0:]) != h {
+					break
+				}
+				start--
+			}
+			for i := start; i < c.first+c.Count; i++ {
+				rr := ix.data[ix.recOff+i*recSize:]
+				if binary.LittleEndian.Uint64(rr[0:]) != h {
+					break
+				}
+				rec := ix.record(i)
+				if rec.Name == name {
+					return rec, i - c.first, true
+				}
+			}
+			return Record{}, 0, false
+		}
+	}
+	return Record{}, 0, false
+}
+
 // SetFlags 回写方向/状态位（mmap 可写时有效，供惰性方向判定用）。
 func (ix *Index) SetFlags(c Category, i int, flags uint8) error {
 	if i < 0 || i >= c.Count {
