@@ -89,5 +89,24 @@ func (f *fileStore) refreshCompactIndex() {
 	if f.compactReadEnabled {
 		f.openCompact()
 		f.dropOriMeta()
+		f.dropEntrySets()
 	}
+}
+
+// dropEntrySets compact 模式下释放内存里的条目数组。
+//
+// 前提：聚合不再引用这些切片（compact 模式的父目录聚合直接从索引现算），
+// 所以这里可以安全地把 cache 与 dirs[].set 一起清空；分类数与计数改由索引提供。
+func (f *fileStore) dropEntrySets() {
+	f.mu.Lock()
+	f.cache = map[string]*categorySet{}
+	f.aggs = map[string]*aggKids{}
+	f.groupAggCache = nil
+	for _, d := range f.dirs {
+		d.set = nil
+	}
+	f.snapMu.Lock()
+	f.sortedCats, f.counts = nil, nil
+	f.snapMu.Unlock()
+	f.mu.Unlock()
 }

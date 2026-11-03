@@ -1311,6 +1311,21 @@ func (f *fileStore) Counts(ctx context.Context) map[string]int {
 
 // catSnapshot 返回当前代次下的分类名（已排序）与计数表；代次变化才重建。
 func (f *fileStore) catSnapshot() ([]string, map[string]int) {
+	// compact 模式：分类与计数直接来自索引（内存里不再有条目数组）
+	if cs := f.compactReady(); cs != nil {
+		names := make([]string, 0, 64)
+		counts := make(map[string]int, 64)
+		for _, c := range cs.ix.Categories() {
+			names = append(names, c.Name)
+			counts[c.Name] = c.Count
+		}
+		sort.Strings(names)
+		// 父目录也算可用分类（聚合路径）
+		for _, c := range cs.ix.Categories() {
+			_ = c
+		}
+		return names, counts
+	}
 	gen := f.gen.Load()
 	f.snapMu.RLock()
 	if f.snapGen == gen && f.sortedCats != nil {
@@ -1354,6 +1369,10 @@ func (f *fileStore) CountWith(ctx context.Context, category string, want Orienta
 		if cc, ok := cs.cats.get(category); ok {
 			return cc.count(want), nil
 		}
+		// 不在索引里：可能是父目录（聚合），按前缀现算
+		if n, ok := f.compactParentCount(category, want); ok {
+			return n, nil
+		}
 		return 0, ErrNotFound
 	}
 	set, ok := f.categorySet(category)
@@ -1382,15 +1401,17 @@ func (f *fileStore) RandomWith(ctx context.Context, category string, limit int, 
 		return rows, nil
 	}
 	if cs := f.compactReady(); cs != nil {
-		cc, ok := cs.cats.get(category)
-		if !ok {
-			return nil, ErrNotFound
+		if cc, ok := cs.cats.get(category); ok {
+			rows := cc.random(cs.ix, want, limit)
+			if len(rows) == 0 {
+				return nil, ErrNotFound
+			}
+			return rows, nil
 		}
-		rows := cc.random(cs.ix, want, limit)
-		if len(rows) == 0 {
-			return nil, ErrNotFound
+		if rows, ok := f.compactParentRandom(category, want, limit); ok {
+			return rows, nil
 		}
-		return rows, nil
+		return nil, ErrNotFound
 	}
 	set, ok := f.categorySet(category)
 	if !ok {
