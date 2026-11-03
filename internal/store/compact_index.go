@@ -59,6 +59,21 @@ func (f *fileStore) VerifyCompactIndex() (bool, int) {
 	return true, ix.RecCount()
 }
 
+// reopenOriIndex 重新打开方向索引（独立 mmap，供扫描时免读文件头判方向）。
+func (f *fileStore) reopenOriIndex() {
+	ix, err := index.Open(CompactIndexPath(f.dir))
+	if err != nil {
+		return
+	}
+	f.oriMu.Lock()
+	if f.oriIdx != nil {
+		_ = f.oriIdx.Close()
+	}
+	f.oriIdx = ix
+	f.oriCats = newCompactCache(ix, 32)
+	f.oriMu.Unlock()
+}
+
 // refreshCompactIndex 在快照之后顺带刷新紧凑索引（失败只记日志，不影响服务）。
 func (f *fileStore) refreshCompactIndex() {
 	path, n, err := f.WriteCompactIndex()
@@ -68,5 +83,11 @@ func (f *fileStore) refreshCompactIndex() {
 	}
 	if fi, statErr := os.Stat(path); statErr == nil {
 		log.Printf("紧凑索引已更新：%d 条，%.1f MB（%s）", n, float64(fi.Size())/1048576, filepath.Base(path))
+	}
+	// 重新打开索引并释放 per-file 的 oriMeta（方向已在索引里）
+	f.reopenOriIndex()
+	if f.compactReadEnabled {
+		f.openCompact()
+		f.dropOriMeta()
 	}
 }

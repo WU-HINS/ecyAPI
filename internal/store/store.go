@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"ecyapi/internal/index"
 )
 
 // ErrNotFound 表示分类不存在或分类内无有效图片。
@@ -351,7 +353,12 @@ type fileStore struct {
 	groupAggCache *groupAggEntry
 
 	// compact 紧凑索引读路径（ECY_INDEX_MODE=compact 时启用）。
-	compact *compactState
+	compact            *compactState
+	compactReadEnabled bool
+	// 方向索引：独立 mmap，仅用于「扫描时免读文件头判方向」，用 size+mtime 校验。
+	oriMu   sync.Mutex
+	oriIdx  *index.Index
+	oriCats *compactCache
 
 	// 分类名与计数的代次快照（Categories/Counts 复用，避免每次请求重排 5 万个名字）。
 	snapMu     sync.RWMutex
@@ -520,6 +527,7 @@ type Options struct {
 	// AggDepthDecay 每深入一层的权重衰减（默认 0.7，1 表示不衰减）。
 	AggDepthDecay float64
 	// CompactRead 读路径走紧凑索引（ECY_INDEX_MODE=compact）。
+	// 同时启用「方向从索引取 + 释放 oriMeta」的内存优化。
 	// 非聚合分类直接查 mmap 索引；聚合仍走内存聚合桶。
 	CompactRead bool
 	// VerifyInterval 目录条目未变化时，强制完整校验的间隔（ECY_VERIFY_INTERVAL，默认 1 小时）。
@@ -559,15 +567,16 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	SetFloorWeight(opt.AggFloor)
 	SetDepthDecay(opt.AggDepthDecay)
 	fs := &fileStore{
-		dir:               dir,
-		maxDepth:          maxDepth,
-		refreshInterval:   interval,
-		verifyInterval:    verify,
-		parentAggDirsOnly: opt.ParentAggDirsOnly,
-		stop:              make(chan struct{}),
-		cache:             map[string]*categorySet{},
-		oriMeta:           map[string]map[string]orientMeta{},
-		dirs:              map[string]*dirState{},
+		dir:                dir,
+		maxDepth:           maxDepth,
+		refreshInterval:    interval,
+		verifyInterval:     verify,
+		parentAggDirsOnly:  opt.ParentAggDirsOnly,
+		stop:               make(chan struct{}),
+		compactReadEnabled: opt.CompactRead,
+		cache:              map[string]*categorySet{},
+		oriMeta:            map[string]map[string]orientMeta{},
+		dirs:               map[string]*dirState{},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
@@ -587,7 +596,9 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 				go fs.refreshCompactIndex()
 			}
 			if opt.CompactRead {
+				fs.compactReadEnabled = true
 				fs.openCompact()
+				fs.reopenOriIndex()
 			}
 			go fs.refreshLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
