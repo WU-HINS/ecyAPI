@@ -61,8 +61,8 @@ func TestIndexBasics(t *testing.T) {
 		t.Fatalf("分类数 = %d", len(cats))
 	}
 	c, ok := ix.Find("cat0000")
-	if !ok || c.count != 500 {
-		t.Fatalf("cat0000 条目 = %d", c.count)
+	if !ok || c.Count != 500 {
+		t.Fatalf("cat0000 条目 = %d", c.Count)
 	}
 	rec, ok := ix.Lookup(c, "photo-00042.jpg")
 	if !ok || rec.Size != 100042 || rec.Flags != OriLand {
@@ -112,7 +112,7 @@ func TestIndexMillion(t *testing.T) {
 	hit := 0
 	for i := 0; i < q; i++ {
 		c := cats[i%len(cats)]
-		name := fmt.Sprintf("photo-%05d.jpg", (i*7919)%c.count)
+		name := fmt.Sprintf("photo-%05d.jpg", (i*7919)%c.Count)
 		if _, ok := ix.Lookup(c, name); ok {
 			hit++
 		}
