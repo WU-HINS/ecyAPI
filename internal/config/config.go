@@ -130,6 +130,8 @@ type Config struct {
 	WebPrefix string
 	// WebRegion S3 区域。
 	WebRegion string
+	// PreviewCacheMaxGB 缩略图缓存容量上限（GB，ECY_THUMB_MAX_GB，默认 4；0 = 不限）。
+	PreviewCacheMaxGB int
 	// CompactIndex 读路径走紧凑 mmap 索引（ECY_INDEX_MODE=compact）。
 	// 开启后：条目不再常驻堆、方向从索引取、父目录聚合按前缀现算。
 	CompactIndex bool
@@ -242,6 +244,7 @@ func Load() Config {
 		WebBucket:         env("ECY_WEB_BUCKET", ""),
 		WebPrefix:         env("ECY_WEB_PREFIX", ""),
 		WebRegion:         env("ECY_WEB_REGION", "us-east-1"),
+		PreviewCacheMaxGB: clampInt(envIntZero("ECY_THUMB_MAX_GB", 4), 0, 1024),
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),

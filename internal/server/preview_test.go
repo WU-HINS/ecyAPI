@@ -317,7 +317,7 @@ func TestEvictPreviewCacheKeepsNewest(t *testing.T) {
 		}
 	}
 
-	evictPreviewCacheFiles(root, 4)
+	evictPreviewCacheFiles(root, 4, 0)
 
 	// 最旧的 2 个应被删除，最新的 4 个保留。
 	for _, i := range []int{0, 1} {

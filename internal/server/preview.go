@@ -210,17 +210,20 @@ func (s *Server) evictPreviewCache() {
 	if max <= 0 {
 		max = defaultPreviewCacheFiles
 	}
-	evictPreviewCacheFiles(s.previewCacheRoot(), max)
+	// 容量上限（GB，0 = 不限）：100 万张全量缓存会有 6GB+，必须封顶
+	maxBytes := int64(s.cfg.PreviewCacheMaxGB) << 30
+	evictPreviewCacheFiles(s.previewCacheRoot(), max, maxBytes)
 }
 
 // defaultPreviewCacheFiles 配置为零值（直接构造 Config 的测试场景）时的兜底。
 const defaultPreviewCacheFiles = 20000
 
 // evictPreviewCacheFiles 删除 root 下最旧的缓存文件，保留最新的 max 份。
-func evictPreviewCacheFiles(root string, max int) {
+func evictPreviewCacheFiles(root string, max int, maxBytes int64) {
 	type cacheEntry struct {
 		path    string
 		modTime time.Time
+		size    int64
 	}
 	var entries []cacheEntry
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -231,17 +234,32 @@ func evictPreviewCacheFiles(root string, max int) {
 		if err != nil {
 			return nil
 		}
-		entries = append(entries, cacheEntry{path, info.ModTime()})
+		entries = append(entries, cacheEntry{path, info.ModTime(), info.Size()})
 		return nil
 	})
-	if err != nil || len(entries) <= max {
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	var total int64
+	for _, e := range entries {
+		total += e.size
+	}
+	// 两条约束都要满足：文件数 ≤ max，总字节 ≤ maxBytes（0 表示不限）
+	overCount := len(entries) > max
+	overBytes := maxBytes > 0 && total > maxBytes
+	if !overCount && !overBytes {
 		return
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].modTime.Before(entries[j].modTime)
 	})
-	for _, e := range entries[:len(entries)-max] {
-		_ = os.Remove(e.path)
+	// 从最旧的开始删，直到两条约束都满足
+	for i := 0; i < len(entries); i++ {
+		if len(entries)-i <= max && (maxBytes <= 0 || total <= maxBytes) {
+			break
+		}
+		_ = os.Remove(entries[i].path)
+		total -= entries[i].size
 	}
 }
 
