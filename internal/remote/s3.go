@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -285,4 +286,63 @@ func awsEscape(s string) string {
 	e = strings.ReplaceAll(e, "+", "%20")
 	e = strings.ReplaceAll(e, "%7E", "~")
 	return e
+}
+
+// SignURL 生成预签名 GET 链接（SigV4 query 签名）。
+//
+// 用途：20 万张图这种规模，原图不应该经 ecyAPI 中转——
+// /pic/... 直接 302 到这个链接，由 S3/网盘/CDN 出流，源站只出元数据。
+func (s *S3) SignURL(rel string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	key := strings.Trim(s.opt.Prefix, "/")
+	if key != "" {
+		key += "/"
+	}
+	key += strings.TrimLeft(rel, "/")
+
+	u, err := url.Parse(s.opt.Endpoint)
+	if err != nil {
+		return "", err
+	}
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	host := u.Host
+	basePath := strings.TrimRight(u.Path, "/")
+	objectPath := "/" + key
+	if s.opt.PathStyle {
+		objectPath = basePath + "/" + s.opt.Bucket + objectPath
+	} else {
+		host = s.opt.Bucket + "." + host
+		objectPath = basePath + objectPath
+	}
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	scope := strings.Join([]string{dateStamp, s.opt.Region, "s3", "aws4_request"}, "/")
+
+	q := url.Values{}
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", s.opt.AccessKey+"/"+scope)
+	q.Set("X-Amz-Date", amzDate)
+	q.Set("X-Amz-Expires", strconv.Itoa(int(ttl.Seconds())))
+	q.Set("X-Amz-SignedHeaders", "host")
+
+	canonicalRequest := strings.Join([]string{
+		http.MethodGet, objectPath, canonicalQueryString(q), "host:" + host + "\n", "host", "UNSIGNED-PAYLOAD",
+	}, "\n")
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, scope, hexSHA256([]byte(canonicalRequest)),
+	}, "\n")
+	k := hmacSHA256([]byte("AWS4"+s.opt.SecretKey), dateStamp)
+	k = hmacSHA256(k, s.opt.Region)
+	k = hmacSHA256(k, "s3")
+	k = hmacSHA256(k, "aws4_request")
+	q.Set("X-Amz-Signature", hex.EncodeToString(hmacSHA256(k, stringToSign)))
+
+	return scheme + "://" + host + objectPath + "?" + canonicalQueryString(q), nil
 }
