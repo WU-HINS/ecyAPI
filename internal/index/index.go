@@ -159,8 +159,8 @@ type Index struct {
 type Category struct {
 	Name  string
 	Flags uint16
+	Count int // 条目数
 	first int
-	count int
 }
 
 // Record 一条只读记录。
@@ -215,7 +215,7 @@ func (ix *Index) Categories() []Category {
 			Name:  string(ix.arena[nameOff : nameOff+nameLen]),
 			Flags: binary.LittleEndian.Uint16(e[6:]),
 			first: int(binary.LittleEndian.Uint32(e[8:])),
-			count: int(binary.LittleEndian.Uint32(e[12:])),
+			Count: int(binary.LittleEndian.Uint32(e[12:])),
 		})
 	}
 	return out
@@ -248,7 +248,7 @@ func (ix *Index) record(idx int) Record {
 
 // At 取分类内第 i 条（0 起）。
 func (ix *Index) At(c Category, i int) (Record, bool) {
-	if i < 0 || i >= c.count {
+	if i < 0 || i >= c.Count {
 		return Record{}, false
 	}
 	return ix.record(c.first + i), true
@@ -257,7 +257,7 @@ func (ix *Index) At(c Category, i int) (Record, bool) {
 // Lookup 分类内按文件名查找（hash 二分 + 名字比对防碰撞）。
 func (ix *Index) Lookup(c Category, name string) (Record, bool) {
 	h := Hash(name)
-	lo, hi := c.first, c.first+c.count
+	lo, hi := c.first, c.first+c.Count
 	for lo < hi {
 		mid := (lo + hi) / 2
 		r := ix.data[ix.recOff+mid*recSize:]
@@ -277,7 +277,7 @@ func (ix *Index) Lookup(c Category, name string) (Record, bool) {
 				}
 				start--
 			}
-			for i := start; i < c.first+c.count; i++ {
+			for i := start; i < c.first+c.Count; i++ {
 				rr := ix.data[ix.recOff+i*recSize:]
 				if binary.LittleEndian.Uint64(rr[0:]) != h {
 					break
@@ -295,7 +295,7 @@ func (ix *Index) Lookup(c Category, name string) (Record, bool) {
 
 // SetFlags 回写方向/状态位（mmap 可写时有效，供惰性方向判定用）。
 func (ix *Index) SetFlags(c Category, i int, flags uint8) error {
-	if i < 0 || i >= c.count {
+	if i < 0 || i >= c.Count {
 		return fmt.Errorf("下标越界")
 	}
 	if !ix.mm {
