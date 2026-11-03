@@ -21,6 +21,9 @@ import (
 	"ecyapi/internal/config"
 	"ecyapi/internal/memguard"
 	"ecyapi/internal/store"
+
+	"ecyapi/internal/index"
+	"ecyapi/internal/remote"
 )
 
 //go:embed templates/*.html
@@ -114,6 +117,8 @@ type Server struct {
 	groups *groupSnapshot
 	// homeOrder 首页卡片统一顺序（栏目与虚拟分组混排），来自 data/order.json。
 	homeOrder []string
+	// web 云端后端（/@web/*），未配置时为 nil。
+	web *webBackend
 	// act 活跃任务计数（每 N 秒输出一行状态日志）。
 	act activityTracker
 	// 加权随机权重表缓存（/@img 与虚拟分组），按代次 + 隐藏版本/分组定义失效。
@@ -246,6 +251,30 @@ func New(cfg config.Config) (*Server, error) {
 	if err := s.loadSSO(); err != nil {
 		return nil, err
 	}
+	if cfg.WebIndex != "" {
+		ix, err := index.Open(cfg.WebIndex)
+		if err != nil {
+			log.Printf("云端索引不可用，/@web 关闭: %v", err)
+		} else {
+			var src remote.Source
+			switch strings.ToLower(cfg.WebKind) {
+			case "s3":
+				src, err = remote.NewS3(remote.S3Options{
+					Endpoint: cfg.WebURL, Region: cfg.WebRegion, Bucket: cfg.WebBucket,
+					Prefix: cfg.WebPrefix, AccessKey: cfg.WebUser, SecretKey: cfg.WebPass, PathStyle: true,
+				})
+			default:
+				src, err = remote.NewWebDAV(cfg.WebURL, cfg.WebUser, cfg.WebPass, "")
+			}
+			if err != nil {
+				log.Printf("云端数据源初始化失败，/@web 关闭: %v", err)
+			} else {
+				s.web = newWebBackend(ix, src)
+				log.Printf("云端后端就绪：%d 个分类（%s）", len(ix.Categories()), src.Describe())
+			}
+		}
+	}
+
 	if err := s.loadGroups(); err != nil {
 		log.Printf("虚拟分组定义有误，已忽略：%v", err)
 	}
@@ -1056,6 +1085,12 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.renderHome(w, r)
 		return
 	}
+	// 云端命名空间：/@web/*
+	if strings.HasPrefix(strings.ToLower(path), "@web") {
+		s.webRoute(w, r)
+		return
+	}
+
 	// 全分类随机：/@img 从所有已注册分类里抽一个，横竖按设备自动。
 	if strings.EqualFold(path, "@img") {
 		s.serveAllRandom(w, r)

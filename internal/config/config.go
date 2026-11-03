@@ -116,6 +116,20 @@ type Config struct {
 	// AggDepthDecay 嵌套每深一层的权重衰减（ECY_AGG_DEPTH_DECAY，默认 0.7）：
 	// 抵消「拆得越细权重越高」的倾向，1 表示不衰减。
 	AggDepthDecay float64
+	// WebIndex 云端紧凑索引路径（ECY_WEB_INDEX）；为空表示不启用 /@web。
+	WebIndex string
+	// WebKind 云端数据源类型：webdav | s3（ECY_WEB_KIND）。
+	WebKind string
+	// WebURL 云端地址（WebDAV 根 / S3 endpoint）。
+	WebURL string
+	// WebUser / WebPass 云端凭据（WebDAV 用户密码 / S3 AK/SK）。
+	WebUser string
+	WebPass string
+	// WebBucket / WebPrefix S3 桶与前缀。
+	WebBucket string
+	WebPrefix string
+	// WebRegion S3 区域。
+	WebRegion string
 	// CompactIndex 读路径走紧凑 mmap 索引（ECY_INDEX_MODE=compact）。
 	// 开启后：条目不再常驻堆、方向从索引取、父目录聚合按前缀现算。
 	CompactIndex bool
@@ -220,6 +234,14 @@ func Load() Config {
 		MemHardPct:        clampInt(envInt("ECY_MEM_HARD_PCT", 80), 70, 90),
 		MemTargetCapPct:   clampInt(envInt("ECY_MEM_TARGET_CAP_PCT", 30), 5, 90),
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
+		WebIndex:          env("ECY_WEB_INDEX", ""),
+		WebKind:           env("ECY_WEB_KIND", "webdav"),
+		WebURL:            env("ECY_WEB_URL", ""),
+		WebUser:           env("ECY_WEB_USER", ""),
+		WebPass:           env("ECY_WEB_PASS", ""),
+		WebBucket:         env("ECY_WEB_BUCKET", ""),
+		WebPrefix:         env("ECY_WEB_PREFIX", ""),
+		WebRegion:         env("ECY_WEB_REGION", "us-east-1"),
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),
