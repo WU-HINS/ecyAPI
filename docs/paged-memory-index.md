@@ -112,3 +112,17 @@ type aggUnit struct {
 
 省下的正是 `oriMeta`（126 B/条 × 100 万 ≈ 126 MB）+ 相关 map 开销。
 剩余 178 MB ≈ 条目本体，要靠 P2b（分类页）才能进 120 MB。
+## 内存演进（100 万张，实测）
+
+| 阶段 | 稳态 RSS | 峰值 |
+| --- | --- | --- |
+| 起点（oriMeta + land/port 双份） | 335 MB | 642 MB |
+| P2a 索引替代 oriMeta | 177 MB | 541 MB |
+| P2b′ land/port 下标化 | 177 MB | 335 MB |
+| P2c 空闲归还 FreeOSMemory | 180 MB | 369 MB |
+| **dirs.names 指纹化** | **146 MB** | 501 MB |
+
+目标 ≤120 MB，还差 26 MB。剩余构成估算：条目 ~72MB + name/link 字符串 ~50MB + mmap ~39MB。
+
+下一步可省项：`fileEntry.link`（每条 ~40 字节的 `/pic/<cat>/<name>`），
+可改为按需拼接（category 已知、name 已存）。
