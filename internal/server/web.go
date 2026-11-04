@@ -99,10 +99,6 @@ func (s *Server) webRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	p := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/@web"), "/")
 
-	if strings.HasPrefix(p, "pic/") {
-		s.webServeFile(w, r, strings.TrimPrefix(p, "pic/"))
-		return
-	}
 	if strings.HasPrefix(p, "json") {
 		s.webJSON(w, r)
 		return
@@ -111,9 +107,20 @@ func (s *Server) webRoute(w http.ResponseWriter, r *http.Request) {
 		s.webRandomAll(w, r)
 		return
 	}
-	if !strings.Contains(p, "/") {
+	// 分类优先精确匹配：云端分类可能形如 pic/pc，与文件前缀 pic/ 冲突。
+	if _, ok := s.web.get(p); ok {
 		s.webRandom(w, r, p)
 		return
+	}
+	if strings.HasPrefix(p, "pic/") {
+		s.webServeFile(w, r, strings.TrimPrefix(p, "pic/"))
+		return
+	}
+	if i := strings.LastIndex(p, "/"); i > 0 {
+		if _, ok := s.web.get(p[:i]); ok {
+			s.webServeFile(w, r, p)
+			return
+		}
 	}
 	http.NotFound(w, r)
 }
