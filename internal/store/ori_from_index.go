@@ -49,3 +49,28 @@ func (f *fileStore) dropOriMeta() {
 	f.oriMeta = nil
 	f.mu.Unlock()
 }
+
+// refreshOriIndexAfterScan 扫描结束后刷新方向索引并释放 oriMeta。
+//
+// 索引与内存条目数不一致、或索引不存在时才重建（1 万条也要几十毫秒，
+// 不能每 3 秒的增量扫描都全量重写）。
+func (f *fileStore) refreshOriIndexAfterScan() {
+	f.mu.RLock()
+	want := 0
+	for _, set := range f.cache {
+		want += len(set.pick(OrientationAny))
+	}
+	f.mu.RUnlock()
+
+	f.oriMu.Lock()
+	ix := f.oriIdx
+	f.oriMu.Unlock()
+	if ix != nil && ix.RecCount() == want && want > 0 {
+		return // 索引已是最新，无需重建
+	}
+	f.refreshCompactIndex()
+	f.reopenOriIndex()
+	if want > 0 {
+		f.dropOriMeta()
+	}
+}

@@ -121,6 +121,8 @@ type Config struct {
 	MemTargetFloorMB int
 	// PreviewCacheMaxGB 缩略图缓存容量上限（GB，ECY_THUMB_MAX_GB，默认 4；0 = 不限）。
 	PreviewCacheMaxGB int
+	// OriIndex 内存模式下用方向索引替代 oriMeta（ECY_ORI_INDEX=1）。
+	OriIndex bool
 	// CompactIndex 读路径走紧凑 mmap 索引（ECY_INDEX_MODE=compact）。
 	// 开启后：条目不再常驻堆、方向从索引取、父目录聚合按前缀现算。
 	CompactIndex bool
@@ -227,6 +229,7 @@ func Load() Config {
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
 		MemTargetFloorMB:  clampInt(envIntZero("ECY_MEM_TARGET_FLOOR_MB", 0), 0, 4096),
 		PreviewCacheMaxGB: clampInt(envIntZero("ECY_THUMB_MAX_GB", 4), 0, 1024),
+		OriIndex:          env("ECY_ORI_INDEX", "") == "1",
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),

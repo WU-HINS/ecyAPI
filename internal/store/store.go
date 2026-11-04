@@ -356,6 +356,9 @@ type fileStore struct {
 	// compact 紧凑索引读路径（ECY_INDEX_MODE=compact 时启用）。
 	compact            *compactState
 	compactReadEnabled bool
+	// dropOriMetaEnabled 内存模式下用索引替代 oriMeta（ECY_ORI_INDEX=1）。
+	// 默认关闭：会改变扫描期的快照/代次时序，先灰度验证。
+	dropOriMetaEnabled bool
 	// compactPinned 启动时直接从 index.bin 服务：扫描期间索引会「过期」，
 	// 但此时内存里没有任何条目可回退，宁可服务稍旧的数据也不能 404。
 	compactPinned bool
@@ -530,6 +533,8 @@ type Options struct {
 	AggFloor float64
 	// AggDepthDecay 每深入一层的权重衰减（默认 0.7，1 表示不衰减）。
 	AggDepthDecay float64
+	// DropOriMeta 内存模式下用方向索引替代 oriMeta（ECY_ORI_INDEX=1）。
+	DropOriMeta bool
 	// CompactRead 读路径走紧凑索引（ECY_INDEX_MODE=compact）。
 	// 同时启用「方向从索引取 + 释放 oriMeta」的内存优化。
 	// 非聚合分类直接查 mmap 索引；聚合仍走内存聚合桶。
@@ -578,6 +583,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		parentAggDirsOnly:  opt.ParentAggDirsOnly,
 		stop:               make(chan struct{}),
 		compactReadEnabled: opt.CompactRead,
+		dropOriMetaEnabled: opt.DropOriMeta,
 		cache:              map[string]*categorySet{},
 		oriMeta:            map[string]map[string]orientMeta{},
 		dirs:               map[string]*dirState{},
@@ -821,6 +827,11 @@ func (f *fileStore) scan() error {
 		f.dirty.Store(true)
 	}
 	f.logScanResult(before, sc, time.Since(start))
+	// 内存模式（非 compact）：把方向/宽高落到索引，然后丢掉 per-file 的 oriMeta。
+	// oriMeta 占 126 B/条，100 万张就是 126MB，而它的信息索引里已经有了。
+	if !f.compactReadEnabled && f.dropOriMetaEnabled {
+		f.refreshOriIndexAfterScan()
+	}
 	return nil
 }
 

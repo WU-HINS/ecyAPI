@@ -179,6 +179,7 @@ func New(cfg config.Config) (*Server, error) {
 		ParentAggDirsOnly: cfg.ParentAggDirsOnly,
 		AggFloor:          cfg.AggFloor,
 		CompactRead:       cfg.CompactIndex,
+		DropOriMeta:       cfg.OriIndex,
 		AggDepthDecay:     cfg.AggDepthDecay,
 	})
 	if err != nil {
