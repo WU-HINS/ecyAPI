@@ -79,6 +79,24 @@ func detectOrientation(path string) (w, h int, o Orientation) {
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
 		return 0, 0, OrientationUnknown
 	}
+	// 手机竖拍常以「横向像素 + EXIF Orientation=6/8」存储：
+	// 读一下 EXIF，需要时交换宽高，否则会把竖图判成横图。
+	if _, err := f.Seek(0, 0); err == nil {
+		head := make([]byte, 128<<10)
+		if n, _ := f.Read(head); n > 0 {
+			if ex := jpegEXIFOrientation(head[:n]); swapForEXIF(ex) {
+				w2, h2 := cfg.Height, cfg.Width
+				switch {
+				case w2 > h2:
+					return w2, h2, OrientationLandscape
+				case h2 > w2:
+					return w2, h2, OrientationPortrait
+				default:
+					return w2, h2, OrientationSquare
+				}
+			}
+		}
+	}
 	switch {
 	case cfg.Width > cfg.Height:
 		return cfg.Width, cfg.Height, OrientationLandscape

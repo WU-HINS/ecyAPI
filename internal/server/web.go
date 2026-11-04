@@ -18,6 +18,7 @@ import (
 
 	"ecyapi/internal/index"
 	"ecyapi/internal/remote"
+	"ecyapi/internal/store"
 )
 
 type webCat struct {
@@ -274,11 +275,16 @@ func (s *Server) learnOrientation(b *webBackend, cat index.Category, name string
 	if err != nil {
 		return
 	}
+	w, h := cfg.Width, cfg.Height
+	// 手机竖拍：像素横 + EXIF Orientation 5..8，需要交换宽高再判
+	if store.SwapForEXIF(store.JPEGEXIFOrientation(head)) {
+		w, h = h, w
+	}
 	flags := rec.Flags &^ 0x3
 	switch {
-	case cfg.Width > cfg.Height:
+	case w > h:
 		flags |= index.OriLand
-	case cfg.Height > cfg.Width:
+	case h > w:
 		flags |= index.OriPort
 	default:
 		flags |= index.OriLand // 方图按横图处理
