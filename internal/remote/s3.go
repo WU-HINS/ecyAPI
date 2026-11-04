@@ -346,3 +346,44 @@ func (s *S3) SignURL(rel string, ttl time.Duration) (string, error) {
 
 	return scheme + "://" + host + objectPath + "?" + canonicalQueryString(q), nil
 }
+
+// OpenRange 只取对象前 n 字节（S3 支持 Range）。
+func (s *S3) OpenRange(ctx context.Context, rel string, n int64) (io.ReadCloser, error) {
+	if n <= 0 {
+		n = 8192
+	}
+	key := strings.Trim(s.opt.Prefix, "/")
+	if key != "" {
+		key += "/"
+	}
+	key += strings.TrimLeft(rel, "/")
+	resp, err := s.doRange(ctx, "/"+url.PathEscape(key), n)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("GET(ranged) %s: HTTP %d", key, resp.StatusCode)
+	}
+	return &limitedBody{r: io.LimitReader(resp.Body, n), c: resp.Body}, nil
+}
+
+type limitedBody struct {
+	r io.Reader
+	c io.Closer
+}
+
+func (l *limitedBody) Read(p []byte) (int, error) { return l.r.Read(p) }
+func (l *limitedBody) Close() error               { return l.c.Close() }
+
+// doRange 带 Range 头的 SigV4 GET。
+func (s *S3) doRange(ctx context.Context, path string, n int64) (*http.Response, error) {
+	resp, err := s.doRaw(ctx, http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent {
+		return resp, nil
+	}
+	return resp, nil
+}

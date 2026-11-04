@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"ecyapi/internal/index"
 	"ecyapi/internal/remote"
 )
 
@@ -37,10 +38,13 @@ func main() {
 		workers   = flag.Int("workers", 4, "并发下载数")
 		maxDepth  = flag.Int("max-depth", 3, "远端最大层级（与服务端 ECY_MAX_DEPTH 一致）")
 		prune     = flag.Bool("prune", false, "删除本地多余文件（远端已删）")
-		exts      = flag.String("ext", ".png,.jpg,.jpeg,.webp,.gif,.avif,.mp4,.webm", "只同步这些后缀（* 表示全部）")
+		exts      = flag.String("ext", ".png,.jpg,.jpeg,.webp,.gif,.avif,.bmp,.jxl", "只同步这些后缀（* 表示全部；默认只图片）")
 		dryRun    = flag.Bool("dry-run", false, "只打印计划，不落盘")
 		interval  = flag.Duration("interval", 0, "常驻同步间隔（0 = 只跑一次，例如 5m）")
-		mode      = flag.String("mode", "mirror", "mirror = 下载到本地；index = 只建云端索引（不下载原图）")
+		mode      = flag.String("mode", "mirror", "mirror = 下载到本地；index = 只建云端索引；probe = 批量探测方向（只读 8KB 头）")
+		indexPath = flag.String("index", "", "-mode=probe 时待探测的索引文件（如 index.web.bin）")
+		probeMax  = flag.Int("probe-limit", 0, "最多探测多少条（0 = 全部未知）")
+		probeWait = flag.Duration("probe-delay", 0, "每次探测后的休眠（限速，如 50ms）")
 		out       = flag.String("out", "index.web.bin", "-mode=index 时的输出文件")
 	)
 	flag.Parse()
@@ -89,6 +93,26 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if strings.EqualFold(*mode, "probe") {
+		if *indexPath == "" {
+			log.Fatalf("-mode=probe 需要 -index <索引文件>")
+		}
+		ix, err := index.Open(*indexPath)
+		if err != nil {
+			log.Fatalf("打开索引失败: %v", err)
+		}
+		defer ix.Close()
+		log.Printf("开始批量探测方向：%s（workers=%d，limit=%d）", src.Describe(), *workers, *probeMax)
+		start := time.Now()
+		res := remote.ProbeIndex(ctx, ix, src, remote.ProbeOptions{
+			Workers: *workers, Limit: *probeMax, Delay: *probeWait, Logger: log.Default(),
+		})
+		log.Printf("探测完成：扫描 %d，未知 %d，成功 %d，失败 %d，共读 %.1f MB，耗时 %s",
+			res.Scanned, res.Unknown, res.Probed, res.Failed,
+			float64(res.ReadBytes)/1048576, time.Since(start).Round(time.Second))
+		return
+	}
 
 	if strings.EqualFold(*mode, "index") {
 		log.Printf("只建索引（不下载原图）：%s → %s", src.Describe(), *out)

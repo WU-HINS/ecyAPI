@@ -30,6 +30,8 @@ type Source interface {
 	List(ctx context.Context, dir string) ([]Entry, error)
 	// Open 打开一个文件的读取流。
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
+	// OpenRange 只取前 n 字节（判宽高用，避免拉整图）。
+	OpenRange(ctx context.Context, path string, n int64) (io.ReadCloser, error)
 	// Describe 返回数据源标识（日志用）。
 	Describe() string
 }
