@@ -76,6 +76,22 @@ func (f *fileStore) reopenOriIndex() {
 
 // refreshCompactIndex 在快照之后顺带刷新紧凑索引（失败只记日志，不影响服务）。
 func (f *fileStore) refreshCompactIndex() {
+	// 安全阀：compact 模式下条目已从内存释放，若 cache 为空，
+	// 重建出来的索引是 0 条 —— 绝不能拿它覆盖磁盘上的完整索引。
+	f.mu.RLock()
+	empty := len(f.cache) == 0
+	f.mu.RUnlock()
+	if empty {
+		if old, err := index.Open(CompactIndexPath(f.dir)); err == nil {
+			n := old.RecCount()
+			_ = old.Close()
+			if n > 0 {
+				log.Printf("跳过紧凑索引重建（内存条目已释放，磁盘索引 %d 条保持不动）", n)
+				return
+			}
+		}
+	}
+
 	path, n, err := f.WriteCompactIndex()
 	if err != nil {
 		log.Printf("写紧凑索引失败（不影响服务）: %v", err)

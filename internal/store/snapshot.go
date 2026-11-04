@@ -58,7 +58,12 @@ func (f *fileStore) saveSnapshot() error {
 
 	// compact 模式：index.bin 才是数据源，不再写「百万条条目」的 JSON 快照
 	if f.compactReadEnabled {
-		f.refreshCompactIndex()
+		f.mu.RLock()
+		hasEntries := len(f.cache) > 0
+		f.mu.RUnlock()
+		if hasEntries {
+			f.refreshCompactIndex()
+		}
 		return nil
 	}
 
