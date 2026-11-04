@@ -212,3 +212,45 @@ func isRedirect(code int) bool {
 	}
 	return false
 }
+
+// OpenRange 只取文件的前 N 字节（HTTP Range）。
+//
+// 用途：判定图片宽高只需要文件头——JPEG 的 SOF、PNG 的 IHDR、WebP 的 VP8X
+// 都在前几 KB 内。这样 100 万张图只需 100 万 × 8KB 下行，且**不落盘、不拉整图**。
+// 远端不支持 Range（返回 200）时会读满 N 字节就关闭，同样不会拉完整文件。
+func (w *WebDAV) OpenRange(ctx context.Context, rel string, n int64) (io.ReadCloser, error) {
+	if n <= 0 {
+		n = 8192
+	}
+	req, err := w.newRequest(ctx, http.MethodGet, rel)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
+	resp, err := w.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET(ranged) %s: %w", rel, err)
+	}
+	// 302 到云存储直链时同样要跟随（与 Open 一致），简单起见复用一次逻辑
+	if isRedirect(resp.StatusCode) {
+		_ = resp.Body.Close()
+		return w.Open(ctx, rel)
+	}
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		return io.NopCloser(io.LimitReader(resp.Body, n)), nil
+	case http.StatusOK:
+		// 远端忽略 Range：读满 N 字节即停，不拉整图
+		return &limitedReadCloser{r: io.LimitReader(resp.Body, n), c: resp.Body}, nil
+	}
+	_ = resp.Body.Close()
+	return nil, fmt.Errorf("GET(ranged) %s: HTTP %d", rel, resp.StatusCode)
+}
+
+type limitedReadCloser struct {
+	r io.Reader
+	c io.Closer
+}
+
+func (l *limitedReadCloser) Read(p []byte) (int, error) { return l.r.Read(p) }
+func (l *limitedReadCloser) Close() error               { return l.c.Close() }
