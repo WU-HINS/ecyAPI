@@ -29,11 +29,16 @@ func NewWebDAV(base, user, pass, token string) (*WebDAV, error) {
 		return nil, fmt.Errorf("WebDAV 地址不合法: %w", err)
 	}
 	return &WebDAV{
-		Base:     strings.TrimRight(base, "/"),
-		User:     user,
-		Pass:     pass,
-		Token:    token,
-		Client:   &http.Client{Timeout: 60 * time.Second},
+		Base:  strings.TrimRight(base, "/"),
+		User:  user,
+		Pass:  pass,
+		Token: token,
+		Client: &http.Client{
+			Timeout: 60 * time.Second,
+			// 不自动跟随：跨主机重定向时 Go 会把请求头带过去（含 Authorization），
+			// 很多云存储/CDN 见到 Origin 凭据会直接 400/403。改成自己跟随、跨域时去掉凭据。
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		rootPath: strings.TrimRight(u.Path, "/"),
 	}, nil
 }
@@ -152,6 +157,11 @@ func (w *WebDAV) relPath(href string) (string, bool) {
 }
 
 // Open 下载一个文件。
+//
+// 与 OpenList/网盘的实战要点：
+//   - 很多存储不直接吐字节，而是 302 到云存储直链；跨主机时必须**去掉 Authorization**，
+//     否则 CDN 会返回 400/403（浏览器行为也是如此）。
+//   - 部分存储返回 206 Partial，同样应当当成正常流。
 func (w *WebDAV) Open(ctx context.Context, rel string) (io.ReadCloser, error) {
 	req, err := w.newRequest(ctx, http.MethodGet, rel)
 	if err != nil {
@@ -161,9 +171,44 @@ func (w *WebDAV) Open(ctx context.Context, rel string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", rel, err)
 	}
-	if resp.StatusCode != http.StatusOK {
+	// 手动跟随重定向（最多 3 跳）
+	for hop := 0; hop < 3 && isRedirect(resp.StatusCode); hop++ {
+		loc := resp.Header.Get("Location")
+		_ = resp.Body.Close()
+		if loc == "" {
+			return nil, fmt.Errorf("GET %s: 重定向缺少 Location", rel)
+		}
+		next, err := req.URL.Parse(loc)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: 重定向地址非法: %w", rel, err)
+		}
+		req2, err := http.NewRequestWithContext(ctx, http.MethodGet, next.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		// 只有同主机才带凭据；跨主机（云存储直链）一律裸请求
+		if next.Host == req.URL.Host {
+			for k, v := range req.Header {
+				req2.Header[k] = v
+			}
+		}
+		resp, err = w.Client.Do(req2)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s（重定向后）: %w", rel, err)
+		}
+		req = req2
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("GET %s: HTTP %d", rel, resp.StatusCode)
 	}
 	return resp.Body, nil
+}
+
+func isRedirect(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
 }
