@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1755,4 +1756,8 @@ func (f *fileStore) scanInBackground(opt Options) {
 	f.scanning.Store(false)
 	f.refreshCompactIndex()
 	f.dropEntrySets()
+	// 扫描期会临时把条目装进内存（百万条数百 MB），释放后 Go 不会主动还给 OS，
+	// 这里显式回收一次，让常驻 RSS 回落到「索引 + 分类表」的水平。
+	debug.FreeOSMemory()
+	log.Printf("扫描收尾完成，已回收内存")
 }
