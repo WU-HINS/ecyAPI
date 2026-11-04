@@ -21,6 +21,7 @@ import (
 	"hash/fnv"
 	"os"
 	"sort"
+	"sync"
 )
 
 const (
@@ -148,6 +149,12 @@ type Index struct {
 	data []byte
 	mm   bool
 
+	// 分类表缓存：Categories() 每次分配会让 GC 压力暴涨（pprof 实证），
+	// 这里解析一次、复用同一份切片，并建立 名字→下标 的映射供 Find 用。
+	catOnce sync.Once
+	catList []Category
+	catIdx  map[string]int
+
 	recCount int
 	catCount int
 	catOff   int
@@ -204,8 +211,13 @@ func (ix *Index) Close() error {
 // RecCount 条目总数。
 func (ix *Index) RecCount() int { return ix.recCount }
 
-// Categories 分类列表（顺序即文件顺序）。
+// Categories 分类列表（顺序即文件顺序；返回共享切片，调用方只读）。
 func (ix *Index) Categories() []Category {
+	ix.catOnce.Do(ix.loadCats)
+	return ix.catList
+}
+
+func (ix *Index) loadCats() {
 	out := make([]Category, 0, ix.catCount)
 	for i := 0; i < ix.catCount; i++ {
 		e := ix.data[ix.catOff+i*catSize:]
@@ -218,15 +230,18 @@ func (ix *Index) Categories() []Category {
 			Count: int(binary.LittleEndian.Uint32(e[12:])),
 		})
 	}
-	return out
+	ix.catList = out
+	ix.catIdx = make(map[string]int, len(out))
+	for i, c := range out {
+		ix.catIdx[c.Name] = i
+	}
 }
 
-// Find 按名字找分类。
+// Find 按名字找分类（哈希查表，O(1)）。
 func (ix *Index) Find(name string) (Category, bool) {
-	for _, c := range ix.Categories() {
-		if c.Name == name {
-			return c, true
-		}
+	ix.catOnce.Do(ix.loadCats)
+	if i, ok := ix.catIdx[name]; ok {
+		return ix.catList[i], true
 	}
 	return Category{}, false
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,6 +21,9 @@ import (
 )
 
 func main() {
+	if addr := os.Getenv("ECY_PPROF"); addr != "" {
+		go func() { _ = http.ListenAndServe(addr, nil) }()
+	}
 	// 内置的素材下载器：Docker 等没有 Go 工具链的环境里补看板娘动画最方便。
 	//   docker exec <容器> /app/ecyapi -fetch-assets
 	fetchAssets := flag.Bool("fetch-assets", false, "下载看板娘素材到 ECY_STATIC_DIR 后退出")
