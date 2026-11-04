@@ -664,6 +664,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 				n, filepath.Base(CompactIndexPath(fs.dir)))
 			go fs.scanInBackground(opt)
 			go fs.refreshLoop()
+			go fs.idleReclaimLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
 			return fs, nil
 		}
@@ -689,6 +690,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 				fs.reopenOriIndex()
 			}
 			go fs.refreshLoop()
+			go fs.idleReclaimLoop()
 			go fs.snapshotLoop(opt.SnapshotTTL)
 			return fs, nil
 		} else if ok {
@@ -737,6 +739,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		}
 	}
 	go fs.refreshLoop()
+	go fs.idleReclaimLoop()
 	go fs.snapshotLoop(opt.SnapshotTTL)
 	return fs, nil
 }
@@ -1839,4 +1842,25 @@ func (f *fileStore) scanInBackground(opt Options) {
 	// 这里显式回收一次，让常驻 RSS 回落到「索引 + 分类表」的水平。
 	debug.FreeOSMemory()
 	log.Printf("扫描收尾完成，已回收内存")
+}
+
+// idleReclaimLoop 定期把空闲的堆页还给操作系统。
+//
+// Go 的 GC 只把内存标记为可复用，不还给 OS——大库扫描后 RSS 会长期停在高位
+// （实测 1M 张：峰值 335MB，释放后仍占 177MB）。这里在没有扫描时每 90 秒
+// 显式 FreeOSMemory 一次，代价是一次 STW 很短的 GC（毫秒级）。
+func (f *fileStore) idleReclaimLoop() {
+	t := time.NewTicker(90 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-f.stop:
+			return
+		case <-t.C:
+			if f.scanning.Load() {
+				continue // 扫描期不打断
+			}
+			debug.FreeOSMemory()
+		}
+	}
 }
