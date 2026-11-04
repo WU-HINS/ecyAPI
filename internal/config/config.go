@@ -229,7 +229,7 @@ func Load() Config {
 		MemQPSThreshold:   clampInt(envIntZero("ECY_MEM_QPS_THRESHOLD", 100), 0, 100000),
 		MemTargetFloorMB:  clampInt(envIntZero("ECY_MEM_TARGET_FLOOR_MB", 0), 0, 4096),
 		PreviewCacheMaxGB: clampInt(envIntZero("ECY_THUMB_MAX_GB", 4), 0, 1024),
-		OriIndex:          env("ECY_ORI_INDEX", "") == "1",
+		OriIndex:          env("ECY_ORI_INDEX", "") != "0",
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),
