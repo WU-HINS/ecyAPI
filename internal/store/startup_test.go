@@ -112,7 +112,7 @@ func TestProgressivePublish(t *testing.T) {
 func TestProgressiveAggBuildsParentEarly(t *testing.T) {
 	f := &fileStore{cache: map[string]*categorySet{}, aggs: map[string]*aggKids{}}
 	child := &categorySet{}
-	child.add(fileEntry{name: "x.png", link: "/pic/a/x/x.png", w: 10, h: 5, ori: OrientationLandscape})
+	child.add(fileEntry{name: "x.png", cat: "a/x", w: 10, h: 5, ori: OrientationLandscape})
 	child.sort()
 
 	sc := &scanCtx{

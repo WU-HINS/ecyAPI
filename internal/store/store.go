@@ -239,7 +239,10 @@ const reloadInterval = 3 * time.Second
 // fileEntry 分类内的一张图片（含扫描时判定的宽高与方向）。
 type fileEntry struct {
 	name string
-	link string
+	// cat 是分类路径（同一分类内的条目共享同一个字符串，数据不重复）。
+	// 原来这里是 link = "/pic/<cat>/<name>"，每个文件各存一份约 40 字节的字符串，
+	// 100 万张就是 40MB。链接现在按需拼（见 linkOf），只有真正返回的行才分配。
+	cat  string
 	w, h int
 	ori  Orientation
 	// size / modNano 供紧凑索引使用（判重、增量、LRU 分层都依赖它）。
@@ -248,9 +251,14 @@ type fileEntry struct {
 	modNano int64
 }
 
+// linkOf 按需拼出图片链接。
+func (e fileEntry) linkOf() string {
+	return "/pic/" + e.cat + "/" + e.name
+}
+
 // Row 转换：对外统一填充方向字段。
 func (e fileEntry) row() Row {
-	return Row{ID: e.name, Link: e.link, Width: e.w, Height: e.h, Orientation: e.ori.String()}
+	return Row{ID: e.name, Link: e.linkOf(), Width: e.w, Height: e.h, Orientation: e.ori.String()}
 }
 
 // categorySet 一个分类的图片集合。
@@ -1263,7 +1271,7 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 
 	for i, ie := range imgs {
 		entry := fileEntry{
-			name: ie.name, link: "/pic/" + rel + "/" + ie.name, ori: OrientationUnknown,
+			name: ie.name, cat: rel, ori: OrientationUnknown,
 			size: ie.size, modNano: ie.mod,
 		}
 		m := oldMeta[ie.name]
