@@ -71,3 +71,45 @@ tools/bench-1m.sh /tmp/bench1m 2000 500
 - 聚合是核心路径（`/@img`、父目录、`/json?N` 多行），改坏会直接影响首页
 - 必须先用 `TestCompactReadParity` 那类**对照测试**（新旧实现对同一份数据抽取分布一致）
 - 分类页淘汰与「扫描期写入」有并发风险：淘汰要在 `f.mu` 下与扫描互斥
+## 关键发现：每条文件被存了两份（实测）
+
+```
+分类 c: all=30 land=30 port=0   → 30 个文件，存了 60 份 fileEntry
+```
+
+`categorySet` 有三个切面，且**每个切面存的是 fileEntry 值而不是索引**：
+
+```go
+type categorySet struct {
+    all  []fileEntry   // 全部
+    land []fileEntry   // 横版——与 all 重复存储
+    port []fileEntry   // 竖版——与 all 重复存储
+}
+```
+
+每张图要么在 land 要么在 port，所以**每条文件恒定被存 2 份**（72B × 2 = 144B）。
+
+100 万张的账：
+
+| 项 | 体积 |
+| --- | --- |
+| `all` 切面 | 1M × 72B = 72 MB |
+| `land`/`port` 切面 | 1M × 72B = 72 MB |
+| 字符串（name/link） | ~50 MB |
+| 合计 | ≈ 194 MB（实测 177 MB，结构体大小估计略偏高） |
+
+**把 land/port 改成 `[]uint32`（指向 all 的下标）即可省掉约 72 MB**：
+
+```go
+type categorySet struct {
+    all      []fileEntry
+    landIdx  []uint32
+    portIdx  []uint32
+}
+```
+
+177 MB − 72 MB ≈ **105 MB**，一步就能越过 120 MB 目标，
+而且**不需要分类页 LRU**、不影响聚合、不影响 Verify、不影响快照。
+
+改动面：`pick()` 的 8 个调用点（聚合 2 处、快照 1 处、热路径 2 处、计数 3 处）。
+热路径可改成「按下标取单条」，冷路径（快照/聚合）再物化。
