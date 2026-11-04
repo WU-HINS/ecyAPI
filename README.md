@@ -341,31 +341,33 @@ CDN 命中后源站零压力；内容变了 ETag 会变，配合 `If-None-Match`
 
 实测 1000 次：`/@img` → big 260 / small 256 / pixiv 484（四个叶子分类各约 25%）；`/pixiv` → a 475 / b 525。
 
-## 百万级部署（ECY_INDEX_MODE=compact + 云端 /@web）
+## 百万级部署（ECY_INDEX_MODE=compact）
+
+条目全部放进 mmap 索引，内存只保留「分类表 + 热分类位置数组」，5 万张堆约 6.8MB。
 
 ```
-# 1) 云端建索引（不下载原图）
-ecyapi-mirror -mode=index -url https://openlist/dav -user u -pass p \
-              -max-depth 3 -out /srv/ecyapi/index.web.bin
-
-# 2) 启动服务：本地走紧凑索引，云端挂 /@web
 ECY_DATA_DIR=/srv/ecyapi/data/categories \
 ECY_INDEX_MODE=compact \
-ECY_WEB_INDEX=/srv/ecyapi/index.web.bin \
-ECY_WEB_KIND=webdav ECY_WEB_URL=https://openlist/dav ECY_WEB_USER=u ECY_WEB_PASS=p \
 ECY_THUMB_MAX_GB=4 \
 ./ecyapi
 ```
 
 | 能力 | 说明 |
 | --- | --- |
-| 本地 | index.bin（扫描生成），原图 sendfile |
-| 云端 | index.web.bin（listing 生成），/@web/pic 代理流式，不 302 到外部 |
-| 内存 | 条目全在 mmap；5 万条堆 6.8MB，20 万张 RSS 81.8→42.8MB |
-| 方向 | 首次访问读头判定并回写 1 字节，之后走方向过滤 |
-| 缩略图 | ECY_THUMB_MAX_GB 封顶，按 mtime 冷热淘汰 |
+| 索引 | `index.bin`（扫描生成，mmap），100 万条 41MB 落盘、堆 0.1MB |
+| 查询 | 分类内按 hash 二分，实测 0.8µs/次 |
+| 内存 | 5 万条堆 6.8MB；20 万张 RSS 81.8 → 42.8MB |
+| 方向 | 扫描时读文件头判定并处理 EXIF 旋转，结果存 1 字节 |
+| 缩略图 | `ECY_THUMB_MAX_GB` 封顶，按 mtime 冷热淘汰 |
+| GC | compact 模式默认 80MB 目标下限（`ECY_MEM_TARGET_FLOOR_MB`） |
 
-实测：100 万条索引文件 41MB（mmap，不计入堆），查询 0.8µs。
+> **云端后端**（OpenList / WebDAV / S3、`/@web` 命名空间、只读 8KB 头判宽高的方向探测）
+> 尚未合入主分支，见 **`feat/cloud-backend`** 分支：
+
+> ```bash
+> git fetch origin feat/cloud-backend
+> git checkout feat/cloud-backend
+> ```
 
 ## 内存目标（自适应）
 
