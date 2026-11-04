@@ -49,8 +49,8 @@ func (f *fileStore) BuildCompactIndex(path string) (int, error) {
 				MTime:   e.modNano / 1e9,
 				LastUse: e.modNano / 1e9,
 				Flags:   oriFlag(e.ori),
-				W:       e.w,
-				H:       e.h,
+				W:       int(e.w),
+				H:       int(e.h),
 			})
 		}
 		builder.AddCategory(cb)

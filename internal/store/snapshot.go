@@ -77,7 +77,7 @@ func (f *fileStore) saveSnapshot() error {
 		if set := f.cache[rel]; set != nil {
 			files := make([]snapFile, len(set.all))
 			for i, e := range set.all {
-				files[i] = snapFile{Name: e.name, Link: e.linkOf(), W: e.w, H: e.h, Ori: int(e.ori), Size: e.size, Mod: e.modNano}
+				files[i] = snapFile{Name: e.name, Link: e.linkOf(), W: int(e.w), H: int(e.h), Ori: int(e.ori), Size: e.size, Mod: e.modNano}
 			}
 			sd.Files = files
 		}
@@ -158,7 +158,7 @@ func (f *fileStore) loadSnapshot(maxAge time.Duration) (bool, error) {
 			set := &categorySet{}
 			for _, x := range sd.Files {
 				set.add(fileEntry{
-					name: x.Name, cat: rel, w: x.W, h: x.H, ori: Orientation(x.Ori),
+					name: x.Name, cat: rel, w: clampDim(x.W), h: clampDim(x.H), ori: Orientation(x.Ori),
 					size: x.Size, modNano: x.Mod,
 				})
 			}

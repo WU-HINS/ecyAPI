@@ -243,7 +243,7 @@ type fileEntry struct {
 	// 原来这里是 link = "/pic/<cat>/<name>"，每个文件各存一份约 40 字节的字符串，
 	// 100 万张就是 40MB。链接现在按需拼（见 linkOf），只有真正返回的行才分配。
 	cat  string
-	w, h int
+	w, h uint16 // 宽高（>65535 截断；0 = 未知），比 int 省 12 字节/条
 	ori  Orientation
 	// size / modNano 供紧凑索引使用（判重、增量、LRU 分层都依赖它）。
 	// 0 表示未知（例如从旧快照恢复的条目），使用方需要按「未知」处理。
@@ -258,7 +258,7 @@ func (e fileEntry) linkOf() string {
 
 // Row 转换：对外统一填充方向字段。
 func (e fileEntry) row() Row {
-	return Row{ID: e.name, Link: e.linkOf(), Width: e.w, Height: e.h, Orientation: e.ori.String()}
+	return Row{ID: e.name, Link: e.linkOf(), Width: int(e.w), Height: int(e.h), Orientation: e.ori.String()}
 }
 
 // categorySet 一个分类的图片集合。
@@ -367,7 +367,7 @@ func (c *categorySet) pick(want Orientation) []fileEntry {
 type orientMeta struct {
 	size int64
 	mod  int64
-	w, h int
+	w, h uint16 // 宽高（>65535 截断；0 = 未知），比 int 省 12 字节/条
 	ori  Orientation
 }
 
@@ -1333,7 +1333,7 @@ func (f *fileStore) detectParallel(dirPath string, imgs []imgEntry) []orientMeta
 			for i := range jobs {
 				ie := imgs[i]
 				w, h, o := detectOrientation(filepath.Join(dirPath, ie.name))
-				out[i] = orientMeta{size: ie.size, mod: ie.mod, w: w, h: h, ori: o}
+				out[i] = orientMeta{size: ie.size, mod: ie.mod, w: clampDim(w), h: clampDim(h), ori: o}
 			}
 		}()
 	}
@@ -1904,4 +1904,15 @@ func (f *fileStore) idleReclaimLoop() {
 			debug.FreeOSMemory()
 		}
 	}
+}
+
+// clampDim 把宽高截断到 uint16（0 表示未知）。
+func clampDim(v int) uint16 {
+	if v <= 0 {
+		return 0
+	}
+	if v > 65535 {
+		return 65535
+	}
+	return uint16(v)
 }
