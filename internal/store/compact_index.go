@@ -70,7 +70,7 @@ func (f *fileStore) reopenOriIndex() {
 		_ = f.oriIdx.Close()
 	}
 	f.oriIdx = ix
-	f.oriCats = newCompactCache(ix, 32)
+	f.oriCats = newCompactCache(ix, 256)
 	f.oriMu.Unlock()
 }
 

@@ -13,6 +13,12 @@ import (
 	"ecyapi/internal/index"
 )
 
+// compactCacheCap 位置数组缓存的分类数上限。
+//
+// 100 万张 / 2000 分类时全部缓存约 2000×500×3×4B ≈ 12MB，远小于 80MB 目标；
+// 缓存太小会让随机访问（/@img）每次未命中都重建 500 条位置数组，这是实测到的最大热点。
+const compactCacheCap = 1536
+
 type compactState struct {
 	ix   *index.Index
 	cats *compactCache
@@ -37,7 +43,7 @@ func (f *fileStore) openCompact() {
 	if f.compact != nil && f.compact.ix != nil {
 		_ = f.compact.ix.Close()
 	}
-	f.compact = &compactState{ix: ix, cats: newCompactCache(ix, 64), gen: gen}
+	f.compact = &compactState{ix: ix, cats: newCompactCache(ix, compactCacheCap), gen: gen}
 }
 
 // compactReady 读路径是否可用（开关打开 + 已打开 + 代次一致）。
