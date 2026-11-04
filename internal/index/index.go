@@ -28,7 +28,7 @@ const (
 	magic      = "ECYXIDX1"
 	headerSize = 64
 	catSize    = 32
-	recSize    = 28
+	recSize    = 32
 
 	// FlagRemote 该分类在云端（/@web/*）。
 	FlagRemote uint16 = 1 << 0
@@ -98,10 +98,10 @@ func (b *Builder) Build(path string) error {
 			binary.LittleEndian.PutUint64(rec[0:], Hash(it.Name))
 			binary.LittleEndian.PutUint32(rec[8:], uint32(pathOff))
 			binary.LittleEndian.PutUint16(rec[12:], uint16(len(it.Name)))
-			binary.LittleEndian.PutUint32(rec[14:], uint32(it.Size))
-			binary.LittleEndian.PutUint32(rec[18:], uint32(it.MTime))
-			binary.LittleEndian.PutUint32(rec[22:], uint32(it.LastUse))
-			rec[26] = it.Flags
+			binary.LittleEndian.PutUint64(rec[14:], uint64(it.Size)) // >4GiB 不再压平
+			binary.LittleEndian.PutUint32(rec[22:], uint32(it.MTime))
+			binary.LittleEndian.PutUint32(rec[26:], uint32(it.LastUse))
+			rec[30] = it.Flags
 			recs = append(recs, rec[:]...)
 			recCount++
 		}
@@ -121,7 +121,7 @@ func (b *Builder) Build(path string) error {
 	buf := make([]byte, arenaOff+len(arena))
 	hdr := buf[:headerSize]
 	copy(hdr[0:8], magic)
-	binary.LittleEndian.PutUint32(hdr[8:], 1) // version
+	binary.LittleEndian.PutUint32(hdr[8:], 2) // version（2：size 改 uint64）
 	binary.LittleEndian.PutUint32(hdr[12:], uint32(recCount))
 	binary.LittleEndian.PutUint32(hdr[16:], uint32(len(b.cats)))
 	binary.LittleEndian.PutUint32(hdr[20:], uint32(catOff))
@@ -174,7 +174,7 @@ type Category struct {
 type Record struct {
 	Hash    uint64
 	Name    string
-	Size    uint32
+	Size    uint64
 	MTime   uint32
 	LastUse uint32
 	Flags   uint8
@@ -189,6 +189,9 @@ func parse(ix *Index) error {
 	d := ix.data
 	if len(d) < headerSize || string(d[0:8]) != magic {
 		return ErrBadMagic
+	}
+	if v := binary.LittleEndian.Uint32(d[8:]); v != 2 {
+		return fmt.Errorf("索引版本 %d 与当前 %d 不兼容，请重建", v, 2)
 	}
 	ix.recCount = int(binary.LittleEndian.Uint32(d[12:]))
 	ix.catCount = int(binary.LittleEndian.Uint32(d[16:]))
@@ -254,10 +257,10 @@ func (ix *Index) record(idx int) Record {
 	return Record{
 		Hash:    binary.LittleEndian.Uint64(r[0:]),
 		Name:    string(ix.arena[pathOff : pathOff+pathLen]),
-		Size:    binary.LittleEndian.Uint32(r[14:]),
-		MTime:   binary.LittleEndian.Uint32(r[18:]),
-		LastUse: binary.LittleEndian.Uint32(r[22:]),
-		Flags:   r[26],
+		Size:    binary.LittleEndian.Uint64(r[14:]),
+		MTime:   binary.LittleEndian.Uint32(r[22:]),
+		LastUse: binary.LittleEndian.Uint32(r[26:]),
+		Flags:   r[30],
 	}
 }
 
@@ -354,6 +357,6 @@ func (ix *Index) SetFlags(c Category, i int, flags uint8) error {
 	if !ix.mm {
 		return fmt.Errorf("索引只读（未使用 mmap）")
 	}
-	ix.data[ix.recOff+(c.first+i)*recSize+26] = flags
+	ix.data[ix.recOff+(c.first+i)*recSize+30] = flags
 	return nil
 }

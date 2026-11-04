@@ -49,6 +49,32 @@ func buildN(t *testing.T, n int) (string, *Index) {
 	return path, ix
 }
 
+// TestIndexHugeSize 验证 >4GiB 的文件大小不会被压平。
+func TestIndexHugeSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.bin")
+	b := &Builder{}
+	b.AddCategory(CatBuild{Name: "c", Items: []Entry{
+		{Name: "huge.jpg", Size: 5<<30 + 12345, MTime: 1700000000},
+	}})
+	if err := b.Build(path); err != nil {
+		t.Fatal(err)
+	}
+	ix, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ix.Close()
+	cat, _ := ix.Find("c")
+	rec, ok := ix.Lookup(cat, "huge.jpg")
+	if !ok {
+		t.Fatal("找不到")
+	}
+	if rec.Size != 5<<30+12345 {
+		t.Fatalf("size 被压平: %d（期望 %d）", rec.Size, uint64(5<<30+12345))
+	}
+}
+
 // TestIndexBasics 基本读写与查找。
 func TestIndexBasics(t *testing.T) {
 	path, ix := buildN(t, 2000)
