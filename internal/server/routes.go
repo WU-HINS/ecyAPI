@@ -189,6 +189,11 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// compact 模式：活堆很小，给 GC 一个更高的下限（否则 GC 每几毫秒跑一次）
+	floorMB := cfg.MemTargetFloorMB
+	if floorMB == 0 && cfg.CompactIndex {
+		floorMB = 80
+	}
 	admin, _ := store.NewFileAdmin(st)
 	s := &Server{
 		cfg: cfg, st: st, admin: admin, dataDir: store.Dir(st),
@@ -208,6 +213,9 @@ func New(cfg config.Config) (*Server, error) {
 		}),
 		previewLocks: newKeyedLocks(),
 		login:        newLoginLimiter(),
+	}
+	if floorMB > 0 {
+		s.mem.SetTargetFloor(int64(floorMB) << 20)
 	}
 	if err := s.loadEndpoints(); err != nil {
 		return nil, err

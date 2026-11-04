@@ -53,6 +53,9 @@ type Governor struct {
 	hardPct float64 // 红线百分比（降级触发线，默认 85%）
 	capPct  float64 // 自适应目标的最高比例（默认 30%）
 
+	// floor 目标下限（字节）。compact 这类「活堆很小」的模式下，
+	// 25MB 的目标会让 GC 每几毫秒跑一次，把吞吐吃掉一半——给一个下限反而更快更稳。
+	floor atomic.Int64
 	// target 绝对内存目标（字节）。0 表示沿用 softPct*limit。
 	// 由 SetTarget 按索引规模动态更新：图越少目标越低，最多放宽到 hardPct*limit。
 	target atomic.Int64
@@ -173,6 +176,14 @@ func TargetFor(limit int64, images int, qps, qpsThreshold float64) int64 {
 	return base + int64(float64(ceiling-base)*frac)
 }
 
+// SetTargetFloor 设置目标下限（0 = 不设下限）。上限仍受 ceiling 约束。
+func (g *Governor) SetTargetFloor(bytes int64) {
+	if bytes < 0 {
+		bytes = 0
+	}
+	g.floor.Store(bytes)
+}
+
 // SetTarget 设置绝对内存目标（<=0 表示恢复按百分比推导）。
 func (g *Governor) SetTarget(bytes int64) {
 	if bytes < 0 {
@@ -215,7 +226,15 @@ func (g *Governor) Target() int64 {
 	if t := g.target.Load(); t > 0 {
 		return t
 	}
-	return TargetFor(g.limit, 0, 0, 0)
+	t := TargetFor(g.limit, 0, 0, 0)
+	if f := g.floor.Load(); f > t {
+		ceil := g.ceiling()
+		if f < ceil {
+			return f
+		}
+		return ceil
+	}
+	return t
 }
 
 // 降级区间：70% 起逐步收紧并发与后台策略，90% 到顶（系统再往上就开始 OOM）。

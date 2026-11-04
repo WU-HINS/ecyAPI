@@ -130,6 +130,9 @@ type Config struct {
 	WebPrefix string
 	// WebRegion S3 区域。
 	WebRegion string
+	// MemTargetFloorMB 内存目标下限（MB，ECY_MEM_TARGET_FLOOR_MB，默认 0=不设）。
+	// compact 模式默认给 80MB：活堆只有十几 MB，目标定太小会让 GC 变成瓶颈。
+	MemTargetFloorMB int
 	// PreviewCacheMaxGB 缩略图缓存容量上限（GB，ECY_THUMB_MAX_GB，默认 4；0 = 不限）。
 	PreviewCacheMaxGB int
 	// CompactIndex 读路径走紧凑 mmap 索引（ECY_INDEX_MODE=compact）。
@@ -244,6 +247,7 @@ func Load() Config {
 		WebBucket:         env("ECY_WEB_BUCKET", ""),
 		WebPrefix:         env("ECY_WEB_PREFIX", ""),
 		WebRegion:         env("ECY_WEB_REGION", "us-east-1"),
+		MemTargetFloorMB:  clampInt(envIntZero("ECY_MEM_TARGET_FLOOR_MB", 0), 0, 4096),
 		PreviewCacheMaxGB: clampInt(envIntZero("ECY_THUMB_MAX_GB", 4), 0, 1024),
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
