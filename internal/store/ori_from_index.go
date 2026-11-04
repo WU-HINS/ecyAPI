@@ -33,14 +33,14 @@ func (f *fileStore) oriFromIndex(cat, name string, size, modNano int64) (Orienta
 	}
 	switch rec.Flags & 0x3 {
 	case index.OriLand:
-		return OrientationLandscape, 0, 0, true
+		return OrientationLandscape, rec.W, rec.H, true
 	case index.OriPort:
-		return OrientationPortrait, 0, 0, true
+		return OrientationPortrait, rec.W, rec.H, true
 	case index.OriSquare:
 		// 方图按横图处理（与旧实现一致）
-		return OrientationLandscape, 0, 0, true
+		return OrientationLandscape, rec.W, rec.H, true
 	}
-	return OrientationUnknown, 0, 0, true
+	return OrientationUnknown, rec.W, rec.H, true
 }
 
 // dropOriMeta compact 模式下释放 per-file 方向映射（方向已在索引里）。

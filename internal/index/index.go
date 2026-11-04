@@ -28,7 +28,7 @@ const (
 	magic      = "ECYXIDX1"
 	headerSize = 64
 	catSize    = 32
-	recSize    = 32
+	recSize    = 36 // 32 + w(2) + h(2)：让索引能替代 oriMeta 保存宽高
 
 	// FlagRemote 该分类在云端（/@web/*）。
 	FlagRemote uint16 = 1 << 0
@@ -58,6 +58,7 @@ type Entry struct {
 	MTime   int64 // unix 秒
 	LastUse int64
 	Flags   uint8
+	W, H    int // 宽高（>65535 截断，0 表示未知）
 }
 
 // CatBuild 构建期的一个分类及其条目。
@@ -101,7 +102,9 @@ func (b *Builder) Build(path string) error {
 			binary.LittleEndian.PutUint64(rec[14:], uint64(it.Size)) // >4GiB 不再压平
 			binary.LittleEndian.PutUint32(rec[22:], uint32(it.MTime))
 			binary.LittleEndian.PutUint32(rec[26:], uint32(it.LastUse))
-			rec[30] = it.Flags
+			binary.LittleEndian.PutUint16(rec[30:], clampU16(it.W))
+			binary.LittleEndian.PutUint16(rec[32:], clampU16(it.H))
+			rec[34] = it.Flags
 			recs = append(recs, rec[:]...)
 			recCount++
 		}
@@ -177,7 +180,19 @@ type Record struct {
 	Size    uint64
 	MTime   uint32
 	LastUse uint32
+	W, H    int
 	Flags   uint8
+}
+
+// clampU16 宽高截断到 uint16（0 表示未知）。
+func clampU16(v int) uint16 {
+	if v <= 0 {
+		return 0
+	}
+	if v > 65535 {
+		return 65535
+	}
+	return uint16(v)
 }
 
 // Open 打开索引文件（mmap；不支持 mmap 的平台回退到整份读入）。
@@ -260,7 +275,9 @@ func (ix *Index) record(idx int) Record {
 		Size:    binary.LittleEndian.Uint64(r[14:]),
 		MTime:   binary.LittleEndian.Uint32(r[22:]),
 		LastUse: binary.LittleEndian.Uint32(r[26:]),
-		Flags:   r[30],
+		W:       int(binary.LittleEndian.Uint16(r[30:])),
+		H:       int(binary.LittleEndian.Uint16(r[32:])),
+		Flags:   r[34],
 	}
 }
 
@@ -357,6 +374,6 @@ func (ix *Index) SetFlags(c Category, i int, flags uint8) error {
 	if !ix.mm {
 		return fmt.Errorf("索引只读（未使用 mmap）")
 	}
-	ix.data[ix.recOff+(c.first+i)*recSize+30] = flags
+	ix.data[ix.recOff+(c.first+i)*recSize+34] = flags
 	return nil
 }

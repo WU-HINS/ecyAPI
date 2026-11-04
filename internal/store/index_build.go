@@ -44,10 +44,13 @@ func (f *fileStore) BuildCompactIndex(path string) (int, error) {
 		}
 		for _, e := range entries {
 			cb.Items = append(cb.Items, index.Entry{
-				Name:  e.name,
-				Size:  0, // 现有 fileEntry 不存 size/mtime；2b 切换时补齐
-				MTime: 0,
-				Flags: oriFlag(e.ori),
+				Name:    e.name,
+				Size:    e.size,
+				MTime:   e.modNano / 1e9,
+				LastUse: e.modNano / 1e9,
+				Flags:   oriFlag(e.ori),
+				W:       e.w,
+				H:       e.h,
 			})
 		}
 		builder.AddCategory(cb)
