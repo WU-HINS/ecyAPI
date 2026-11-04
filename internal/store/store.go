@@ -254,19 +254,57 @@ func (e fileEntry) row() Row {
 // categorySet 一个分类的图片集合。
 // 横竖在扫描时就分好桶，读路径直接取切片，不必每次过滤分配。
 type categorySet struct {
-	all  []fileEntry
-	land []fileEntry // 横版
-	port []fileEntry // 竖版
+	all []fileEntry
+	// land/port 只存指向 all 的下标：原来存的是 fileEntry 值，
+	// 导致每条文件在内存里恒存两份（实测 30 个文件 → 60 份）。
+	landIdx []uint32
+	portIdx []uint32
 }
 
 func (c *categorySet) add(e fileEntry) {
+	idx := uint32(len(c.all))
 	c.all = append(c.all, e)
 	switch e.ori {
 	case OrientationLandscape:
-		c.land = append(c.land, e)
+		c.landIdx = append(c.landIdx, idx)
 	case OrientationPortrait:
-		c.port = append(c.port, e)
+		c.portIdx = append(c.portIdx, idx)
 	}
+}
+
+// countFor 某方向的条目数（不物化切片）。
+func (c *categorySet) countFor(want Orientation) int {
+	switch want {
+	case OrientationLandscape:
+		return len(c.landIdx)
+	case OrientationPortrait:
+		return len(c.portIdx)
+	case OrientationSquare, OrientationUnknown:
+		return 0
+	}
+	return len(c.all)
+}
+
+// at 按方向 + 序号取单条（热路径用，零分配）。
+func (c *categorySet) at(want Orientation, i int) (fileEntry, bool) {
+	switch want {
+	case OrientationLandscape:
+		if i < 0 || i >= len(c.landIdx) {
+			return fileEntry{}, false
+		}
+		return c.all[c.landIdx[i]], true
+	case OrientationPortrait:
+		if i < 0 || i >= len(c.portIdx) {
+			return fileEntry{}, false
+		}
+		return c.all[c.portIdx[i]], true
+	case OrientationSquare, OrientationUnknown:
+		return fileEntry{}, false
+	}
+	if i < 0 || i >= len(c.all) {
+		return fileEntry{}, false
+	}
+	return c.all[i], true
 }
 
 // sort 按文件名（字典序）排序，保证 ?json=N 的序号稳定。
@@ -275,18 +313,39 @@ func (c *categorySet) sort() {
 		sort.Slice(s, func(i, j int) bool { return s[i].name < s[j].name })
 	}
 	byName(c.all)
-	byName(c.land)
-	byName(c.port)
+	// 下标随 all 重排失效，重建一次（O(n)）
+	c.landIdx = c.landIdx[:0]
+	c.portIdx = c.portIdx[:0]
+	for i := range c.all {
+		switch c.all[i].ori {
+		case OrientationLandscape:
+			c.landIdx = append(c.landIdx, uint32(i))
+		case OrientationPortrait:
+			c.portIdx = append(c.portIdx, uint32(i))
+		}
+	}
 }
 
 // pick 取指定方向的桶；Any 返回全集。
 // 正方形与无法判定的文件只进全集，不参与横竖筛选，因此这里返回nil由调用方回退。
+// pick 返回某方向的条目切片。
+//
+// 注意：这是**冷路径**（快照/聚合/图库），会按下标物化一份切片；
+// 热路径（随机、按序取一条）请用 at/countFor，避免分配。
 func (c *categorySet) pick(want Orientation) []fileEntry {
 	switch want {
 	case OrientationLandscape:
-		return c.land
+		out := make([]fileEntry, len(c.landIdx))
+		for i, k := range c.landIdx {
+			out[i] = c.all[k]
+		}
+		return out
 	case OrientationPortrait:
-		return c.port
+		out := make([]fileEntry, len(c.portIdx))
+		for i, k := range c.portIdx {
+			out[i] = c.all[k]
+		}
+		return out
 	case OrientationSquare, OrientationUnknown:
 		return nil
 	}
@@ -1319,8 +1378,17 @@ func (f *fileStore) removeFile(category, name string) {
 		return out
 	}
 	set.all = filter(set.all)
-	set.land = filter(set.land)
-	set.port = filter(set.port)
+	// 下标随 all 变化失效：直接重建
+	set.landIdx = set.landIdx[:0]
+	set.portIdx = set.portIdx[:0]
+	for i := range set.all {
+		switch set.all[i].ori {
+		case OrientationLandscape:
+			set.landIdx = append(set.landIdx, uint32(i))
+		case OrientationPortrait:
+			set.portIdx = append(set.portIdx, uint32(i))
+		}
+	}
 }
 
 // validCategory 用本实例的层级上限校验分类路径。
@@ -1377,7 +1445,7 @@ func (f *fileStore) catSnapshot() ([]string, map[string]int) {
 	counts := make(map[string]int, len(f.cache))
 	for name, set := range f.cache {
 		names = append(names, name)
-		counts[name] = len(set.pick(OrientationAny))
+		counts[name] = len(set.all)
 	}
 	f.mu.RUnlock()
 	sort.Strings(names)
@@ -1411,7 +1479,7 @@ func (f *fileStore) CountWith(ctx context.Context, category string, want Orienta
 	if !ok {
 		return 0, ErrNotFound
 	}
-	return len(set.pick(want)), nil
+	return set.countFor(want), nil
 }
 
 // Random 随机抽取 limit 个文件名（不放回），不限方向。
