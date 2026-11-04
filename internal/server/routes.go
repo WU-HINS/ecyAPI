@@ -277,7 +277,7 @@ func New(cfg config.Config) (*Server, error) {
 			if err != nil {
 				log.Printf("云端数据源初始化失败，/@web 关闭: %v", err)
 			} else {
-				s.web = newWebBackend(ix, src)
+				s.web = newWebBackend(ix, src, cfg.WebVideo)
 				log.Printf("云端后端就绪：%d 个分类（%s）", len(ix.Categories()), src.Describe())
 			}
 		}

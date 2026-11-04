@@ -32,6 +32,10 @@ func BuildIndexFromSource(ctx context.Context, src Source, dst string, opt Index
 	if opt.Logger == nil {
 		opt.Logger = log.Default()
 	}
+	// 云端默认只索引图片：视频经代理不可用（云盘限速），索引里留着只会产生 403。
+	if len(opt.Extensions) == 0 {
+		opt.Extensions = []string{".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp", ".jxl"}
+	}
 
 	builder := &index.Builder{}
 	total := 0

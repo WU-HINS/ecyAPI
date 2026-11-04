@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"path"
 	"strings"
 
 	"ecyapi/internal/index"
@@ -29,15 +30,26 @@ type webCat struct {
 }
 
 type webBackend struct {
-	ix   *index.Index
-	src  remote.Source
-	mu   map[string]*webCat
-	cap  int
-	keys []string
+	ix  *index.Index
+	src remote.Source
+	// allowVideo 云端是否允许代理视频（默认关闭：云盘限速下视频经代理不可用）
+	allowVideo bool
+	mu         map[string]*webCat
+	cap        int
+	keys       []string
 }
 
-func newWebBackend(ix *index.Index, src remote.Source) *webBackend {
-	return &webBackend{ix: ix, src: src, mu: map[string]*webCat{}, cap: 128}
+func newWebBackend(ix *index.Index, src remote.Source, allowVideo bool) *webBackend {
+	return &webBackend{ix: ix, src: src, allowVideo: allowVideo, mu: map[string]*webCat{}, cap: 128}
+}
+
+// isVideoName 判断是否为视频文件（云端默认不代理视频）。
+func isVideoName(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".mp4", ".webm", ".mkv", ".avi", ".mov", ".m4v", ".ts", ".flv", ".wmv", ".rmvb", ".mpg", ".mpeg":
+		return true
+	}
+	return false
 }
 
 func (b *webBackend) get(name string) (*webCat, bool) {
@@ -103,6 +115,11 @@ func (s *Server) webRoute(w http.ResponseWriter, r *http.Request) {
 		s.webJSON(w, r)
 		return
 	}
+	// 云端图库页未启用（需要缩略图，会大量回源）
+	if p == "img" || strings.HasPrefix(p, "img?") {
+		plainError(w, "云端图库未启用。", http.StatusNotFound)
+		return
+	}
 	if p == "" {
 		s.webRandomAll(w, r)
 		return
@@ -140,6 +157,10 @@ func (s *Server) webServeFile(w http.ResponseWriter, r *http.Request, rest strin
 	}
 	if _, ok := s.web.ix.Lookup(cc.cat, name); !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.web.allowVideo && isVideoName(name) {
+		plainError(w, "云端视频已禁用（ECY_WEB_VIDEO=1 可开启）。", http.StatusForbidden)
 		return
 	}
 	rc, err := s.web.src.Open(r.Context(), cat+"/"+name)
@@ -186,8 +207,20 @@ func (s *Server) webPick(w http.ResponseWriter, r *http.Request, cat string, for
 	if len(pos) == 0 {
 		return false
 	}
-	link, ok := cc.row(s.web, pos[rand.IntN(len(pos))])
-	if !ok {
+	// 云端默认不代理视频：随机挑选时跳过，避免 302 到 403
+	var link string
+	for tries := 0; tries < 8; tries++ {
+		l, ok := cc.row(s.web, pos[rand.IntN(len(pos))])
+		if !ok {
+			continue
+		}
+		if !s.web.allowVideo && isVideoName(path.Base(l)) {
+			continue
+		}
+		link = l
+		break
+	}
+	if link == "" {
 		return false
 	}
 	if _, hasJSON := r.URL.Query()["json"]; hasJSON || forceJSON {
