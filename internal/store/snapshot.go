@@ -34,7 +34,10 @@ type snapFile struct {
 }
 
 type snapDir struct {
-	Names   []string   `json:"names"`
+	// Sig/Count 是条目名指纹（旧快照里的 Names 仍可读，但不再使用）
+	Sig     uint64     `json:"sig,omitempty"`
+	Count   int        `json:"cnt,omitempty"`
+	Names   []string   `json:"names,omitempty"`
 	Subdirs []string   `json:"subdirs"`
 	Skipped []string   `json:"skipped,omitempty"`
 	Files   []snapFile `json:"files,omitempty"`
@@ -70,7 +73,7 @@ func (f *fileStore) saveSnapshot() error {
 	doc := snapDoc{Version: snapshotVersion, SavedAt: time.Now(), Dirs: make(map[string]*snapDir, len(f.dirs))}
 	f.mu.RLock()
 	for rel, d := range f.dirs {
-		sd := &snapDir{Names: d.names, Subdirs: d.subdirs, Skipped: d.skipped}
+		sd := &snapDir{Sig: d.sig, Count: d.count, Subdirs: d.subdirs, Skipped: d.skipped}
 		if set := f.cache[rel]; set != nil {
 			files := make([]snapFile, len(set.all))
 			for i, e := range set.all {
@@ -150,7 +153,7 @@ func (f *fileStore) loadSnapshot(maxAge time.Duration) (bool, error) {
 		if sd == nil {
 			continue
 		}
-		d := &dirState{names: sd.Names, subdirs: sd.Subdirs, skipped: sd.Skipped, verified: now}
+		d := &dirState{sig: sd.Sig, count: sd.Count, subdirs: sd.Subdirs, skipped: sd.Skipped, verified: now}
 		if len(sd.Files) > 0 {
 			set := &categorySet{}
 			for _, x := range sd.Files {

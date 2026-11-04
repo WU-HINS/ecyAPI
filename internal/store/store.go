@@ -6,8 +6,10 @@ package store
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/rand/v2"
@@ -805,7 +807,10 @@ func isImageFile(name string) bool {
 // 每 verifyInterval（ECY_VERIFY_INTERVAL，默认 1 小时）仍强制完整校验一次，
 // 以捕获「同名文件被原地替换」。
 type dirState struct {
-	names    []string     // 上次的条目名（ReadDir 已按文件名排序）
+	// sig/count 是「上次条目名的指纹」，替代原来保存整份 []string。
+	// 100 万文件的库光这一项就要占约 50MB，而它唯一的作用是判断「目录有没有变」。
+	sig      uint64
+	count    int
 	subdirs  []string     // 已校验的子目录名
 	set      *categorySet // 该目录作为分类时的文件集合；纯承载目录为 nil
 	verified int64        // 上次完整校验时间（UnixNano）
@@ -1034,7 +1039,8 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 	}
 	now := time.Now().UnixNano()
 	old := f.dirs[rel]
-	if old != nil && !f.forceVerify && now-old.verified < int64(f.verifyInterval) && sameEntryNames(old.names, entries) {
+	if old != nil && !f.forceVerify && now-old.verified < int64(f.verifyInterval) &&
+		old.count == len(entries) && old.sig == entriesSig(entries) {
 		sc.next[rel] = old
 		if old.set != nil {
 			sc.sets[rel] = old.set
@@ -1062,7 +1068,7 @@ func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) err
 	if len(sc.rebuiltDirs) < 5 && rel != "" {
 		sc.rebuiltDirs = append(sc.rebuiltDirs, rel)
 	}
-	state := &dirState{names: names, verified: now}
+	state := &dirState{sig: entriesSig(entries), count: len(entries), verified: now}
 	if !isRoot {
 		state.set = f.buildSet(rel, dirPath, entries)
 		if state.set != nil {
@@ -1176,6 +1182,20 @@ func (f *fileStore) buildAgg(rel string, subdirs []string, sc *scanCtx) {
 	if agg != nil {
 		sc.aggs[rel] = agg
 	}
+}
+
+// entriesSig 对「按名字排序后的条目名」做 64 位指纹。
+// 只用于判断目录有没有变化；碰撞概率可忽略，且即便碰撞也只是少一次全量 stat。
+func entriesSig(entries []os.DirEntry) uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	for _, e := range entries {
+		n := e.Name()
+		binary.LittleEndian.PutUint32(buf[:4], uint32(len(n)))
+		_, _ = h.Write(buf[:4])
+		_, _ = h.Write([]byte(n))
+	}
+	return h.Sum64()
 }
 
 // sameEntryNames 比较上次记录的条目名与本次 ReadDir 结果（两者均按名字排序）。
