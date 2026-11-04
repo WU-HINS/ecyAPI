@@ -80,7 +80,23 @@ func (f *fileStore) refreshCompactIndex() {
 	// 重建出来的索引是 0 条 —— 绝不能拿它覆盖磁盘上的完整索引。
 	f.mu.RLock()
 	empty := len(f.cache) == 0
+	want := 0
+	for _, set := range f.cache {
+		want += len(set.all)
+	}
 	f.mu.RUnlock()
+
+	// 安全阀 2：扫描结果异常缩减（例如一次坏扫描只看到 0 个分类），
+	// 绝不能拿它覆盖磁盘上的完整索引——实测过：这会让整个图库突然变空。
+	if old, err := index.Open(CompactIndexPath(f.dir)); err == nil {
+		oldN := old.RecCount()
+		_ = old.Close()
+		if oldN > 0 && (want == 0 || int64(want)*2 < int64(oldN)) {
+			log.Printf("扫描结果异常缩减（磁盘 %d 条 → 内存 %d 条），拒绝覆盖索引", oldN, want)
+			return
+		}
+	}
+
 	if empty {
 		if old, err := index.Open(CompactIndexPath(f.dir)); err == nil {
 			n := old.RecCount()

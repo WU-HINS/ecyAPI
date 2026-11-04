@@ -17,7 +17,7 @@ func TestCompactReadParity(t *testing.T) {
 	}
 
 	// 先建一份索引（走普通内存模式 + 快照）
-	st1, err := NewFileStoreWithOptions(dir, Options{StartupWait: 5 * time.Second, SnapshotTTL: time.Hour})
+	st1, err := NewFileStoreWithOptions(dir, Options{StartupWait: 0, SnapshotTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestCompactReadParity(t *testing.T) {
 
 	// 再以 compact 读路径打开
 	st2, err := NewFileStoreWithOptions(dir, Options{
-		StartupWait: 5 * time.Second, SnapshotTTL: time.Hour, SnapshotMaxAge: time.Hour, CompactRead: true,
+		StartupWait: 0, SnapshotTTL: time.Hour, SnapshotMaxAge: time.Hour, CompactRead: true,
 	})
 	if err != nil {
 		t.Fatal(err)

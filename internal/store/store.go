@@ -442,6 +442,12 @@ type groupAggEntry struct {
 // Close 停止后台刷新与快照循环。可重复调用。
 func (f *fileStore) Close() {
 	f.stopOnce.Do(func() { close(f.stop) })
+	// 等后台扫描收尾：否则它会继续往数据目录里写索引，
+	// 目录被删除时（测试 TempDir 清理、运维误删）就会报 directory not empty。
+	deadline := time.Now().Add(30 * time.Second)
+	for f.scanning.Load() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // Scanning 是否正在扫描磁盘。
@@ -1836,6 +1842,13 @@ func (f *fileStore) scanInBackground(opt Options) {
 		log.Printf("后台扫描失败: %v", err)
 	}
 	f.scanning.Store(false)
+	// 已被关闭就不再写索引：此时数据目录可能已被删除（测试的 TempDir 清理、
+	// 或运维误删），继续写会产出一份 0 条的索引并污染后续启动。
+	select {
+	case <-f.stop:
+		return
+	default:
+	}
 	f.refreshCompactIndex()
 	f.dropEntrySets()
 	// 扫描期会临时把条目装进内存（百万条数百 MB），释放后 Go 不会主动还给 OS，
