@@ -355,6 +355,9 @@ type fileStore struct {
 	// compact 紧凑索引读路径（ECY_INDEX_MODE=compact 时启用）。
 	compact            *compactState
 	compactReadEnabled bool
+	// compactPinned 启动时直接从 index.bin 服务：扫描期间索引会「过期」，
+	// 但此时内存里没有任何条目可回退，宁可服务稍旧的数据也不能 404。
+	compactPinned bool
 	// 方向索引：独立 mmap，仅用于「扫描时免读文件头判方向」，用 size+mtime 校验。
 	oriMu   sync.Mutex
 	oriIdx  *index.Index
@@ -581,6 +584,25 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
+	// 0) compact 模式：index.bin 就是数据源，直接开图服务，扫描放后台。
+	//    跳过快照（JSON 会重建百万条条目，热启动 245MB / 6s，完全没必要）。
+	if opt.CompactRead {
+		if ix, err := index.Open(CompactIndexPath(fs.dir)); err == nil {
+			n := ix.RecCount()
+			_ = ix.Close()
+			fs.compactReadEnabled = true
+			fs.compactPinned = true
+			fs.openCompact()
+			fs.reopenOriIndex()
+			log.Printf("compact 模式：直接加载紧凑索引 %d 条（%s），扫描在后台进行",
+				n, filepath.Base(CompactIndexPath(fs.dir)))
+			go fs.scanInBackground(opt)
+			go fs.refreshLoop()
+			go fs.snapshotLoop(opt.SnapshotTTL)
+			return fs, nil
+		}
+	}
+
 	// 1) 先尝试磁盘快照：命中就不扫盘，毫秒级就绪。
 	if opt.SnapshotTTL > 0 {
 		ok, err := fs.loadSnapshot(opt.SnapshotMaxAge)
@@ -1159,6 +1181,11 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 		f.oriMeta[rel] = meta
 		return nil
 	}
+	// compact 模式：方向由索引提供（oriFromIndex），不维护 per-file 的 oriMeta，
+	// 100 万条这个 map 要占 120MB+。
+	if f.compactReadEnabled {
+		return nil
+	}
 	if len(meta) > 0 {
 		f.oriMeta[rel] = meta
 	} else {
@@ -1716,4 +1743,16 @@ func (f *fileStore) pruneEmptyParents(category string) {
 			return
 		}
 	}
+}
+
+// scanInBackground compact 模式的启动扫描：不阻塞就绪，扫完重建索引并释放条目。
+func (f *fileStore) scanInBackground(opt Options) {
+	f.scanStarted.Store(time.Now().UnixNano())
+	f.scanning.Store(true)
+	if err := f.scan(); err != nil {
+		log.Printf("后台扫描失败: %v", err)
+	}
+	f.scanning.Store(false)
+	f.refreshCompactIndex()
+	f.dropEntrySets()
 }

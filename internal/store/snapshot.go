@@ -56,6 +56,12 @@ func (f *fileStore) saveSnapshot() error {
 	f.reloadMu.Lock()
 	defer f.reloadMu.Unlock()
 
+	// compact 模式：index.bin 才是数据源，不再写「百万条条目」的 JSON 快照
+	if f.compactReadEnabled {
+		f.refreshCompactIndex()
+		return nil
+	}
+
 	doc := snapDoc{Version: snapshotVersion, SavedAt: time.Now(), Dirs: make(map[string]*snapDir, len(f.dirs))}
 	f.mu.RLock()
 	for rel, d := range f.dirs {

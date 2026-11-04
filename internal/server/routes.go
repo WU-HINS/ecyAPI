@@ -171,7 +171,7 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	st, err := store.NewFileStoreWithOptions(cfg.DataDir, store.Options{
 		MaxDepth:          cfg.MaxDepth,
-		ScanInterval:      time.Duration(cfg.ScanIntervalSeconds) * time.Second,
+		ScanInterval:      scanIntervalFor(cfg),
 		StartupWait:       time.Duration(cfg.StartupWaitSeconds) * time.Second,
 		SnapshotTTL:       time.Duration(cfg.SnapshotTTLSeconds) * time.Second,
 		SnapshotMaxAge:    time.Duration(cfg.SnapshotMaxAgeSeconds) * time.Second,
@@ -950,6 +950,12 @@ func (s *Server) Handler() http.Handler {
 	})
 	// /readyz 是严格就绪：首次扫描没跑完就返回 503，供 K8s readinessProbe 使用。
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		// compact 模式已加载索引即视为就绪（后台扫描不阻塞服务）
+		if rc, ok := s.st.(interface{ Ready() bool }); ok && rc.Ready() {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "ready")
+			return
+		}
 		if s.st.Scanning() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			fmt.Fprint(w, "scanning")
@@ -1383,4 +1389,18 @@ func (s *Server) sortedCategories(ctx context.Context) []string {
 		return nil
 	}
 	return names
+}
+
+// scanIntervalFor 后台增量扫描间隔。
+//
+// 默认 3 秒；compact 模式（百万级）默认 10 分钟——
+// 每 3 秒对 100 万文件 stat 一遍会把 CPU 和内存全吃掉（实测 RSS 从 134MB 涨到 414MB）。
+func scanIntervalFor(cfg config.Config) time.Duration {
+	if cfg.ScanIntervalSeconds > 0 {
+		return time.Duration(cfg.ScanIntervalSeconds) * time.Second
+	}
+	if cfg.CompactIndex {
+		return 10 * time.Minute
+	}
+	return 3 * time.Second
 }

@@ -60,7 +60,8 @@ type Config struct {
 	GalleryConcurrency int
 	// GalleryWaitSeconds 图库排队等待上限（ECY_GALLERY_WAIT，默认 5 秒），超时返回 503。
 	GalleryWaitSeconds int
-	// ScanIntervalSeconds 后台增量刷新间隔（ECY_SCAN_INTERVAL，默认 3 秒）。
+	// ScanIntervalSeconds 后台增量刷新间隔（ECY_SCAN_INTERVAL，默认 3 秒；
+	// compact 模式下默认 600 秒——百万张每 3 秒全量 stat 一次是灾难）。
 	// 扫描已移出请求路径，文件增删在这个间隔内生效。
 	ScanIntervalSeconds int
 	// StartupWaitSeconds 首次扫描的等待上限（ECY_STARTUP_WAIT，默认 15 秒）。
@@ -203,7 +204,7 @@ func Load() Config {
 		GalleryMax:            clampInt(envIntZero("ECY_GALLERY_MAX", 0), 0, 5000),
 		GalleryConcurrency:    clampInt(envInt("ECY_GALLERY_CONCURRENCY", 2), 1, 16),
 		GalleryWaitSeconds:    clampInt(envInt("ECY_GALLERY_WAIT", 5), 1, 60),
-		ScanIntervalSeconds:   clampInt(envInt("ECY_SCAN_INTERVAL", 3), 1, 3600),
+		ScanIntervalSeconds:   clampInt(envIntZero("ECY_SCAN_INTERVAL", 0), 0, 3600),
 		StartupWaitSeconds:    clampInt(envInt("ECY_STARTUP_WAIT", 15), 0, 300),
 		StaticDir:             env("ECY_STATIC_DIR", "data/static"),
 		ActivityLogSeconds:    clampInt(envIntZero("ECY_ACTIVITY_LOG_SECONDS", 3), 0, 300),

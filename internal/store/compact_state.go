@@ -52,7 +52,7 @@ func (f *fileStore) compactReady() *compactState {
 	if c == nil || c.ix == nil {
 		return nil
 	}
-	if c.gen != f.gen.Load() {
+	if c.gen != f.gen.Load() && !f.compactPinned {
 		return nil // 索引已过期，等下一次 openCompact
 	}
 	return c
@@ -79,4 +79,13 @@ func (c *compactState) snapshot() ([]string, map[string]int) {
 		sort.Strings(c.names)
 	})
 	return c.names, c.counts
+}
+
+// Ready 严格就绪判定：compact 模式下索引已加载即可对外服务，
+// 不必等后台扫描（百万条要 2 分半）。
+func (f *fileStore) Ready() bool {
+	if !f.scanning.Load() {
+		return true
+	}
+	return f.compactReadEnabled && f.compact != nil && f.compact.ix != nil
 }
