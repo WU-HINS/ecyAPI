@@ -423,7 +423,10 @@ type fileStore struct {
 	groupAggCache *groupAggEntry
 
 	// compact 紧凑索引读路径（ECY_INDEX_MODE=compact 时启用）。
-	compact            *compactState
+	compact *compactState
+	// roots 图库根目录（主库在首位，其余为附加库）
+	roots []Root
+
 	compactReadEnabled bool
 	// dropOriMetaEnabled 内存模式下用索引替代 oriMeta（ECY_ORI_INDEX=1）。
 	// 默认关闭：会改变扫描期的快照/代次时序，先灰度验证。
@@ -608,6 +611,9 @@ type Options struct {
 	AggFloor float64
 	// AggDepthDecay 每深入一层的权重衰减（默认 0.7，1 表示不衰减）。
 	AggDepthDecay float64
+	// ExtraRoots 附加图库根目录（主库由 NewFileStore 的 dir 参数给出）。
+	// 附加库的分类名会带命名空间前缀，URL 由 server 映射为 /lib/<库名>/。
+	ExtraRoots []Root
 	// DropOriMeta 内存模式下用方向索引替代 oriMeta（ECY_ORI_INDEX=1）。
 	DropOriMeta bool
 	// CompactRead 读路径走紧凑索引（ECY_INDEX_MODE=compact）。
@@ -657,6 +663,7 @@ func NewFileStoreWithOptions(dir string, opt Options) (Store, error) {
 		verifyInterval:     verify,
 		parentAggDirsOnly:  opt.ParentAggDirsOnly,
 		stop:               make(chan struct{}),
+		roots:              append([]Root{{Path: dir, Main: true}}, opt.ExtraRoots...),
 		compactReadEnabled: opt.CompactRead,
 		dropOriMetaEnabled: opt.DropOriMeta,
 		cache:              map[string]*categorySet{},
@@ -877,6 +884,23 @@ func (f *fileStore) scan() error {
 	if err := f.scanDir("", 0, sc, true); err != nil {
 		return err
 	}
+	// 附加库：以「命名空间前缀」作为根分类路径扫描
+	for _, r := range f.Roots() {
+		if r.Main {
+			continue
+		}
+		prefix := r.namespacePrefix()
+		if prefix == "" {
+			continue
+		}
+		if _, err := os.Stat(r.Path); err != nil {
+			log.Printf("附加图库 %s 不可用（%v），本次跳过", r.Name, err)
+			continue
+		}
+		if err := f.scanDir(prefix, 0, sc, false); err != nil {
+			log.Printf("附加图库 %s 扫描失败: %v", r.Name, err)
+		}
+	}
 	// 清理已消失目录的方向缓存，避免长期运行后 map 只增不减。
 	for rel := range f.oriMeta {
 		if _, ok := sc.next[rel]; !ok {
@@ -1034,10 +1058,7 @@ func dirEntryKind(dirPath string, e os.DirEntry) (isDir, isLink bool) {
 // scanDir 扫描目录 rel（"" 表示数据根目录）。
 // depth 为 rel 的段数（根为 0）；isRoot 为真时读目录失败向上返回错误。
 func (f *fileStore) scanDir(rel string, depth int, sc *scanCtx, isRoot bool) error {
-	dirPath := f.dir
-	if rel != "" {
-		dirPath = filepath.Join(f.dir, filepath.FromSlash(rel))
-	}
+	dirPath := f.physPath(rel)
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		if isRoot {

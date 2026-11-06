@@ -1,0 +1,98 @@
+package store
+
+// roots.go —— 多图库路径：主库 + 若干附加库。
+//
+// 设计（见 docs/multi-root-plan.md）：
+//   - 主库：分类名不带前缀，URL 与行为完全不变
+//   - 附加库：分类名带不可见命名空间前缀 "\x01<库名>\x01"
+//   - URL 层由 server 负责把 /lib/<库名>/ 映射到该前缀
+
+import (
+	"path/filepath"
+	"strings"
+)
+
+// nsSep 命名空间分隔符（不可见，避免与真实目录名冲突）。
+const nsSep = "\x01"
+
+// Root 一个图库根目录。
+type Root struct {
+	Name string // 主库为空串；附加库如 "网盘"
+	Path string // 真实目录
+	Main bool
+}
+
+// namespacePrefix 附加库的分类名前缀；主库返回空串。
+func (r Root) namespacePrefix() string {
+	if r.Main || r.Name == "" {
+		return ""
+	}
+	return nsSep + r.Name
+}
+
+// matches 判断 rel 是否属于该根。
+func (r Root) matches(rel string) bool {
+	p := r.namespacePrefix()
+	if p == "" {
+		return false
+	}
+	return rel == p || strings.HasPrefix(rel, p+"/")
+}
+
+// Roots 当前全部图库根目录（主库在首位）。
+func (f *fileStore) Roots() []Root {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	out := make([]Root, len(f.roots))
+	copy(out, f.roots)
+	return out
+}
+
+// rootOf 返回分类所属的根；找不到返回主库。
+func (f *fileStore) rootOf(rel string) Root {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	for _, r := range f.roots {
+		if r.matches(rel) {
+			return r
+		}
+	}
+	for _, r := range f.roots {
+		if r.Main {
+			return r
+		}
+	}
+	if len(f.roots) > 0 {
+		return f.roots[0]
+	}
+	return Root{Path: f.dir, Main: true}
+}
+
+// physPath 把「分类路径（可带命名空间前缀）」映射到真实文件系统路径。
+// rel 为空表示主库根。
+func (f *fileStore) physPath(rel string) string {
+	r := f.rootOf(rel)
+	clean := rel
+	if p := r.namespacePrefix(); p != "" && r.matches(rel) {
+		clean = strings.TrimPrefix(rel, p)
+		clean = strings.TrimPrefix(clean, "/")
+	}
+	if clean == "" {
+		return r.Path
+	}
+	return filepath.Join(r.Path, filepath.FromSlash(clean))
+}
+
+// StripNamespace 去掉分类名的命名空间前缀，返回 (库名, 库内相对路径)。
+// 主库返回 ("", rel)。
+func StripNamespace(rel string) (string, string) {
+	if !strings.HasPrefix(rel, nsSep) {
+		return "", rel
+	}
+	rest := rel[len(nsSep):]
+	i := strings.Index(rest, "/")
+	if i < 0 {
+		return rest, ""
+	}
+	return rest[:i], rest[i+1:]
+}
