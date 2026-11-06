@@ -180,6 +180,7 @@ func New(cfg config.Config) (*Server, error) {
 		AggFloor:          cfg.AggFloor,
 		CompactRead:       cfg.CompactIndex,
 		DropOriMeta:       cfg.OriIndex,
+		ExtraRoots:        toStoreRoots(mergeRoots(cfg)),
 		AggDepthDecay:     cfg.AggDepthDecay,
 	})
 	if err != nil {
@@ -906,6 +907,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs", s.handleDocs)
 	mux.HandleFunc("GET /img", s.handleGallery)
 	mux.HandleFunc("GET /json", s.handleJSON)
+	// 多图库：/lib/<库名>/... 剥离前缀后交给同一套路由处理
+	mux.HandleFunc("GET /lib/", func(w http.ResponseWriter, r *http.Request) {
+		lib, rest, ok := libPrefix(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		r2 := r.Clone(context.WithValue(r.Context(), libKey{}, lib))
+		r2.URL.Path = rest
+		mux.ServeHTTP(w, r2)
+	})
 	mux.HandleFunc("GET /pic/", s.handlePic)
 	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 	mux.HandleFunc("GET /admin", s.handleAdmin)
@@ -917,6 +929,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/category/delete", s.handleAdminCategoryDelete)
 	mux.HandleFunc("POST /admin/gallery/visibility", s.handleAdminGalleryVisibility)
 	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
+	mux.HandleFunc("POST /admin/roots", s.handleAdminRoots)
 	mux.HandleFunc("POST /admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("POST /admin/content", s.handleAdminContent)
 	mux.HandleFunc("POST /admin/logs/add", s.handleAdminLogAdd)
@@ -997,9 +1010,18 @@ func hasReservedTop(name string) bool { return store.IsReservedTop(name) }
 // 分类路径支持多级子目录，如 /pic/a/b/f.png 对应分类 a/b 下的 f.png。
 func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 	category, file, ok := splitPicPath(r.URL.Path)
-	if !ok || !s.validCategory(category) || strings.ContainsAny(file, "/\\") {
+	if !ok || strings.ContainsAny(file, "/\\") {
 		http.NotFound(w, r)
 		return
+	}
+	// 先按「库内相对路径」校验（命名空间前缀含不可见字符，不能进校验）
+	if !s.validCategory(category) {
+		http.NotFound(w, r)
+		return
+	}
+	// 附加库：分类前加命名空间前缀
+	if lib := libFromContext(r); lib != "" {
+		category = store.JoinNamespace(lib, category)
 	}
 	// ?w=NNN 压缩预览：仅供站内页面缩略展示，不改变原图输出。
 	// 判断前先移除 w 参数，预览失败回退时直接走下方原图逻辑，避免递归。
@@ -1016,7 +1038,11 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(s.dataDir, filepath.FromSlash(category), file)
+	path, okPath := s.st.AbsPath(category, file)
+	if !okPath {
+		http.NotFound(w, r)
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -1066,7 +1092,36 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRoot：/ 为发布主页；/分类 为 302 跳转接口。
+// libPrefix 从 /lib/<库名>/... 中取出库名并返回剩余路径。
+func libPrefix(p string) (lib, rest string, ok bool) {
+	trimmed := strings.TrimPrefix(p, "/")
+	if !strings.HasPrefix(trimmed, "lib/") {
+		return "", p, false
+	}
+	rest0 := strings.TrimPrefix(trimmed, "lib/")
+	i := strings.Index(rest0, "/")
+	if i <= 0 {
+		return "", p, false
+	}
+	lib = rest0[:i]
+	rest = "/" + rest0[i+1:]
+	return lib, rest, lib != ""
+}
+
+// libKey 请求上下文里记录「当前请求属于哪个附加图库」。
+type libKey struct{}
+
+func libFromContext(r *http.Request) string {
+	v, _ := r.Context().Value(libKey{}).(string)
+	return v
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// 多图库：/lib/<库名>/... 先剥离前缀，后续 handler 照旧
+	if lib, rest, ok := libPrefix(r.URL.Path); ok {
+		r = r.WithContext(context.WithValue(r.Context(), libKey{}, lib))
+		r.URL.Path = rest
+	}
 	path := strings.Trim(r.URL.Path, "/")
 	if path == "" {
 		s.renderHome(w, r)
@@ -1130,11 +1185,30 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 	}
 	// 图库隐藏的分类同样不参与全分类随机（与 /img 的可见性保持一致）。
 	hidden := s.galleryHiddenSet()
+	// 限定库：/lib/<库名>/@img 只出该库；/@img?lib=main 只出主库
+	wantLib := libFromContext(r)
+	if v := r.URL.Query().Get("lib"); v != "" {
+		wantLib = v
+	}
+	if wantLib == "main" {
+		wantLib = "__main__"
+	}
 	cats := make([]string, 0, len(all))
 	for _, c := range all {
-		if !hidden[c] {
-			cats = append(cats, c)
+		if hidden[c] {
+			continue
 		}
+		if wantLib != "" {
+			lib := store.LibraryOf(c)
+			if wantLib == "__main__" {
+				if lib != "" {
+					continue
+				}
+			} else if lib != wantLib {
+				continue
+			}
+		}
+		cats = append(cats, c)
 	}
 	if len(cats) == 0 {
 		plainError(w, "No links found.", http.StatusNotFound)
@@ -1148,7 +1222,14 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 
 	// 分类之间按 sqrt(图片数)+底分 加权（5 万张的大分类更容易被选中，
 	// 但 100 张的小分类仍有份额），与父目录聚合同一套函数。
-	table := s.allWeightTable(cats)
+	// 注意：allWeightTable 的缓存只按代次+隐藏集失效，不含「按库过滤」；
+	// 过滤后的分类集合不能复用那份缓存，否则 ?lib=main 会抽到附加库。
+	var table *weightTable
+	if wantLib != "" {
+		table = buildWeightTable(cats, s.countsFor(r.Context(), cats), s.st.Generation())
+	} else {
+		table = s.allWeightTable(cats)
+	}
 	tried := make(map[string]bool, 8)
 	var picked store.Row
 	found := false
@@ -1214,9 +1295,19 @@ func linkOrientation(r *http.Request, ep endpoint) store.Orientation {
 // 注意用 Link 反解出真实分类路径：父目录聚合出的记录，文件在子分类下，
 // 直接拿聚合路径去 stat 会误判为死链。
 func (s *Server) verifyRow(r *http.Request, row store.Row) bool {
-	cat, file, ok := splitPicPath(row.Link)
+	link := row.Link
+	// 附加库的链接形如 /lib/<库名>/pic/{分类}/{文件}：
+	// 先剥离库前缀，校验时再把命名空间加回分类名，否则永远校验失败。
+	lib := ""
+	if l, rest, ok := libPrefix(link); ok {
+		lib, link = l, rest
+	}
+	cat, file, ok := splitPicPath(link)
 	if !ok {
 		return false
+	}
+	if lib != "" {
+		cat = store.JoinNamespace(lib, cat)
 	}
 	return s.st.Verify(r.Context(), cat, file)
 }
@@ -1404,4 +1495,22 @@ func scanIntervalFor(cfg config.Config) time.Duration {
 		return 10 * time.Minute
 	}
 	return 3 * time.Second
+}
+
+// toStoreRoots 配置层 → store 层。
+func toStoreRoots(in []config.ExtraRoot) []store.Root {
+	out := make([]store.Root, 0, len(in))
+	for _, r := range in {
+		out = append(out, store.Root{Name: r.Name, Path: r.Path})
+	}
+	return out
+}
+
+// mergeRoots 附加图库来源优先级：data/roots.json > ECY_EXTRA_ROOTS。
+func mergeRoots(cfg config.Config) []config.ExtraRoot {
+	path := filepath.Join(filepath.Dir(cfg.DataDir), "roots.json")
+	if roots := config.LoadRootsFile(path); len(roots) > 0 {
+		return roots
+	}
+	return cfg.ExtraRoots
 }

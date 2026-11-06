@@ -72,7 +72,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, category,
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(s.dataDir, filepath.FromSlash(category), file)
+	// 多图库：分类可能属于附加库（带命名空间前缀），必须走 AbsPath 解析
+	path, okPath := s.st.AbsPath(category, file)
+	if !okPath {
+		http.NotFound(w, r)
+		return
+	}
 	_, cachePath := s.previewCachePath(category, file, width)
 
 	// 缓存命中：直接输出缓存文件（sendfile + ETag + 304），不整块读进内存。

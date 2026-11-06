@@ -123,6 +123,8 @@ type Config struct {
 	PreviewCacheMaxGB int
 	// OriIndex 内存模式下用方向索引替代 oriMeta（ECY_ORI_INDEX=1）。
 	OriIndex bool
+	// ExtraRoots 附加图库（ECY_EXTRA_ROOTS="库名:路径,库名:路径"）。
+	ExtraRoots []ExtraRoot
 	// CompactIndex 读路径走紧凑 mmap 索引（ECY_INDEX_MODE=compact）。
 	// 开启后：条目不再常驻堆、方向从索引取、父目录聚合按前缀现算。
 	CompactIndex bool
@@ -230,6 +232,7 @@ func Load() Config {
 		MemTargetFloorMB:  clampInt(envIntZero("ECY_MEM_TARGET_FLOOR_MB", 0), 0, 4096),
 		PreviewCacheMaxGB: clampInt(envIntZero("ECY_THUMB_MAX_GB", 4), 0, 1024),
 		OriIndex:          env("ECY_ORI_INDEX", "") != "0",
+		ExtraRoots:        parseExtraRoots(env("ECY_EXTRA_ROOTS", "")),
 		CompactIndex:      strings.EqualFold(env("ECY_INDEX_MODE", "memory"), "compact"),
 		AggFloor:          envFloat("ECY_AGG_FLOOR", 4),
 		AggDepthDecay:     envFloat("ECY_AGG_DEPTH_DECAY", 0.7),
@@ -284,4 +287,30 @@ func cgroupMemoryLimit() int64 {
 		}
 	}
 	return 0
+}
+
+// ExtraRoot 附加图库配置。
+type ExtraRoot struct {
+	Name string
+	Path string
+}
+
+// parseExtraRoots 解析 "库名:路径,库名:路径"。
+func parseExtraRoots(v string) []ExtraRoot {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	var out []ExtraRoot
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(part, ":")
+		if !ok || name == "" || path == "" {
+			continue
+		}
+		out = append(out, ExtraRoot{Name: strings.TrimSpace(name), Path: strings.TrimSpace(path)})
+	}
+	return out
 }
