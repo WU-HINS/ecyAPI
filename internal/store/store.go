@@ -1408,7 +1408,9 @@ func (f *fileStore) categorySet(category string) (*categorySet, bool) {
 // 一次 stat 的成本在热 dentry 上约几微秒，远低于把用户 302 到 404 的代价。
 func (f *fileStore) Verify(ctx context.Context, category, name string) bool {
 	_ = ctx
-	if name == "" || strings.ContainsAny(name, "/\\") || !f.validCategory(category) {
+	// 附加库的分类名带不可见命名空间前缀，校验前先剥掉，否则永远不合法
+	_, rel := StripNamespace(category)
+	if name == "" || strings.ContainsAny(name, "/\\") || !f.validCategory(rel) {
 		return false
 	}
 	// compact 模式：索引就是权威，不再每次请求 stat（50 万张时这是最大的热点开销）
