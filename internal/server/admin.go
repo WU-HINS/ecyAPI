@@ -170,6 +170,14 @@ func (s *Server) renderAdmin(w http.ResponseWriter, data map[string]any) {
 	if _, ok := data["SSO"]; !ok {
 		data["SSO"] = s.ssoConfig()
 	}
+	if _, ok := data["Roots"]; !ok {
+		type rootView struct{ Name, Path string }
+		var roots []rootView
+		for _, r := range mergeRoots(s.cfg) {
+			roots = append(roots, rootView{Name: r.Name, Path: r.Path})
+		}
+		data["Roots"] = roots
+	}
 	if _, ok := data["Groups"]; !ok {
 		snap := s.groupsSnapshot()
 		data["Groups"] = snap.list

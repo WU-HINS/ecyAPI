@@ -636,6 +636,30 @@
                         </p>
                     </form>
                 </div>
+                                <div class="panel" style="margin-top:16px">
+                    <h3>附加图库</h3>
+                    <p class="field-desc">主库路径由 ECY_DATA_DIR 指定，保持不变；这里配置的目录会挂到 /lib/&lt;库名&gt;/ 下。</p>
+                    <form action="/admin/roots" method="post">
+                        {{- if .Roots}}
+                        {{- range .Roots}}
+                        <div class="field" style="display:flex;gap:8px">
+                            <input type="text" name="name" value="{{.Name}}" placeholder="库名（如 网盘）" style="flex:0 0 160px">
+                            <input type="text" name="path" value="{{.Path}}" placeholder="/mnt/usb/pics" style="flex:1">
+                        </div>
+                        {{- end}}
+                        {{- end}}
+                        <div class="field" style="display:flex;gap:8px">
+                            <input type="text" name="name" placeholder="新增：库名" style="flex:0 0 160px">
+                            <input type="text" name="path" placeholder="新增：目录绝对路径" style="flex:1">
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn">保存并重扫</button>
+                        </div>
+                        <p class="field-desc" style="margin-top:10px">
+                            清空某行的库名或路径即删除该图库；保存后立即重扫，删除的库其 URL 会全部 404。
+                        </p>
+                    </form>
+                </div>
             </section>
 
             <!-- 首页文案 -->
