@@ -1222,7 +1222,14 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 
 	// 分类之间按 sqrt(图片数)+底分 加权（5 万张的大分类更容易被选中，
 	// 但 100 张的小分类仍有份额），与父目录聚合同一套函数。
-	table := s.allWeightTable(cats)
+	// 注意：allWeightTable 的缓存只按代次+隐藏集失效，不含「按库过滤」；
+	// 过滤后的分类集合不能复用那份缓存，否则 ?lib=main 会抽到附加库。
+	var table *weightTable
+	if wantLib != "" {
+		table = buildWeightTable(cats, s.countsFor(r.Context(), cats), s.st.Generation())
+	} else {
+		table = s.allWeightTable(cats)
+	}
 	tried := make(map[string]bool, 8)
 	var picked store.Row
 	found := false
