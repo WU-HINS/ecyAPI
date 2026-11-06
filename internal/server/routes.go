@@ -929,6 +929,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/category/delete", s.handleAdminCategoryDelete)
 	mux.HandleFunc("POST /admin/gallery/visibility", s.handleAdminGalleryVisibility)
 	mux.HandleFunc("POST /admin/binding", s.handleAdminBinding)
+	mux.HandleFunc("POST /admin/roots", s.handleAdminRoots)
 	mux.HandleFunc("POST /admin/settings", s.handleAdminSettings)
 	mux.HandleFunc("POST /admin/content", s.handleAdminContent)
 	mux.HandleFunc("POST /admin/logs/add", s.handleAdminLogAdd)
