@@ -96,3 +96,27 @@ func StripNamespace(rel string) (string, string) {
 	}
 	return rest[:i], rest[i+1:]
 }
+
+// JoinNamespace 把库名与库内相对路径拼成带命名空间的分类名。
+// 库名为空（主库）时原样返回。
+func JoinNamespace(lib, rel string) string {
+	if lib == "" {
+		return rel
+	}
+	if rel == "" {
+		return nsSep + lib
+	}
+	return nsSep + lib + "/" + rel
+}
+
+// AbsPath 解析分类下某个文件的真实路径（供 /pic 等服务端路径使用）。
+func (f *fileStore) AbsPath(category, file string) (string, bool) {
+	if category == "" || file == "" || strings.ContainsAny(file, "/\\") {
+		return "", false
+	}
+	base := f.physPath(category)
+	if base == "" {
+		return "", false
+	}
+	return filepath.Join(base, file), true
+}

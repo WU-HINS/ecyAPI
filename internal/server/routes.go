@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -180,6 +179,7 @@ func New(cfg config.Config) (*Server, error) {
 		AggFloor:          cfg.AggFloor,
 		CompactRead:       cfg.CompactIndex,
 		DropOriMeta:       cfg.OriIndex,
+		ExtraRoots:        toStoreRoots(cfg.ExtraRoots),
 		AggDepthDecay:     cfg.AggDepthDecay,
 	})
 	if err != nil {
@@ -906,6 +906,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs", s.handleDocs)
 	mux.HandleFunc("GET /img", s.handleGallery)
 	mux.HandleFunc("GET /json", s.handleJSON)
+	// 多图库：/lib/<库名>/... 剥离前缀后交给同一套路由处理
+	mux.HandleFunc("GET /lib/", func(w http.ResponseWriter, r *http.Request) {
+		lib, rest, ok := libPrefix(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		r2 := r.Clone(context.WithValue(r.Context(), libKey{}, lib))
+		r2.URL.Path = rest
+		mux.ServeHTTP(w, r2)
+	})
 	mux.HandleFunc("GET /pic/", s.handlePic)
 	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 	mux.HandleFunc("GET /admin", s.handleAdmin)
@@ -997,9 +1008,18 @@ func hasReservedTop(name string) bool { return store.IsReservedTop(name) }
 // 分类路径支持多级子目录，如 /pic/a/b/f.png 对应分类 a/b 下的 f.png。
 func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 	category, file, ok := splitPicPath(r.URL.Path)
-	if !ok || !s.validCategory(category) || strings.ContainsAny(file, "/\\") {
+	if !ok || strings.ContainsAny(file, "/\\") {
 		http.NotFound(w, r)
 		return
+	}
+	// 先按「库内相对路径」校验（命名空间前缀含不可见字符，不能进校验）
+	if !s.validCategory(category) {
+		http.NotFound(w, r)
+		return
+	}
+	// 附加库：分类前加命名空间前缀
+	if lib := libFromContext(r); lib != "" {
+		category = store.JoinNamespace(lib, category)
 	}
 	// ?w=NNN 压缩预览：仅供站内页面缩略展示，不改变原图输出。
 	// 判断前先移除 w 参数，预览失败回退时直接走下方原图逻辑，避免递归。
@@ -1016,7 +1036,11 @@ func (s *Server) handlePic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(s.dataDir, filepath.FromSlash(category), file)
+	path, okPath := s.st.AbsPath(category, file)
+	if !okPath {
+		http.NotFound(w, r)
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -1066,7 +1090,36 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRoot：/ 为发布主页；/分类 为 302 跳转接口。
+// libPrefix 从 /lib/<库名>/... 中取出库名并返回剩余路径。
+func libPrefix(p string) (lib, rest string, ok bool) {
+	trimmed := strings.TrimPrefix(p, "/")
+	if !strings.HasPrefix(trimmed, "lib/") {
+		return "", p, false
+	}
+	rest0 := strings.TrimPrefix(trimmed, "lib/")
+	i := strings.Index(rest0, "/")
+	if i <= 0 {
+		return "", p, false
+	}
+	lib = rest0[:i]
+	rest = "/" + rest0[i+1:]
+	return lib, rest, lib != ""
+}
+
+// libKey 请求上下文里记录「当前请求属于哪个附加图库」。
+type libKey struct{}
+
+func libFromContext(r *http.Request) string {
+	v, _ := r.Context().Value(libKey{}).(string)
+	return v
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	// 多图库：/lib/<库名>/... 先剥离前缀，后续 handler 照旧
+	if lib, rest, ok := libPrefix(r.URL.Path); ok {
+		r = r.WithContext(context.WithValue(r.Context(), libKey{}, lib))
+		r.URL.Path = rest
+	}
 	path := strings.Trim(r.URL.Path, "/")
 	if path == "" {
 		s.renderHome(w, r)
@@ -1404,4 +1457,13 @@ func scanIntervalFor(cfg config.Config) time.Duration {
 		return 10 * time.Minute
 	}
 	return 3 * time.Second
+}
+
+// toStoreRoots 配置层 → store 层。
+func toStoreRoots(in []config.ExtraRoot) []store.Root {
+	out := make([]store.Root, 0, len(in))
+	for _, r := range in {
+		out = append(out, store.Root{Name: r.Name, Path: r.Path})
+	}
+	return out
 }

@@ -194,6 +194,8 @@ type Store interface {
 	RandomWith(ctx context.Context, category string, limit int, want Orientation) ([]Row, error)
 	// ByIndexWith 在指定方向的子集中按序号（字典序，从 1 起）取图。
 	ByIndexWith(ctx context.Context, category string, index int, want Orientation) (Row, error)
+	// AbsPath 解析分类下文件的真实路径（多图库时按命名空间定位）。
+	AbsPath(category, file string) (string, bool)
 	// LinksPage 分页返回图片列表，避免大分类一次性复制全部记录。
 	LinksPage(ctx context.Context, category string, offset, limit int) (rows []Row, total int, err error)
 	// Verify 校验文件是否仍在磁盘上；不存在时从内存索引里摘掉并返回 false，
