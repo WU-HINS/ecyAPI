@@ -1105,6 +1105,8 @@
         document.querySelectorAll('.nav-item[data-view]').forEach(function (b) {
             b.addEventListener('click', function () { showView(b.dataset.view); });
         });
+        // 支持 /admin#settings 直接定位到某个视图（表单提交后跳回用）
+        if (location.hash) { showView(location.hash.slice(1)); }
         var sidebarEl = document.getElementById('sidebar');
         function openDrawer() { sidebarEl.classList.add('open'); }
         function closeDrawer() { sidebarEl.classList.remove('open'); }

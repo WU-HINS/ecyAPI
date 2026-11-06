@@ -6,7 +6,6 @@ package server
 // 保存到 data/roots.json 并立即让 store 重扫。
 
 import (
-	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -58,6 +57,6 @@ func (s *Server) handleAdminRoots(w http.ResponseWriter, r *http.Request) {
 	if up, ok := s.st.(interface{ SetExtraRoots([]store.Root) }); ok {
 		up.SetExtraRoots(roots)
 	}
-	b, _ := json.Marshal(out)
-	s.adminResult(w, "已保存附加图库（"+string(b)+"），扫描已启动")
+	// 保存成功后跳回设置页（#settings 让前台 JS 切到对应视图）
+	http.Redirect(w, r, "/admin#settings", http.StatusSeeOther)
 }
