@@ -1183,11 +1183,30 @@ func (s *Server) serveAllRandom(w http.ResponseWriter, r *http.Request) {
 	}
 	// 图库隐藏的分类同样不参与全分类随机（与 /img 的可见性保持一致）。
 	hidden := s.galleryHiddenSet()
+	// 限定库：/lib/<库名>/@img 只出该库；/@img?lib=main 只出主库
+	wantLib := libFromContext(r)
+	if v := r.URL.Query().Get("lib"); v != "" {
+		wantLib = v
+	}
+	if wantLib == "main" {
+		wantLib = "__main__"
+	}
 	cats := make([]string, 0, len(all))
 	for _, c := range all {
-		if !hidden[c] {
-			cats = append(cats, c)
+		if hidden[c] {
+			continue
 		}
+		if wantLib != "" {
+			lib := store.LibraryOf(c)
+			if wantLib == "__main__" {
+				if lib != "" {
+					continue
+				}
+			} else if lib != wantLib {
+				continue
+			}
+		}
+		cats = append(cats, c)
 	}
 	if len(cats) == 0 {
 		plainError(w, "No links found.", http.StatusNotFound)
@@ -1267,9 +1286,19 @@ func linkOrientation(r *http.Request, ep endpoint) store.Orientation {
 // 注意用 Link 反解出真实分类路径：父目录聚合出的记录，文件在子分类下，
 // 直接拿聚合路径去 stat 会误判为死链。
 func (s *Server) verifyRow(r *http.Request, row store.Row) bool {
-	cat, file, ok := splitPicPath(row.Link)
+	link := row.Link
+	// 附加库的链接形如 /lib/<库名>/pic/{分类}/{文件}：
+	// 先剥离库前缀，校验时再把命名空间加回分类名，否则永远校验失败。
+	lib := ""
+	if l, rest, ok := libPrefix(link); ok {
+		lib, link = l, rest
+	}
+	cat, file, ok := splitPicPath(link)
 	if !ok {
 		return false
+	}
+	if lib != "" {
+		cat = store.JoinNamespace(lib, cat)
 	}
 	return s.st.Verify(r.Context(), cat, file)
 }

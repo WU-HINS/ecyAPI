@@ -120,3 +120,9 @@ func (f *fileStore) AbsPath(category, file string) (string, bool) {
 	}
 	return filepath.Join(base, file), true
 }
+
+// LibraryOf 返回分类所属的库名（主库返回 ""）。
+func LibraryOf(rel string) string {
+	lib, _ := StripNamespace(rel)
+	return lib
+}

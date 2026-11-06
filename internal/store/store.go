@@ -255,6 +255,9 @@ type fileEntry struct {
 
 // linkOf 按需拼出图片链接。
 func (e fileEntry) linkOf() string {
+	if lib, rel := StripNamespace(e.cat); lib != "" {
+		return "/lib/" + lib + "/pic/" + rel + "/" + e.name
+	}
 	return "/pic/" + e.cat + "/" + e.name
 }
 
@@ -1412,7 +1415,10 @@ func (f *fileStore) Verify(ctx context.Context, category, name string) bool {
 	if f.compactReady() != nil {
 		return true
 	}
-	path := filepath.Join(f.dir, filepath.FromSlash(category), name)
+	path, okp := f.AbsPath(category, name)
+	if !okp {
+		return false
+	}
 	if _, err := os.Stat(path); err == nil {
 		return true
 	}
