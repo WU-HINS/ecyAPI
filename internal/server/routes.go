@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -179,7 +180,7 @@ func New(cfg config.Config) (*Server, error) {
 		AggFloor:          cfg.AggFloor,
 		CompactRead:       cfg.CompactIndex,
 		DropOriMeta:       cfg.OriIndex,
-		ExtraRoots:        toStoreRoots(cfg.ExtraRoots),
+		ExtraRoots:        toStoreRoots(mergeRoots(cfg)),
 		AggDepthDecay:     cfg.AggDepthDecay,
 	})
 	if err != nil {
@@ -1495,4 +1496,13 @@ func toStoreRoots(in []config.ExtraRoot) []store.Root {
 		out = append(out, store.Root{Name: r.Name, Path: r.Path})
 	}
 	return out
+}
+
+// mergeRoots 附加图库来源优先级：data/roots.json > ECY_EXTRA_ROOTS。
+func mergeRoots(cfg config.Config) []config.ExtraRoot {
+	path := filepath.Join(filepath.Dir(cfg.DataDir), "roots.json")
+	if roots := config.LoadRootsFile(path); len(roots) > 0 {
+		return roots
+	}
+	return cfg.ExtraRoots
 }
