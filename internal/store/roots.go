@@ -8,6 +8,7 @@ package store
 //   - URL 层由 server 负责把 /lib/<库名>/ 映射到该前缀
 
 import (
+	"log"
 	"path/filepath"
 	"strings"
 )
@@ -125,4 +126,25 @@ func (f *fileStore) AbsPath(category, file string) (string, bool) {
 func LibraryOf(rel string) string {
 	lib, _ := StripNamespace(rel)
 	return lib
+}
+
+// SetExtraRoots 替换附加图库列表（保留主库），并触发一次重扫。
+// 供管理接口增删附加库使用；返回错误仅表示扫描启动失败。
+func (f *fileStore) SetExtraRoots(roots []Root) {
+	f.mu.Lock()
+	main := f.roots[:1]
+	if len(main) == 0 {
+		main = []Root{{Path: f.dir, Main: true}}
+	}
+	f.roots = append(append([]Root{}, main...), roots...)
+	f.mu.Unlock()
+	// 扫描会重建 dirs/cache：已删除库的分类自然消失
+	go func() {
+		if err := f.scan(); err != nil {
+			log.Printf("附加图库变更后重扫失败: %v", err)
+			return
+		}
+		f.gen.Add(1)
+		f.dirty.Store(true)
+	}()
 }
