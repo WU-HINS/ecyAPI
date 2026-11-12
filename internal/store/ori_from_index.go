@@ -46,7 +46,9 @@ func (f *fileStore) oriFromIndex(cat, name string, size, modNano int64) (Orienta
 // dropOriMeta compact 模式下释放 per-file 方向映射（方向已在索引里）。
 func (f *fileStore) dropOriMeta() {
 	f.mu.Lock()
-	f.oriMeta = nil
+	// 注意：不能置 nil —— 后续扫描仍会往 f.oriMeta[rel] 写，
+	// 对 nil map 赋值会直接 panic（线上 CrashLoop 就是这么来的）。
+	f.oriMeta = map[string]map[string]orientMeta{}
 	f.mu.Unlock()
 }
 

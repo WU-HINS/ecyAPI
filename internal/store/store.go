@@ -1311,6 +1311,10 @@ func (f *fileStore) buildSet(rel, dirPath string, entries []os.DirEntry) *catego
 		set.add(entry)
 	}
 	set.sort()
+	// 兜底：oriMeta 可能被 dropOriMeta 清空过，赋值前确保不是 nil。
+	if f.oriMeta == nil {
+		f.oriMeta = map[string]map[string]orientMeta{}
+	}
 	if len(set.all) == 0 && childDirs > 0 {
 		f.oriMeta[rel] = meta
 		return nil
